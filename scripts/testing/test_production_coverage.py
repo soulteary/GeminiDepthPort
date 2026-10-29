@@ -265,6 +265,34 @@ end_of_record
             self.assertFalse((report / "raw.lcov").exists())
             self.assertEqual((report / "notes.txt").read_text(), "preserve this file")
 
+    def test_combined_runner_preserves_required_arguments_with_optional_compose(self):
+        for real_compose in ("0", "1"):
+            with self.subTest(real_compose=real_compose), tempfile.TemporaryDirectory(prefix="gdp coverage ") as directory:
+                root = Path(directory)
+                script = root / "scripts/testing/rust_coverage.sh"
+                script.parent.mkdir(parents=True)
+                shutil.copyfile(Path(__file__).with_name("rust_coverage.sh"), script)
+                binaries = root / "bin"
+                binaries.mkdir()
+                (binaries / "cargo").write_text(
+                    '#!/bin/sh\nif [ "$3" = "--version" ]; then echo "cargo-llvm-cov 0.9.1"; fi\n'
+                )
+                (binaries / "python3").write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$GDP_TEST_ARGUMENTS"\n')
+                for binary in binaries.iterdir():
+                    binary.chmod(0o700)
+                arguments = root / "arguments.txt"
+                result = subprocess.run(["bash", str(script), "combined"], capture_output=True, text=True,
+                                        env={**os.environ, "PATH": f"{binaries}{os.pathsep}{os.environ['PATH']}",
+                                             "GDP_COVERAGE_REAL_COMPOSE": real_compose,
+                                             "GDP_TEST_ARGUMENTS": str(arguments), "GITHUB_STEP_SUMMARY": ""})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                argv = arguments.read_text().splitlines()
+                self.assertEqual(argv[:6], ["scripts/testing/run_external_tests.py", "--bin-dir",
+                                          str(root / "target/coverage-combined/debug"), "--report",
+                                          str(root / "target/coverage-reports/combined/external-tests.json"),
+                                          "--require-profiles"])
+                self.assertEqual("--real-compose" in argv, real_compose == "1")
+
 
 if __name__ == "__main__":
     unittest.main()

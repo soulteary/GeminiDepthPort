@@ -43,14 +43,17 @@ for coverage_scope in "${coverage_scopes[@]}"; do
     else
       cargo +1.90.0 test --locked --workspace
       cargo +1.90.0 build --locked --workspace --bins --examples
-      coverage_external_args=()
+      # Keep required arguments in the array: Bash 3 treats expansion of an
+      # empty array as an unbound variable under set -u.
+      coverage_external_args=(
+        --bin-dir "$CARGO_TARGET_DIR/debug"
+        --report "$coverage_report/external-tests.json"
+        --require-profiles
+      )
       if [[ ${GDP_COVERAGE_REAL_COMPOSE:-0} == 1 ]]; then
         coverage_external_args+=(--real-compose)
       fi
-      python3 scripts/testing/run_external_tests.py \
-        --bin-dir "$CARGO_TARGET_DIR/debug" \
-        --report "$coverage_report/external-tests.json" \
-        --require-profiles "${coverage_external_args[@]}"
+      python3 scripts/testing/run_external_tests.py "${coverage_external_args[@]}"
     fi
 
     cargo +1.90.0 metadata --locked --no-deps --format-version 1 > "$coverage_report/workspace-metadata.json"

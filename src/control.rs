@@ -21,7 +21,12 @@ pub const PROJECT: &str = "orbbec-multicam";
 #[derive(Clone)]
 pub struct Controller {
     pub root: PathBuf,
+    #[cfg(test)]
+    pub(crate) command_runner: Option<TestCommandRunner>,
 }
+#[cfg(test)]
+pub(crate) type TestCommandRunner =
+    std::sync::Arc<dyn Fn(&[String]) -> Result<String> + Send + Sync>;
 pub struct ControlLock(File);
 impl Drop for ControlLock {
     fn drop(&mut self) {
@@ -34,6 +39,8 @@ impl Controller {
     pub fn new(root: impl AsRef<Path>) -> Result<Self> {
         Ok(Self {
             root: root.as_ref().canonicalize()?,
+            #[cfg(test)]
+            command_runner: None,
         })
     }
     /// Acquire the nonblocking deployment lock; retain the guard for the operation.
@@ -94,6 +101,10 @@ impl Controller {
         file_hash(&self.root.join("inventory.json"))
     }
     pub fn run(&self, a: &[&str]) -> Result<String> {
+        #[cfg(test)]
+        if let Some(run) = &self.command_runner {
+            return run(&args(a));
+        }
         command(
             &self.root,
             &args(a),
@@ -106,6 +117,10 @@ impl Controller {
         )
     }
     pub fn run_vec(&self, a: &[String], timeout: u64) -> Result<String> {
+        #[cfg(test)]
+        if let Some(run) = &self.command_runner {
+            return run(a);
+        }
         command(&self.root, a, timeout, None)
     }
     pub fn compose(&self, a: &[&str]) -> Result<String> {

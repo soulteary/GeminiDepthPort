@@ -17,3 +17,6 @@ pub mod managed_quality;
 
 pub mod quality_batch;
 pub mod quality_history;
+
+#[cfg(test)]
+mod management_session_tests;
