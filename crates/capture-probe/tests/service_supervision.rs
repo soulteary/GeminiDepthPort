@@ -1810,7 +1810,9 @@ fn initially_incomplete_streams_publish_images_but_never_claim_pair_readiness() 
             .spawn()
             .unwrap();
         let status = wait_status(&f, &mut child, |v| {
-            v["unpaired_images_published"].as_u64().unwrap_or(0) >= 3
+            // Image counters can precede the supervisor's asynchronous state
+            // transition; observe that transition before asserting its value.
+            v["unpaired_images_published"].as_u64().unwrap_or(0) >= 3 && v["state"] == "degraded"
         });
         assert_eq!(status["ready"], false);
         assert_eq!(status["state"], "degraded");
