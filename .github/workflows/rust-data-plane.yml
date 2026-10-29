@@ -7,6 +7,9 @@ permissions:
 jobs:
   data-plane:
     runs-on: ubuntu-24.04
+    env:
+      # The tests retain their own explicit concurrent workers/processes.
+      RUST_TEST_THREADS: '2'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Install declared minimum Rust toolchain

@@ -9816,6 +9816,7 @@
     "production_lines_found": 17721,
     "production_line_percent": 99.06325828113538,
     "clippy": "Rust 1.85 workspace all-targets -D warnings passed",
-    "coverage_policy": "unchanged production scope/exclusions, 99% threshold"
+    "coverage_policy": "unchanged production scope/exclusions, 99% threshold",
+    "msrv_linux": "Rust 1.85 full data-plane selection, RUST_TEST_THREADS=2, passed"
   }
 }
