@@ -990,7 +990,11 @@ fn quality_only(f: &Fixture) {
     configure_runtime_quality(f, 10, 1_000_000);
     let mut value: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
     value.as_object_mut().unwrap().remove("raw_recording");
-    value["service"]["startup_timeout_ms"] = json!(2000);
+    // These fixtures classify frame/quality faults. Keep their deadlines
+    // separate from the intentionally tight supervision-budget tests.
+    value["service"]["startup_timeout_ms"] = json!(4000);
+    value["service"]["idle_timeout_ms"] = json!(1500);
+    value["service"]["heartbeat_timeout_ms"] = json!(5000);
     fs::write(&f.config, value.to_string()).unwrap();
 }
 fn expect_terminal_failure(f: &Fixture, key: &str, value: &str) -> Value {
