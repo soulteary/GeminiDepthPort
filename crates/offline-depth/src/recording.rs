@@ -812,6 +812,9 @@ struct RawIoStats {
     verification: StageStats,
     append: StageStats,
     finish: StageStats,
+    payload_write_calls: u64,
+    index_write_calls: u64,
+    index_flushes: u64,
     validation_image_bytes: u64,
     validation_buffer_peak_bytes: usize,
     durable_pairs: u64,
@@ -859,7 +862,9 @@ impl RawRecordingDiagnostics {
             "write":stats.write.report(),"fsync":stats.fsync.report(),"rename":stats.rename.report(),
             "verification":stats.verification.report(),"append":stats.append.report(),"finish_total":stats.finish.report(),
             "failed_calls":stats.failures,"durable_pairs":stats.durable_pairs,"checkpoints":stats.checkpoints,"payload_files":stats.payload_files,"validation_image_bytes":stats.validation_image_bytes,
-            "validation_buffer_peak_bytes":stats.validation_buffer_peak_bytes})
+            "validation_buffer_peak_bytes":stats.validation_buffer_peak_bytes,
+            "payload_write_calls":stats.payload_write_calls,"index_write_calls":stats.index_write_calls,
+            "index_flushes":stats.index_flushes})
     }
 }
 
@@ -871,6 +876,8 @@ pub struct RawRecordingWriter {
     final_path: PathBuf,
     snapshot: SnapshotEnvelope,
     records: fs::File,
+    evidence_buffer: Vec<u8>,
+    record_buffer: Vec<u8>,
     digest: ring::digest::Context,
     count: u64,
     failed: bool,
@@ -935,6 +942,8 @@ impl RawRecordingWriter {
             final_path,
             snapshot,
             records,
+            evidence_buffer: Vec::new(),
+            record_buffer: Vec::new(),
             digest: ring::digest::Context::new(&ring::digest::SHA256),
             count: 0,
             failed: false,
@@ -991,7 +1000,6 @@ impl RawRecordingWriter {
         depth: &[u8],
         endian: StorageEndian,
     ) -> Result<()> {
-        use std::io::Write;
         pair.validate()
             .map_err(|_| OfflineError::Invalid("PAIR_EVIDENCE_INVALID"))?;
         require(
@@ -1009,20 +1017,24 @@ impl RawRecordingWriter {
             pair: pair.clone(),
             source_json: None,
         };
-        let raw_evidence = serde_json::to_vec(&evidence)?;
+        let mut raw_evidence = std::mem::take(&mut self.evidence_buffer);
+        raw_evidence.clear();
+        serde_json::to_writer(&mut raw_evidence, &evidence)?;
+        for (frame, pixels) in [(&pair.color, color), (&pair.depth, depth)] {
+            let length = frame
+                .stride
+                .checked_mul(frame.height as usize)
+                .ok_or(OfflineError::Invalid("RECORDING_LAYOUT"))?;
+            require(
+                length <= 64 * 1024 * 1024 && pixels.len() == length,
+                "RECORDING_PAYLOAD_LENGTH",
+            )?;
+        }
         self.prepare_chunk(color.len(), depth.len(), raw_evidence.len())?;
-        let mut store =
-            |role: &str, frame: &frame_core::FrameEvidence, pixels: &[u8]| -> Result<StoredImage> {
-                let length = frame
-                    .stride
-                    .checked_mul(frame.height as usize)
-                    .ok_or(OfflineError::Invalid("RECORDING_LAYOUT"))?;
-                require(
-                    length <= 64 * 1024 * 1024 && pixels.len() == length,
-                    "RECORDING_PAYLOAD_LENGTH",
-                )?;
-                let path = format!("{role}-{sequence:020}.raw");
-                let file = self.store_blob(&path, pixels)?;
+        let [color_file, depth_file, evidence] =
+            self.store_pair(sequence, [color, depth, &raw_evidence])?;
+        let store =
+            |role: &str, frame: &frame_core::FrameEvidence, file: FileRef| -> Result<StoredImage> {
                 let model = self
                     .snapshot
                     .content
@@ -1045,10 +1057,8 @@ impl RawRecordingWriter {
                     metadata: None,
                 })
             };
-        let color = store("color", &pair.color, color)?;
-        let depth = store("depth", &pair.depth, depth)?;
-        let path = format!("evidence-{sequence:020}.json");
-        let evidence = self.store_blob(&path, &raw_evidence)?;
+        let color = store("color", &pair.color, color_file)?;
+        let depth = store("depth", &pair.depth, depth_file)?;
         let record = RecordingRecord {
             sequence,
             evidence,
@@ -1062,16 +1072,20 @@ impl RawRecordingWriter {
                 ),
             },
         };
-        let mut raw = serde_json::to_vec(&record)?;
+        let mut raw = std::mem::take(&mut self.record_buffer);
+        raw.clear();
+        serde_json::to_writer(&mut raw, &record)?;
         raw.push(b'\n');
         require(raw.len() <= 65536, "RECORDING_INDEX_LINE_LIMIT")?;
         self.reserve_bytes(raw.len())?;
-        self.diagnostics
-            .measure("write", || self.records.write_all(&raw))?;
+        self.append_index(&raw)?;
         self.digest.update(&raw);
+        let index_bytes = raw.len() as u64;
+        self.record_buffer = raw;
+        self.evidence_buffer = raw_evidence;
         self.count += 1;
         if let Some(chunked) = &mut self.chunked {
-            chunked.index_bytes += raw.len() as u64;
+            chunked.index_bytes += index_bytes;
             chunked.active.as_mut().unwrap().pairs += 1;
             if chunked
                 .active
@@ -1081,6 +1095,45 @@ impl RawRecordingWriter {
                 self.checkpoint()?;
             }
         }
+        Ok(())
+    }
+    fn append_index(&mut self, raw: &[u8]) -> Result<()> {
+        if self.chunked.is_none() {
+            use std::io::Write;
+            self.diagnostics
+                .measure("write", || self.records.write_all(raw))?;
+            return Ok(());
+        }
+        if self.chunked.as_ref().unwrap().index_buffer.len() + raw.len()
+            > chunked::INDEX_BUFFER_BYTES
+        {
+            self.flush_index()?;
+        }
+        let buffer = &mut self.chunked.as_mut().unwrap().index_buffer;
+        if buffer.capacity() == 0 {
+            buffer
+                .try_reserve_exact(chunked::INDEX_BUFFER_BYTES)
+                .map_err(|_| OfflineError::Invalid("ALLOCATION_FAILED"))?;
+        }
+        buffer.extend_from_slice(raw);
+        Ok(())
+    }
+    fn flush_index(&mut self) -> Result<()> {
+        let Some(state) = &mut self.chunked else {
+            return Ok(());
+        };
+        if state.index_buffer.is_empty() {
+            return Ok(());
+        }
+        let mut calls = 0;
+        let result = self.diagnostics.measure("write", || {
+            chunked::write_all_counted(&mut self.records, &state.index_buffer, &mut calls)
+        });
+        let mut stats = self.diagnostics.0.lock().unwrap_or_else(|e| e.into_inner());
+        stats.index_write_calls = stats.index_write_calls.saturating_add(calls);
+        result?;
+        stats.index_flushes = stats.index_flushes.saturating_add(1);
+        state.index_buffer.clear();
         Ok(())
     }
     fn reserve_bytes(&mut self, len: usize) -> Result<()> {

@@ -3,6 +3,7 @@
 use super::*;
 use std::io::{Read, Seek, SeekFrom, Write};
 
+pub(super) const INDEX_BUFFER_BYTES: usize = 64 * 1024;
 pub(super) const CHUNK_PAIRS: u64 = 32;
 pub(super) const CHUNK_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CHUNK: u64 = 128 * 1024 * 1024 + 65536;
@@ -11,6 +12,7 @@ pub(super) struct Chunked {
     pub active: Option<Chunk>,
     pub chunks: u64,
     pub index_bytes: u64,
+    pub index_buffer: Vec<u8>,
     checkpoint_bytes: u64,
     verified: Option<VerifiedPrefix>,
 }
@@ -280,29 +282,52 @@ impl RawRecordingWriter {
         }
         Ok(())
     }
-    pub(super) fn store_blob(&mut self, path: &str, bytes: &[u8]) -> Result<FileRef> {
+    pub(super) fn store_pair(&mut self, sequence: u64, parts: [&[u8]; 3]) -> Result<[FileRef; 3]> {
         if self.chunked.is_none() {
-            self.write_budgeted(path, bytes)?;
-            return Ok(FileRef {
-                path: path.into(),
-                sha256: sha256(bytes),
-                range: None,
-            });
+            let mut store = |role: &str, suffix: &str, bytes: &[u8]| -> Result<FileRef> {
+                let path = format!("{role}-{sequence:020}.{suffix}");
+                self.write_budgeted(&path, bytes)?;
+                Ok(FileRef {
+                    path,
+                    sha256: sha256(bytes),
+                    range: None,
+                })
+            };
+            return Ok([
+                store("color", "raw", parts[0])?,
+                store("depth", "raw", parts[1])?,
+                store("evidence", "json", parts[2])?,
+            ]);
         }
-        self.reserve_bytes(bytes.len())?;
+        let total = parts.iter().map(|b| b.len()).sum();
+        self.reserve_bytes(total)?;
         let chunk = self.chunked.as_mut().unwrap().active.as_mut().unwrap();
-        let range = FileRange {
-            offset: chunk.bytes,
-            length: bytes.len() as u64,
-        };
+        let mut slices = parts.map(std::io::IoSlice::new);
+        let mut calls = 0;
+        let result = self.diagnostics.measure("write", || {
+            write_all_vectored(&mut chunk.file, &mut slices, &mut calls)
+        });
         self.diagnostics
-            .measure("write", || chunk.file.write_all(bytes))?;
-        chunk.bytes += bytes.len() as u64;
-        Ok(FileRef {
-            path: chunk.path.clone(),
-            sha256: sha256(bytes),
-            range: Some(range),
-        })
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .payload_write_calls += calls;
+        result?;
+        let mut offset = chunk.bytes;
+        let refs = parts.map(|bytes| {
+            let reference = FileRef {
+                path: chunk.path.clone(),
+                sha256: sha256(bytes),
+                range: Some(FileRange {
+                    offset,
+                    length: bytes.len() as u64,
+                }),
+            };
+            offset += bytes.len() as u64;
+            reference
+        });
+        chunk.bytes = offset;
+        Ok(refs)
     }
     /// Seal a whole-pair prefix. Nothing can append to the sealed payload file.
     pub fn checkpoint(&mut self) -> Result<()> {
@@ -314,6 +339,10 @@ impl RawRecordingWriter {
         result
     }
     fn checkpoint_inner(&mut self) -> Result<()> {
+        // Explicitly flush buffered index bytes before ANY checkpoint sync or
+        // verification. On error the public caller poisons the writer; Drop
+        // never retries a partially written buffer.
+        self.flush_index()?;
         let Some(state) = self.chunked.as_mut() else {
             return Ok(());
         };
@@ -397,5 +426,146 @@ impl RawRecordingWriter {
         stats.durable_pairs = self.count;
         stats.checkpoints += 1;
         Ok(())
+    }
+}
+
+/// Count every underlying call, including short writes and EINTR retries.
+pub(super) fn write_all_vectored(
+    writer: &mut impl Write,
+    mut buffers: &mut [std::io::IoSlice<'_>],
+    calls: &mut u64,
+) -> std::io::Result<()> {
+    while buffers.iter().any(|b| !b.is_empty()) {
+        *calls = calls.saturating_add(1);
+        match writer.write_vectored(buffers) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(n) => std::io::IoSlice::advance_slices(&mut buffers, n),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+pub(super) fn write_all_counted(
+    writer: &mut impl Write,
+    mut bytes: &[u8],
+    calls: &mut u64,
+) -> std::io::Result<()> {
+    while !bytes.is_empty() {
+        *calls = calls.saturating_add(1);
+        match writer.write(bytes) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(n) => bytes = &bytes[n..],
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+    use std::{
+        collections::VecDeque,
+        io::{self, IoSlice},
+    };
+    struct Scripted {
+        plan: VecDeque<io::Result<usize>>,
+        bytes: Vec<u8>,
+    }
+    impl Scripted {
+        fn apply(&mut self, buffers: &[IoSlice<'_>]) -> io::Result<usize> {
+            let limit = self.plan.pop_front().unwrap_or(Ok(usize::MAX))?;
+            let mut left = limit;
+            let mut count = 0;
+            for b in buffers {
+                let n = b.len().min(left);
+                self.bytes.extend_from_slice(&b[..n]);
+                left -= n;
+                count += n;
+            }
+            Ok(count)
+        }
+    }
+    impl Write for Scripted {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.apply(&[IoSlice::new(bytes)])
+        }
+        fn write_vectored(&mut self, buffers: &[IoSlice<'_>]) -> io::Result<usize> {
+            self.apply(buffers)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    fn run(writer: &mut Scripted, vectored: bool, calls: &mut u64) -> io::Result<()> {
+        if vectored {
+            write_all_vectored(
+                writer,
+                &mut [
+                    IoSlice::new(b"abc"),
+                    IoSlice::new(b""),
+                    IoSlice::new(b"defgh"),
+                    IoSlice::new(b"ij"),
+                ],
+                calls,
+            )
+        } else {
+            write_all_counted(writer, b"abcdefghij", calls)
+        }
+    }
+    #[test]
+    fn scalar_and_vectored_writes_retry_interrupts_and_preserve_cross_slice_short_writes() {
+        for vectored in [false, true] {
+            let mut writer = Scripted {
+                plan: vec![
+                    Err(io::ErrorKind::Interrupted.into()),
+                    Ok(2),
+                    Ok(4),
+                    Ok(usize::MAX),
+                ]
+                .into(),
+                bytes: Vec::new(),
+            };
+            let mut calls = 0;
+            run(&mut writer, vectored, &mut calls).unwrap();
+            assert_eq!(writer.bytes, b"abcdefghij");
+            assert_eq!(calls, 4);
+        }
+    }
+    #[test]
+    fn zero_and_partial_then_failed_writes_are_errors_and_empty_inputs_make_no_call() {
+        for vectored in [false, true] {
+            for zero in [false, true] {
+                let plan = if zero {
+                    vec![Ok(0)]
+                } else {
+                    vec![Ok(2), Err(io::Error::other("injected write failure"))]
+                };
+                let mut writer = Scripted {
+                    plan: plan.into(),
+                    bytes: Vec::new(),
+                };
+                let mut calls = 0;
+                let error = run(&mut writer, vectored, &mut calls).unwrap_err();
+                if zero {
+                    assert_eq!(error.kind(), io::ErrorKind::WriteZero);
+                    assert!(writer.bytes.is_empty());
+                    assert_eq!(calls, 1);
+                } else {
+                    assert_eq!(writer.bytes, b"ab");
+                    assert_eq!(calls, 2);
+                }
+            }
+        }
+        let mut writer = Scripted {
+            plan: VecDeque::new(),
+            bytes: Vec::new(),
+        };
+        let mut calls = 0;
+        write_all_counted(&mut writer, b"", &mut calls).unwrap();
+        write_all_vectored(&mut writer, &mut [IoSlice::new(b"")], &mut calls).unwrap();
+        assert_eq!(calls, 0);
     }
 }

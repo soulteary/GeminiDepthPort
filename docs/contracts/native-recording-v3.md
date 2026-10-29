@@ -39,11 +39,27 @@ chunks, aliases, gaps, range overflow and oversized reads fail closed. Readers
 reuse one chunk file handle, not cached pixels; exact reads and final length
 checks still reject truncation or growth during validation.
 
+## Bounded write staging
+
+V3 writes the color, depth and evidence extents with vectored I/O, without
+concatenating image buffers. Short writes advance across slice boundaries;
+interrupted calls retry and zero-length writes fail. Evidence and index JSON
+serialization reuse separate metadata buffers. V2 retains its per-file writes.
+
+The append-only index stages at most 64 KiB in an explicit buffer. Every
+checkpoint completely flushes this buffer before any payload/index sync or
+validation. Buffered index bytes are charged to the byte budget when staged,
+not again at flush. A failed partial flush poisons the writer; dropping it does
+not retry or promote unacknowledged bytes. Existing checkpoints remain recoverable.
+Diagnostics expose payload/index write attempts and successful index flushes.
+The on-disk format, hashes, two actual readback rounds and durability barriers
+are unchanged. This only affects enabled native recording, not external ROSbag2.
+
 ## Durable checkpoint ordering
 
 For each sealed chunk, the writer performs:
 
-1. Sync the payload file and append-only record index.
+1. Completely flush the bounded index buffer, then sync the payload file and append-only record index.
 2. Sync the staging directory so both names are durable before the checkpoint.
 3. Read back the new chunk through the real recording validator. Cached verified
    index digest/progress preserves cross-chunk checks without rescanning old

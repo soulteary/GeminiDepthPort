@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/uio.h>
 #include <unistd.h>
 static _Atomic unsigned count;
 static int fail(const char *op, const char *path) {
@@ -48,9 +49,52 @@ static int fail_fd(const char *op,int fd) {
     if(n<0)return 0;
     path[n]=0;return fail(op,path);
 }
+static _Atomic unsigned long long payload_writes,payload_writevs,index_writes,index_writevs;
+static int payload_fd(int fd) {
+    char link[64],path[4096];snprintf(link,sizeof(link),"/proc/self/fd/%d",fd);
+    ssize_t n=readlink(link,path,sizeof(path)-1);if(n<0)return 0;path[n]=0;
+    return strstr(path,"/payload-")!=NULL;
+}
+static void trace_write(int fd,int vectored) {
+    if(!getenv("GDP_IO_WRITE_COUNTS"))return;
+    char link[64],path[4096];snprintf(link,sizeof(link),"/proc/self/fd/%d",fd);
+    ssize_t n=readlink(link,path,sizeof(path)-1);if(n<0)return;path[n]=0;
+    if(strstr(path,"/payload-")) {if(vectored)atomic_fetch_add(&payload_writevs,1);else atomic_fetch_add(&payload_writes,1);}
+    else if(n>=14 && !strcmp(path+n-14,"/records.jsonl")) {if(vectored)atomic_fetch_add(&index_writevs,1);else atomic_fetch_add(&index_writes,1);}
+}
+__attribute__((destructor)) static void save_write_counts(void) {
+    const char *path=getenv("GDP_IO_WRITE_COUNTS");if(!path)return;
+    char raw[256];int n=snprintf(raw,sizeof(raw),"{\"payload_write\":%llu,\"payload_writev\":%llu,\"index_write\":%llu,\"index_writev\":%llu}",
+        atomic_load(&payload_writes),atomic_load(&payload_writevs),atomic_load(&index_writes),atomic_load(&index_writevs));
+    int fd=open(path,O_WRONLY|O_CREAT|O_TRUNC,0600);
+    if(fd>=0){ssize_t (*real)(int,const void*,size_t)=dlsym(RTLD_NEXT,"write");(void)real(fd,raw,(size_t)n);close(fd);}
+}
+ssize_t writev(int fd,const struct iovec *iov,int count_iov) {
+    trace_write(fd,1);
+    if(fail_fd("writev",fd))return -1;
+    ssize_t (*real)(int,const struct iovec*,int)=dlsym(RTLD_NEXT,"writev");
+    const char *cap=getenv("GDP_IO_WRITEV_MAX_BYTES"),*armed=getenv("GDP_IO_ARMED");
+    if(cap && (!armed || access(armed,F_OK)==0) && count_iov>=0 && count_iov<=16 && payload_fd(fd)) {
+        size_t remaining=(size_t)strtoull(cap,NULL,10);struct iovec limited[16];int count_limited=0;
+        for(int i=0;i<count_iov && remaining;i++) {
+            size_t n=iov[i].iov_len;if(n>remaining)n=remaining;
+            if(n){limited[count_limited]=iov[i];limited[count_limited++].iov_len=n;remaining-=n;}
+        }
+        return real(fd,limited,count_limited);
+    }
+    return real(fd,iov,count_iov);
+}
 ssize_t write(int fd,const void *buf,size_t n) {
+    trace_write(fd,0);
     if(fail_fd("write",fd))return -1;
-    ssize_t (*real)(int,const void*,size_t)=dlsym(RTLD_NEXT,"write");return real(fd,buf,n);
+    ssize_t (*real)(int,const void*,size_t)=dlsym(RTLD_NEXT,"write");
+    const char *cap=getenv("GDP_IO_WRITE_MAX_BYTES"),*armed=getenv("GDP_IO_ARMED");
+    if(cap && (!armed || access(armed,F_OK)==0)) {
+        char link[64],path[4096];snprintf(link,sizeof(link),"/proc/self/fd/%d",fd);
+        ssize_t len=readlink(link,path,sizeof(path)-1);
+        if(len>=14){path[len]=0;if(!strcmp(path+len-14,"/records.jsonl")){size_t max=(size_t)strtoull(cap,NULL,10);if(n>max)n=max;}}
+    }
+    return real(fd,buf,n);
 }
 int fsync(int fd) {
     if(fail_fd("fsync",fd))return -1;

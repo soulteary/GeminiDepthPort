@@ -1,0 +1,4171 @@
+{
+  "build": "Rust 1.90 release + thin LTO",
+  "kind": "native-write-before-after",
+  "limits": "synthetic V3 recording only; no capture CPU / ROSbag2 claim; whole-process peak RSS is not anonymous RSS; cached filesystem throughput is not physical device throughput",
+  "repeats": 3,
+  "rows": [
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 13360648152112496844,
+        "manifest.json": 13021941132274102875,
+        "records.jsonl": 285206044257109314,
+        "snapshot.json": 1287053468520360510
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 8205219,
+          "mean_ns": 1039354.5625,
+          "minimum_ns": 361292,
+          "p50_ns": {
+            "lower_bound_ns": 655360,
+            "upper_bound_ns": 720895
+          },
+          "p95_ns": {
+            "lower_bound_ns": 6291456,
+            "upper_bound_ns": 6815743
+          },
+          "p99_ns": {
+            "lower_bound_ns": 6815744,
+            "upper_bound_ns": 7340031
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 128,
+          "saturated_observations": 0,
+          "total_ns": "133037384"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 128,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 53255653,
+          "mean_ns": 53255653.0,
+          "minimum_ns": 53255653,
+          "p50_ns": {
+            "lower_bound_ns": 53255653,
+            "upper_bound_ns": 53255653
+          },
+          "p95_ns": {
+            "lower_bound_ns": 53255653,
+            "upper_bound_ns": 53255653
+          },
+          "p99_ns": {
+            "lower_bound_ns": 53255653,
+            "upper_bound_ns": 53255653
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "53255653"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 26500,
+          "mean_ns": 4742.739130434783,
+          "minimum_ns": 166,
+          "p50_ns": {
+            "lower_bound_ns": 1024,
+            "upper_bound_ns": 1151
+          },
+          "p95_ns": {
+            "lower_bound_ns": 24576,
+            "upper_bound_ns": 26500
+          },
+          "p99_ns": {
+            "lower_bound_ns": 24576,
+            "upper_bound_ns": 26500
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "218166"
+        },
+        "payload_files": 8,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 40458,
+          "mean_ns": 25805.666666666668,
+          "minimum_ns": 19209,
+          "p50_ns": {
+            "lower_bound_ns": 22528,
+            "upper_bound_ns": 24575
+          },
+          "p95_ns": {
+            "lower_bound_ns": 36864,
+            "upper_bound_ns": 40458
+          },
+          "p99_ns": {
+            "lower_bound_ns": 36864,
+            "upper_bound_ns": 40458
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "232251"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 262144000,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 47117145,
+          "mean_ns": 10637768.555555556,
+          "minimum_ns": 5825424,
+          "p50_ns": {
+            "lower_bound_ns": 5825424,
+            "upper_bound_ns": 6291455
+          },
+          "p95_ns": {
+            "lower_bound_ns": 46137344,
+            "upper_bound_ns": 47117145
+          },
+          "p99_ns": {
+            "lower_bound_ns": 46137344,
+            "upper_bound_ns": 47117145
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "95739917"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 588418,
+          "mean_ns": 88825.44821092278,
+          "minimum_ns": 417,
+          "p50_ns": {
+            "lower_bound_ns": 24576,
+            "upper_bound_ns": 26623
+          },
+          "p95_ns": {
+            "lower_bound_ns": 229376,
+            "upper_bound_ns": 245759
+          },
+          "p99_ns": {
+            "lower_bound_ns": 262144,
+            "upper_bound_ns": 294911
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 531,
+          "saturated_observations": 0,
+          "total_ns": "47166313"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 0,
+      "height": 400,
+      "pairs": 128,
+      "pairs_read_back": 128,
+      "payload_bytes": 131072000,
+      "payload_mib_per_second": 667.1471763070483,
+      "peak_rss_kib": 3620,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "compact",
+      "repeat": 0,
+      "total_seconds_including_commit_verification": 0.187364954,
+      "variant": "before",
+      "width": 640
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 13360648152112496844,
+        "manifest.json": 13021941132274102875,
+        "records.jsonl": 285206044257109314,
+        "snapshot.json": 1287053468520360510
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 6751967,
+          "mean_ns": 867441.9375,
+          "minimum_ns": 341167,
+          "p50_ns": {
+            "lower_bound_ns": 524288,
+            "upper_bound_ns": 589823
+          },
+          "p95_ns": {
+            "lower_bound_ns": 6291456,
+            "upper_bound_ns": 6751967
+          },
+          "p99_ns": {
+            "lower_bound_ns": 6291456,
+            "upper_bound_ns": 6751967
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 128,
+          "saturated_observations": 0,
+          "total_ns": "111032568"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 128,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 54812364,
+          "mean_ns": 54812364.0,
+          "minimum_ns": 54812364,
+          "p50_ns": {
+            "lower_bound_ns": 54812364,
+            "upper_bound_ns": 54812364
+          },
+          "p95_ns": {
+            "lower_bound_ns": 54812364,
+            "upper_bound_ns": 54812364
+          },
+          "p99_ns": {
+            "lower_bound_ns": 54812364,
+            "upper_bound_ns": 54812364
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "54812364"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 16000,
+          "mean_ns": 2677.6521739130435,
+          "minimum_ns": 167,
+          "p50_ns": {
+            "lower_bound_ns": 576,
+            "upper_bound_ns": 639
+          },
+          "p95_ns": {
+            "lower_bound_ns": 14336,
+            "upper_bound_ns": 15359
+          },
+          "p99_ns": {
+            "lower_bound_ns": 15360,
+            "upper_bound_ns": 16000
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "123172"
+        },
+        "index_flushes": 8,
+        "index_write_calls": 8,
+        "payload_files": 8,
+        "payload_write_calls": 128,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 31042,
+          "mean_ns": 18537.11111111111,
+          "minimum_ns": 11167,
+          "p50_ns": {
+            "lower_bound_ns": 16384,
+            "upper_bound_ns": 18431
+          },
+          "p95_ns": {
+            "lower_bound_ns": 30720,
+            "upper_bound_ns": 31042
+          },
+          "p99_ns": {
+            "lower_bound_ns": 30720,
+            "upper_bound_ns": 31042
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "166834"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 262144000,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 48815481,
+          "mean_ns": 10607921.444444444,
+          "minimum_ns": 5719466,
+          "p50_ns": {
+            "lower_bound_ns": 5767168,
+            "upper_bound_ns": 6291455
+          },
+          "p95_ns": {
+            "lower_bound_ns": 46137344,
+            "upper_bound_ns": 48815481
+          },
+          "p99_ns": {
+            "lower_bound_ns": 46137344,
+            "upper_bound_ns": 48815481
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "95471293"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 940792,
+          "mean_ns": 185389.45806451613,
+          "minimum_ns": 4292,
+          "p50_ns": {
+            "lower_bound_ns": 196608,
+            "upper_bound_ns": 212991
+          },
+          "p95_ns": {
+            "lower_bound_ns": 294912,
+            "upper_bound_ns": 327679
+          },
+          "p99_ns": {
+            "lower_bound_ns": 393216,
+            "upper_bound_ns": 425983
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 155,
+          "saturated_observations": 0,
+          "total_ns": "28735366"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 0,
+      "height": 400,
+      "pairs": 128,
+      "pairs_read_back": 128,
+      "payload_bytes": 131072000,
+      "payload_mib_per_second": 753.0607703173085,
+      "peak_rss_kib": 3632,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "compact",
+      "repeat": 0,
+      "total_seconds_including_commit_verification": 0.16598926,
+      "variant": "after",
+      "width": 640
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 13360648152112496844,
+        "manifest.json": 13021941132274102875,
+        "records.jsonl": 285206044257109314,
+        "snapshot.json": 1287053468520360510
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 19433526,
+          "mean_ns": 1451695.265625,
+          "minimum_ns": 341542,
+          "p50_ns": {
+            "lower_bound_ns": 393216,
+            "upper_bound_ns": 425983
+          },
+          "p95_ns": {
+            "lower_bound_ns": 16777216,
+            "upper_bound_ns": 18874367
+          },
+          "p99_ns": {
+            "lower_bound_ns": 18874368,
+            "upper_bound_ns": 19433526
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 128,
+          "saturated_observations": 0,
+          "total_ns": "185816994"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 128,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 79758021,
+          "mean_ns": 79758021.0,
+          "minimum_ns": 79758021,
+          "p50_ns": {
+            "lower_bound_ns": 79758021,
+            "upper_bound_ns": 79758021
+          },
+          "p95_ns": {
+            "lower_bound_ns": 79758021,
+            "upper_bound_ns": 79758021
+          },
+          "p99_ns": {
+            "lower_bound_ns": 79758021,
+            "upper_bound_ns": 79758021
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "79758021"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 2936337,
+          "mean_ns": 2302834.434782609,
+          "minimum_ns": 2068336,
+          "p50_ns": {
+            "lower_bound_ns": 2097152,
+            "upper_bound_ns": 2359295
+          },
+          "p95_ns": {
+            "lower_bound_ns": 2621440,
+            "upper_bound_ns": 2883583
+          },
+          "p99_ns": {
+            "lower_bound_ns": 2883584,
+            "upper_bound_ns": 2936337
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "105930384"
+        },
+        "payload_files": 8,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 42917,
+          "mean_ns": 21722.11111111111,
+          "minimum_ns": 12458,
+          "p50_ns": {
+            "lower_bound_ns": 14336,
+            "upper_bound_ns": 15359
+          },
+          "p95_ns": {
+            "lower_bound_ns": 40960,
+            "upper_bound_ns": 42917
+          },
+          "p99_ns": {
+            "lower_bound_ns": 40960,
+            "upper_bound_ns": 42917
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "195499"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 262144000,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 49901982,
+          "mean_ns": 11385033.666666666,
+          "minimum_ns": 6121092,
+          "p50_ns": {
+            "lower_bound_ns": 6291456,
+            "upper_bound_ns": 6815743
+          },
+          "p95_ns": {
+            "lower_bound_ns": 46137344,
+            "upper_bound_ns": 49901982
+          },
+          "p99_ns": {
+            "lower_bound_ns": 46137344,
+            "upper_bound_ns": 49901982
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "102465303"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 267042,
+          "mean_ns": 29033.632768361582,
+          "minimum_ns": 1292,
+          "p50_ns": {
+            "lower_bound_ns": 16384,
+            "upper_bound_ns": 18431
+          },
+          "p95_ns": {
+            "lower_bound_ns": 163840,
+            "upper_bound_ns": 180223
+          },
+          "p99_ns": {
+            "lower_bound_ns": 212992,
+            "upper_bound_ns": 229375
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 531,
+          "saturated_observations": 0,
+          "total_ns": "15416859"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 2,
+      "height": 400,
+      "pairs": 128,
+      "pairs_read_back": 128,
+      "payload_bytes": 131072000,
+      "payload_mib_per_second": 466.51078961269167,
+      "peak_rss_kib": 3648,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "compact",
+      "repeat": 0,
+      "total_seconds_including_commit_verification": 0.267946643,
+      "variant": "before",
+      "width": 640
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 13360648152112496844,
+        "manifest.json": 13021941132274102875,
+        "records.jsonl": 285206044257109314,
+        "snapshot.json": 1287053468520360510
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 19742651,
+          "mean_ns": 1375558.4296875,
+          "minimum_ns": 334458,
+          "p50_ns": {
+            "lower_bound_ns": 360448,
+            "upper_bound_ns": 393215
+          },
+          "p95_ns": {
+            "lower_bound_ns": 16777216,
+            "upper_bound_ns": 18874367
+          },
+          "p99_ns": {
+            "lower_bound_ns": 18874368,
+            "upper_bound_ns": 19742651
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 128,
+          "saturated_observations": 0,
+          "total_ns": "176071479"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 128,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 83184609,
+          "mean_ns": 83184609.0,
+          "minimum_ns": 83184609,
+          "p50_ns": {
+            "lower_bound_ns": 83184609,
+            "upper_bound_ns": 83184609
+          },
+          "p95_ns": {
+            "lower_bound_ns": 83184609,
+            "upper_bound_ns": 83184609
+          },
+          "p99_ns": {
+            "lower_bound_ns": 83184609,
+            "upper_bound_ns": 83184609
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "83184609"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 3102254,
+          "mean_ns": 2313382.434782609,
+          "minimum_ns": 2044336,
+          "p50_ns": {
+            "lower_bound_ns": 2097152,
+            "upper_bound_ns": 2359295
+          },
+          "p95_ns": {
+            "lower_bound_ns": 2621440,
+            "upper_bound_ns": 2883583
+          },
+          "p99_ns": {
+            "lower_bound_ns": 2883584,
+            "upper_bound_ns": 3102254
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "106415592"
+        },
+        "index_flushes": 8,
+        "index_write_calls": 8,
+        "payload_files": 8,
+        "payload_write_calls": 128,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 32083,
+          "mean_ns": 21926.222222222223,
+          "minimum_ns": 13792,
+          "p50_ns": {
+            "lower_bound_ns": 18432,
+            "upper_bound_ns": 20479
+          },
+          "p95_ns": {
+            "lower_bound_ns": 30720,
+            "upper_bound_ns": 32083
+          },
+          "p99_ns": {
+            "lower_bound_ns": 30720,
+            "upper_bound_ns": 32083
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "197336"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 262144000,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 51713109,
+          "mean_ns": 11552033.555555556,
+          "minimum_ns": 6071133,
+          "p50_ns": {
+            "lower_bound_ns": 6291456,
+            "upper_bound_ns": 6815743
+          },
+          "p95_ns": {
+            "lower_bound_ns": 50331648,
+            "upper_bound_ns": 51713109
+          },
+          "p99_ns": {
+            "lower_bound_ns": 50331648,
+            "upper_bound_ns": 51713109
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "103968302"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 357501,
+          "mean_ns": 47768.6,
+          "minimum_ns": 4875,
+          "p50_ns": {
+            "lower_bound_ns": 32768,
+            "upper_bound_ns": 36863
+          },
+          "p95_ns": {
+            "lower_bound_ns": 90112,
+            "upper_bound_ns": 98303
+          },
+          "p99_ns": {
+            "lower_bound_ns": 262144,
+            "upper_bound_ns": 294911
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 155,
+          "saturated_observations": 0,
+          "total_ns": "7404133"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 2,
+      "height": 400,
+      "pairs": 128,
+      "pairs_read_back": 128,
+      "payload_bytes": 131072000,
+      "payload_mib_per_second": 477.5241146335221,
+      "peak_rss_kib": 3668,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "compact",
+      "repeat": 0,
+      "total_seconds_including_commit_verification": 0.261766885,
+      "variant": "after",
+      "width": 640
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 10346691639241157437,
+        "manifest.json": 13218886674506840898,
+        "records.jsonl": 1608122882771287941,
+        "snapshot.json": 14341620106215107096
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 15332437,
+          "mean_ns": 8414852.5,
+          "minimum_ns": 3719797,
+          "p50_ns": {
+            "lower_bound_ns": 7340032,
+            "upper_bound_ns": 7864319
+          },
+          "p95_ns": {
+            "lower_bound_ns": 14680064,
+            "upper_bound_ns": 15332437
+          },
+          "p99_ns": {
+            "lower_bound_ns": 14680064,
+            "upper_bound_ns": 15332437
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 16,
+          "saturated_observations": 0,
+          "total_ns": "134637640"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 16,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 58366785,
+          "mean_ns": 58366785.0,
+          "minimum_ns": 58366785,
+          "p50_ns": {
+            "lower_bound_ns": 58366785,
+            "upper_bound_ns": 58366785
+          },
+          "p95_ns": {
+            "lower_bound_ns": 58366785,
+            "upper_bound_ns": 58366785
+          },
+          "p99_ns": {
+            "lower_bound_ns": 58366785,
+            "upper_bound_ns": 58366785
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "58366785"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 27792,
+          "mean_ns": 4586.021739130435,
+          "minimum_ns": 167,
+          "p50_ns": {
+            "lower_bound_ns": 896,
+            "upper_bound_ns": 959
+          },
+          "p95_ns": {
+            "lower_bound_ns": 22528,
+            "upper_bound_ns": 24575
+          },
+          "p99_ns": {
+            "lower_bound_ns": 26624,
+            "upper_bound_ns": 27792
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "210957"
+        },
+        "payload_files": 8,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 97666,
+          "mean_ns": 30856.222222222223,
+          "minimum_ns": 17916,
+          "p50_ns": {
+            "lower_bound_ns": 20480,
+            "upper_bound_ns": 22527
+          },
+          "p95_ns": {
+            "lower_bound_ns": 90112,
+            "upper_bound_ns": 97666
+          },
+          "p99_ns": {
+            "lower_bound_ns": 90112,
+            "upper_bound_ns": 97666
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "277706"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 265420800,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 51858359,
+          "mean_ns": 11207713.888888888,
+          "minimum_ns": 5851883,
+          "p50_ns": {
+            "lower_bound_ns": 5851883,
+            "upper_bound_ns": 6291455
+          },
+          "p95_ns": {
+            "lower_bound_ns": 50331648,
+            "upper_bound_ns": 51858359
+          },
+          "p99_ns": {
+            "lower_bound_ns": 50331648,
+            "upper_bound_ns": 51858359
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "100869425"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 4097673,
+          "mean_ns": 515181.421686747,
+          "minimum_ns": 1167,
+          "p50_ns": {
+            "lower_bound_ns": 49152,
+            "upper_bound_ns": 53247
+          },
+          "p95_ns": {
+            "lower_bound_ns": 2097152,
+            "upper_bound_ns": 2359295
+          },
+          "p99_ns": {
+            "lower_bound_ns": 3932160,
+            "upper_bound_ns": 4097673
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 83,
+          "saturated_observations": 0,
+          "total_ns": "42760058"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 0,
+      "height": 1080,
+      "pairs": 16,
+      "pairs_read_back": 16,
+      "payload_bytes": 132710400,
+      "payload_mib_per_second": 654.7555282667965,
+      "peak_rss_kib": 7156,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "wide",
+      "repeat": 0,
+      "total_seconds_including_commit_verification": 0.193297337,
+      "variant": "before",
+      "width": 1920
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 10346691639241157437,
+        "manifest.json": 13218886674506840898,
+        "records.jsonl": 1608122882771287941,
+        "snapshot.json": 14341620106215107096
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 12226849,
+          "mean_ns": 6496302.6875,
+          "minimum_ns": 2797170,
+          "p50_ns": {
+            "lower_bound_ns": 4194304,
+            "upper_bound_ns": 4718591
+          },
+          "p95_ns": {
+            "lower_bound_ns": 11534336,
+            "upper_bound_ns": 12226849
+          },
+          "p99_ns": {
+            "lower_bound_ns": 11534336,
+            "upper_bound_ns": 12226849
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 16,
+          "saturated_observations": 0,
+          "total_ns": "103940843"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 16,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 51123233,
+          "mean_ns": 51123233.0,
+          "minimum_ns": 51123233,
+          "p50_ns": {
+            "lower_bound_ns": 51123233,
+            "upper_bound_ns": 51123233
+          },
+          "p95_ns": {
+            "lower_bound_ns": 51123233,
+            "upper_bound_ns": 51123233
+          },
+          "p99_ns": {
+            "lower_bound_ns": 51123233,
+            "upper_bound_ns": 51123233
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "51123233"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 18250,
+          "mean_ns": 2926.6304347826085,
+          "minimum_ns": 166,
+          "p50_ns": {
+            "lower_bound_ns": 832,
+            "upper_bound_ns": 895
+          },
+          "p95_ns": {
+            "lower_bound_ns": 16384,
+            "upper_bound_ns": 18250
+          },
+          "p99_ns": {
+            "lower_bound_ns": 16384,
+            "upper_bound_ns": 18250
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "134625"
+        },
+        "index_flushes": 8,
+        "index_write_calls": 8,
+        "payload_files": 8,
+        "payload_write_calls": 16,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 26791,
+          "mean_ns": 18768.444444444445,
+          "minimum_ns": 10542,
+          "p50_ns": {
+            "lower_bound_ns": 18432,
+            "upper_bound_ns": 20479
+          },
+          "p95_ns": {
+            "lower_bound_ns": 26624,
+            "upper_bound_ns": 26791
+          },
+          "p99_ns": {
+            "lower_bound_ns": 26624,
+            "upper_bound_ns": 26791
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "168916"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 265420800,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 44987475,
+          "mean_ns": 10148661.333333334,
+          "minimum_ns": 5572757,
+          "p50_ns": {
+            "lower_bound_ns": 5767168,
+            "upper_bound_ns": 6291455
+          },
+          "p95_ns": {
+            "lower_bound_ns": 41943040,
+            "upper_bound_ns": 44987475
+          },
+          "p99_ns": {
+            "lower_bound_ns": 41943040,
+            "upper_bound_ns": 44987475
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "91337952"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 3543922,
+          "mean_ns": 493280.62790697673,
+          "minimum_ns": 3875,
+          "p50_ns": {
+            "lower_bound_ns": 49152,
+            "upper_bound_ns": 53247
+          },
+          "p95_ns": {
+            "lower_bound_ns": 2621440,
+            "upper_bound_ns": 2883583
+          },
+          "p99_ns": {
+            "lower_bound_ns": 3407872,
+            "upper_bound_ns": 3543922
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 43,
+          "saturated_observations": 0,
+          "total_ns": "21211067"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 0,
+      "height": 1080,
+      "pairs": 16,
+      "pairs_read_back": 16,
+      "payload_bytes": 132710400,
+      "payload_mib_per_second": 815.5133294038773,
+      "peak_rss_kib": 7028,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "wide",
+      "repeat": 0,
+      "total_seconds_including_commit_verification": 0.155193662,
+      "variant": "after",
+      "width": 1920
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 10346691639241157437,
+        "manifest.json": 13218886674506840898,
+        "records.jsonl": 1608122882771287941,
+        "snapshot.json": 14341620106215107096
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 22714946,
+          "mean_ns": 11345645.0625,
+          "minimum_ns": 2873754,
+          "p50_ns": {
+            "lower_bound_ns": 3145728,
+            "upper_bound_ns": 3407871
+          },
+          "p95_ns": {
+            "lower_bound_ns": 20971520,
+            "upper_bound_ns": 22714946
+          },
+          "p99_ns": {
+            "lower_bound_ns": 20971520,
+            "upper_bound_ns": 22714946
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 16,
+          "saturated_observations": 0,
+          "total_ns": "181530321"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 16,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 80402856,
+          "mean_ns": 80402856.0,
+          "minimum_ns": 80402856,
+          "p50_ns": {
+            "lower_bound_ns": 80402856,
+            "upper_bound_ns": 80402856
+          },
+          "p95_ns": {
+            "lower_bound_ns": 80402856,
+            "upper_bound_ns": 80402856
+          },
+          "p99_ns": {
+            "lower_bound_ns": 80402856,
+            "upper_bound_ns": 80402856
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "80402856"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 2972504,
+          "mean_ns": 2362031.2391304346,
+          "minimum_ns": 2044169,
+          "p50_ns": {
+            "lower_bound_ns": 2097152,
+            "upper_bound_ns": 2359295
+          },
+          "p95_ns": {
+            "lower_bound_ns": 2621440,
+            "upper_bound_ns": 2883583
+          },
+          "p99_ns": {
+            "lower_bound_ns": 2883584,
+            "upper_bound_ns": 2972504
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "108653437"
+        },
+        "payload_files": 8,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 56000,
+          "mean_ns": 31018.555555555555,
+          "minimum_ns": 16916,
+          "p50_ns": {
+            "lower_bound_ns": 24576,
+            "upper_bound_ns": 26623
+          },
+          "p95_ns": {
+            "lower_bound_ns": 53248,
+            "upper_bound_ns": 56000
+          },
+          "p99_ns": {
+            "lower_bound_ns": 53248,
+            "upper_bound_ns": 56000
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "279167"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 265420800,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 49799232,
+          "mean_ns": 11299209.111111112,
+          "minimum_ns": 6273467,
+          "p50_ns": {
+            "lower_bound_ns": 6291456,
+            "upper_bound_ns": 6815743
+          },
+          "p95_ns": {
+            "lower_bound_ns": 46137344,
+            "upper_bound_ns": 49799232
+          },
+          "p99_ns": {
+            "lower_bound_ns": 46137344,
+            "upper_bound_ns": 49799232
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "101692882"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 601710,
+          "mean_ns": 112471.0843373494,
+          "minimum_ns": 2125,
+          "p50_ns": {
+            "lower_bound_ns": 30720,
+            "upper_bound_ns": 32767
+          },
+          "p95_ns": {
+            "lower_bound_ns": 327680,
+            "upper_bound_ns": 360447
+          },
+          "p99_ns": {
+            "lower_bound_ns": 589824,
+            "upper_bound_ns": 601710
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 83,
+          "saturated_observations": 0,
+          "total_ns": "9335100"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 2,
+      "height": 1080,
+      "pairs": 16,
+      "pairs_read_back": 16,
+      "payload_bytes": 132710400,
+      "payload_mib_per_second": 478.25733242224896,
+      "peak_rss_kib": 7192,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "wide",
+      "repeat": 0,
+      "total_seconds_including_commit_verification": 0.264632639,
+      "variant": "before",
+      "width": 1920
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 10346691639241157437,
+        "manifest.json": 13218886674506840898,
+        "records.jsonl": 1608122882771287941,
+        "snapshot.json": 14341620106215107096
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 22898405,
+          "mean_ns": 11601395.3125,
+          "minimum_ns": 2939462,
+          "p50_ns": {
+            "lower_bound_ns": 4194304,
+            "upper_bound_ns": 4718591
+          },
+          "p95_ns": {
+            "lower_bound_ns": 20971520,
+            "upper_bound_ns": 22898405
+          },
+          "p99_ns": {
+            "lower_bound_ns": 20971520,
+            "upper_bound_ns": 22898405
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 16,
+          "saturated_observations": 0,
+          "total_ns": "185622325"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 16,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 83721776,
+          "mean_ns": 83721776.0,
+          "minimum_ns": 83721776,
+          "p50_ns": {
+            "lower_bound_ns": 83721776,
+            "upper_bound_ns": 83721776
+          },
+          "p95_ns": {
+            "lower_bound_ns": 83721776,
+            "upper_bound_ns": 83721776
+          },
+          "p99_ns": {
+            "lower_bound_ns": 83721776,
+            "upper_bound_ns": 83721776
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "83721776"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 2816171,
+          "mean_ns": 2311209.565217391,
+          "minimum_ns": 2064919,
+          "p50_ns": {
+            "lower_bound_ns": 2097152,
+            "upper_bound_ns": 2359295
+          },
+          "p95_ns": {
+            "lower_bound_ns": 2621440,
+            "upper_bound_ns": 2816171
+          },
+          "p99_ns": {
+            "lower_bound_ns": 2621440,
+            "upper_bound_ns": 2816171
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "106315640"
+        },
+        "index_flushes": 8,
+        "index_write_calls": 8,
+        "payload_files": 8,
+        "payload_write_calls": 16,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 64375,
+          "mean_ns": 37870.333333333336,
+          "minimum_ns": 28625,
+          "p50_ns": {
+            "lower_bound_ns": 32768,
+            "upper_bound_ns": 36863
+          },
+          "p95_ns": {
+            "lower_bound_ns": 61440,
+            "upper_bound_ns": 64375
+          },
+          "p99_ns": {
+            "lower_bound_ns": 61440,
+            "upper_bound_ns": 64375
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "340833"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 265420800,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 53370070,
+          "mean_ns": 11497672.222222222,
+          "minimum_ns": 6077508,
+          "p50_ns": {
+            "lower_bound_ns": 6077508,
+            "upper_bound_ns": 6291455
+          },
+          "p95_ns": {
+            "lower_bound_ns": 50331648,
+            "upper_bound_ns": 53370070
+          },
+          "p99_ns": {
+            "lower_bound_ns": 50331648,
+            "upper_bound_ns": 53370070
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "103479050"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 2202128,
+          "mean_ns": 375838.67441860464,
+          "minimum_ns": 9750,
+          "p50_ns": {
+            "lower_bound_ns": 81920,
+            "upper_bound_ns": 90111
+          },
+          "p95_ns": {
+            "lower_bound_ns": 1441792,
+            "upper_bound_ns": 1572863
+          },
+          "p99_ns": {
+            "lower_bound_ns": 2097152,
+            "upper_bound_ns": 2202128
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 43,
+          "saturated_observations": 0,
+          "total_ns": "16161063"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 2,
+      "height": 1080,
+      "pairs": 16,
+      "pairs_read_back": 16,
+      "payload_bytes": 132710400,
+      "payload_mib_per_second": 465.29706836873015,
+      "peak_rss_kib": 7076,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "wide",
+      "repeat": 0,
+      "total_seconds_including_commit_verification": 0.272003648,
+      "variant": "after",
+      "width": 1920
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 13360648152112496844,
+        "manifest.json": 13021941132274102875,
+        "records.jsonl": 285206044257109314,
+        "snapshot.json": 1287053468520360510
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 7564843,
+          "mean_ns": 832073.015625,
+          "minimum_ns": 357292,
+          "p50_ns": {
+            "lower_bound_ns": 425984,
+            "upper_bound_ns": 458751
+          },
+          "p95_ns": {
+            "lower_bound_ns": 6291456,
+            "upper_bound_ns": 6815743
+          },
+          "p99_ns": {
+            "lower_bound_ns": 7340032,
+            "upper_bound_ns": 7564843
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 128,
+          "saturated_observations": 0,
+          "total_ns": "106505346"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 128,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 54733447,
+          "mean_ns": 54733447.0,
+          "minimum_ns": 54733447,
+          "p50_ns": {
+            "lower_bound_ns": 54733447,
+            "upper_bound_ns": 54733447
+          },
+          "p95_ns": {
+            "lower_bound_ns": 54733447,
+            "upper_bound_ns": 54733447
+          },
+          "p99_ns": {
+            "lower_bound_ns": 54733447,
+            "upper_bound_ns": 54733447
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "54733447"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 12834,
+          "mean_ns": 3144.978260869565,
+          "minimum_ns": 166,
+          "p50_ns": {
+            "lower_bound_ns": 832,
+            "upper_bound_ns": 895
+          },
+          "p95_ns": {
+            "lower_bound_ns": 10240,
+            "upper_bound_ns": 11263
+          },
+          "p99_ns": {
+            "lower_bound_ns": 12288,
+            "upper_bound_ns": 12834
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "144669"
+        },
+        "index_flushes": 8,
+        "index_write_calls": 8,
+        "payload_files": 8,
+        "payload_write_calls": 128,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 59292,
+          "mean_ns": 29416.777777777777,
+          "minimum_ns": 16750,
+          "p50_ns": {
+            "lower_bound_ns": 20480,
+            "upper_bound_ns": 22527
+          },
+          "p95_ns": {
+            "lower_bound_ns": 57344,
+            "upper_bound_ns": 59292
+          },
+          "p99_ns": {
+            "lower_bound_ns": 57344,
+            "upper_bound_ns": 59292
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "264751"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 262144000,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 48233813,
+          "mean_ns": 11108532.888888888,
+          "minimum_ns": 6062341,
+          "p50_ns": {
+            "lower_bound_ns": 6291456,
+            "upper_bound_ns": 6815743
+          },
+          "p95_ns": {
+            "lower_bound_ns": 46137344,
+            "upper_bound_ns": 48233813
+          },
+          "p99_ns": {
+            "lower_bound_ns": 46137344,
+            "upper_bound_ns": 48233813
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "99976796"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 466793,
+          "mean_ns": 108876.8,
+          "minimum_ns": 6500,
+          "p50_ns": {
+            "lower_bound_ns": 90112,
+            "upper_bound_ns": 98303
+          },
+          "p95_ns": {
+            "lower_bound_ns": 229376,
+            "upper_bound_ns": 245759
+          },
+          "p99_ns": {
+            "lower_bound_ns": 360448,
+            "upper_bound_ns": 393215
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 155,
+          "saturated_observations": 0,
+          "total_ns": "16875904"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 0,
+      "height": 400,
+      "pairs": 128,
+      "pairs_read_back": 128,
+      "payload_bytes": 131072000,
+      "payload_mib_per_second": 773.8548304303293,
+      "peak_rss_kib": 3516,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "compact",
+      "repeat": 1,
+      "total_seconds_including_commit_verification": 0.161529004,
+      "variant": "after",
+      "width": 640
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 13360648152112496844,
+        "manifest.json": 13021941132274102875,
+        "records.jsonl": 285206044257109314,
+        "snapshot.json": 1287053468520360510
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 9105387,
+          "mean_ns": 944745.7578125,
+          "minimum_ns": 362376,
+          "p50_ns": {
+            "lower_bound_ns": 458752,
+            "upper_bound_ns": 491519
+          },
+          "p95_ns": {
+            "lower_bound_ns": 6291456,
+            "upper_bound_ns": 6815743
+          },
+          "p99_ns": {
+            "lower_bound_ns": 7340032,
+            "upper_bound_ns": 7864319
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 128,
+          "saturated_observations": 0,
+          "total_ns": "120927457"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 128,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 63309916,
+          "mean_ns": 63309916.0,
+          "minimum_ns": 63309916,
+          "p50_ns": {
+            "lower_bound_ns": 63309916,
+            "upper_bound_ns": 63309916
+          },
+          "p95_ns": {
+            "lower_bound_ns": 63309916,
+            "upper_bound_ns": 63309916
+          },
+          "p99_ns": {
+            "lower_bound_ns": 63309916,
+            "upper_bound_ns": 63309916
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "63309916"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 25625,
+          "mean_ns": 4396.782608695652,
+          "minimum_ns": 167,
+          "p50_ns": {
+            "lower_bound_ns": 1024,
+            "upper_bound_ns": 1151
+          },
+          "p95_ns": {
+            "lower_bound_ns": 18432,
+            "upper_bound_ns": 20479
+          },
+          "p99_ns": {
+            "lower_bound_ns": 24576,
+            "upper_bound_ns": 25625
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "202252"
+        },
+        "payload_files": 8,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 69334,
+          "mean_ns": 29592.666666666668,
+          "minimum_ns": 14666,
+          "p50_ns": {
+            "lower_bound_ns": 24576,
+            "upper_bound_ns": 26623
+          },
+          "p95_ns": {
+            "lower_bound_ns": 65536,
+            "upper_bound_ns": 69334
+          },
+          "p99_ns": {
+            "lower_bound_ns": 65536,
+            "upper_bound_ns": 69334
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "266334"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 262144000,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 56416824,
+          "mean_ns": 11967830.333333334,
+          "minimum_ns": 6056591,
+          "p50_ns": {
+            "lower_bound_ns": 6291456,
+            "upper_bound_ns": 6815743
+          },
+          "p95_ns": {
+            "lower_bound_ns": 54525952,
+            "upper_bound_ns": 56416824
+          },
+          "p99_ns": {
+            "lower_bound_ns": 54525952,
+            "upper_bound_ns": 56416824
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "107710473"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 1939002,
+          "mean_ns": 57531.38418079096,
+          "minimum_ns": 542,
+          "p50_ns": {
+            "lower_bound_ns": 18432,
+            "upper_bound_ns": 20479
+          },
+          "p95_ns": {
+            "lower_bound_ns": 196608,
+            "upper_bound_ns": 212991
+          },
+          "p99_ns": {
+            "lower_bound_ns": 655360,
+            "upper_bound_ns": 720895
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 531,
+          "saturated_observations": 0,
+          "total_ns": "30549165"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 0,
+      "height": 400,
+      "pairs": 128,
+      "pairs_read_back": 128,
+      "payload_bytes": 131072000,
+      "payload_mib_per_second": 676.6037456036386,
+      "peak_rss_kib": 3620,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "compact",
+      "repeat": 1,
+      "total_seconds_including_commit_verification": 0.184746243,
+      "variant": "before",
+      "width": 640
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 13360648152112496844,
+        "manifest.json": 13021941132274102875,
+        "records.jsonl": 285206044257109314,
+        "snapshot.json": 1287053468520360510
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 19284317,
+          "mean_ns": 1402327.4140625,
+          "minimum_ns": 349334,
+          "p50_ns": {
+            "lower_bound_ns": 360448,
+            "upper_bound_ns": 393215
+          },
+          "p95_ns": {
+            "lower_bound_ns": 16777216,
+            "upper_bound_ns": 18874367
+          },
+          "p99_ns": {
+            "lower_bound_ns": 18874368,
+            "upper_bound_ns": 19284317
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 128,
+          "saturated_observations": 0,
+          "total_ns": "179497909"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 128,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 134226885,
+          "mean_ns": 134226885.0,
+          "minimum_ns": 134226885,
+          "p50_ns": {
+            "lower_bound_ns": 134226885,
+            "upper_bound_ns": 134226885
+          },
+          "p95_ns": {
+            "lower_bound_ns": 134226885,
+            "upper_bound_ns": 134226885
+          },
+          "p99_ns": {
+            "lower_bound_ns": 134226885,
+            "upper_bound_ns": 134226885
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "134226885"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 2813254,
+          "mean_ns": 2302720.413043478,
+          "minimum_ns": 2117461,
+          "p50_ns": {
+            "lower_bound_ns": 2117461,
+            "upper_bound_ns": 2359295
+          },
+          "p95_ns": {
+            "lower_bound_ns": 2621440,
+            "upper_bound_ns": 2813254
+          },
+          "p99_ns": {
+            "lower_bound_ns": 2621440,
+            "upper_bound_ns": 2813254
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "105925139"
+        },
+        "index_flushes": 8,
+        "index_write_calls": 8,
+        "payload_files": 8,
+        "payload_write_calls": 128,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 123542,
+          "mean_ns": 54444.555555555555,
+          "minimum_ns": 14208,
+          "p50_ns": {
+            "lower_bound_ns": 40960,
+            "upper_bound_ns": 45055
+          },
+          "p95_ns": {
+            "lower_bound_ns": 122880,
+            "upper_bound_ns": 123542
+          },
+          "p99_ns": {
+            "lower_bound_ns": 122880,
+            "upper_bound_ns": 123542
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "490001"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 262144000,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 102117926,
+          "mean_ns": 17201208.0,
+          "minimum_ns": 6303258,
+          "p50_ns": {
+            "lower_bound_ns": 6303258,
+            "upper_bound_ns": 6815743
+          },
+          "p95_ns": {
+            "lower_bound_ns": 100663296,
+            "upper_bound_ns": 102117926
+          },
+          "p99_ns": {
+            "lower_bound_ns": 100663296,
+            "upper_bound_ns": 102117926
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "154810872"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 944751,
+          "mean_ns": 68710.01290322581,
+          "minimum_ns": 11584,
+          "p50_ns": {
+            "lower_bound_ns": 45056,
+            "upper_bound_ns": 49151
+          },
+          "p95_ns": {
+            "lower_bound_ns": 196608,
+            "upper_bound_ns": 212991
+          },
+          "p99_ns": {
+            "lower_bound_ns": 262144,
+            "upper_bound_ns": 294911
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 155,
+          "saturated_observations": 0,
+          "total_ns": "10650052"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 2,
+      "height": 400,
+      "pairs": 128,
+      "pairs_read_back": 128,
+      "payload_bytes": 131072000,
+      "payload_mib_per_second": 395.3750106672178,
+      "peak_rss_kib": 3548,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "compact",
+      "repeat": 1,
+      "total_seconds_including_commit_verification": 0.31615554,
+      "variant": "after",
+      "width": 640
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 13360648152112496844,
+        "manifest.json": 13021941132274102875,
+        "records.jsonl": 285206044257109314,
+        "snapshot.json": 1287053468520360510
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 27216952,
+          "mean_ns": 2104302.5625,
+          "minimum_ns": 394875,
+          "p50_ns": {
+            "lower_bound_ns": 655360,
+            "upper_bound_ns": 720895
+          },
+          "p95_ns": {
+            "lower_bound_ns": 23068672,
+            "upper_bound_ns": 25165823
+          },
+          "p99_ns": {
+            "lower_bound_ns": 25165824,
+            "upper_bound_ns": 27216952
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 128,
+          "saturated_observations": 0,
+          "total_ns": "269350728"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 128,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 108896518,
+          "mean_ns": 108896518.0,
+          "minimum_ns": 108896518,
+          "p50_ns": {
+            "lower_bound_ns": 108896518,
+            "upper_bound_ns": 108896518
+          },
+          "p95_ns": {
+            "lower_bound_ns": 108896518,
+            "upper_bound_ns": 108896518
+          },
+          "p99_ns": {
+            "lower_bound_ns": 108896518,
+            "upper_bound_ns": 108896518
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "108896518"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 3055504,
+          "mean_ns": 2450430.695652174,
+          "minimum_ns": 2107586,
+          "p50_ns": {
+            "lower_bound_ns": 2359296,
+            "upper_bound_ns": 2621439
+          },
+          "p95_ns": {
+            "lower_bound_ns": 2883584,
+            "upper_bound_ns": 3055504
+          },
+          "p99_ns": {
+            "lower_bound_ns": 2883584,
+            "upper_bound_ns": 3055504
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "112719812"
+        },
+        "payload_files": 8,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 151917,
+          "mean_ns": 69060.22222222222,
+          "minimum_ns": 24833,
+          "p50_ns": {
+            "lower_bound_ns": 73728,
+            "upper_bound_ns": 81919
+          },
+          "p95_ns": {
+            "lower_bound_ns": 147456,
+            "upper_bound_ns": 151917
+          },
+          "p99_ns": {
+            "lower_bound_ns": 147456,
+            "upper_bound_ns": 151917
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "621542"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 262144000,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 72608012,
+          "mean_ns": 18922826.0,
+          "minimum_ns": 10251972,
+          "p50_ns": {
+            "lower_bound_ns": 11534336,
+            "upper_bound_ns": 12582911
+          },
+          "p95_ns": {
+            "lower_bound_ns": 67108864,
+            "upper_bound_ns": 72608012
+          },
+          "p99_ns": {
+            "lower_bound_ns": 67108864,
+            "upper_bound_ns": 72608012
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "170305434"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 397625,
+          "mean_ns": 44939.022598870055,
+          "minimum_ns": 1667,
+          "p50_ns": {
+            "lower_bound_ns": 26624,
+            "upper_bound_ns": 28671
+          },
+          "p95_ns": {
+            "lower_bound_ns": 147456,
+            "upper_bound_ns": 163839
+          },
+          "p99_ns": {
+            "lower_bound_ns": 262144,
+            "upper_bound_ns": 294911
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 531,
+          "saturated_observations": 0,
+          "total_ns": "23862621"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 2,
+      "height": 400,
+      "pairs": 128,
+      "pairs_read_back": 128,
+      "payload_bytes": 131072000,
+      "payload_mib_per_second": 327.6926144287273,
+      "peak_rss_kib": 3648,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "compact",
+      "repeat": 1,
+      "total_seconds_including_commit_verification": 0.381455042,
+      "variant": "before",
+      "width": 640
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 10346691639241157437,
+        "manifest.json": 13218886674506840898,
+        "records.jsonl": 1608122882771287941,
+        "snapshot.json": 14341620106215107096
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 24787194,
+          "mean_ns": 11573967.1875,
+          "minimum_ns": 3619552,
+          "p50_ns": {
+            "lower_bound_ns": 10485760,
+            "upper_bound_ns": 11534335
+          },
+          "p95_ns": {
+            "lower_bound_ns": 23068672,
+            "upper_bound_ns": 24787194
+          },
+          "p99_ns": {
+            "lower_bound_ns": 23068672,
+            "upper_bound_ns": 24787194
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 16,
+          "saturated_observations": 0,
+          "total_ns": "185183475"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 16,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 95136058,
+          "mean_ns": 95136058.0,
+          "minimum_ns": 95136058,
+          "p50_ns": {
+            "lower_bound_ns": 95136058,
+            "upper_bound_ns": 95136058
+          },
+          "p95_ns": {
+            "lower_bound_ns": 95136058,
+            "upper_bound_ns": 95136058
+          },
+          "p99_ns": {
+            "lower_bound_ns": 95136058,
+            "upper_bound_ns": 95136058
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "95136058"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 119875,
+          "mean_ns": 10577.130434782608,
+          "minimum_ns": 166,
+          "p50_ns": {
+            "lower_bound_ns": 1920,
+            "upper_bound_ns": 2047
+          },
+          "p95_ns": {
+            "lower_bound_ns": 36864,
+            "upper_bound_ns": 40959
+          },
+          "p99_ns": {
+            "lower_bound_ns": 114688,
+            "upper_bound_ns": 119875
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "486548"
+        },
+        "index_flushes": 8,
+        "index_write_calls": 8,
+        "payload_files": 8,
+        "payload_write_calls": 16,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 174292,
+          "mean_ns": 62551.11111111111,
+          "minimum_ns": 24375,
+          "p50_ns": {
+            "lower_bound_ns": 40960,
+            "upper_bound_ns": 45055
+          },
+          "p95_ns": {
+            "lower_bound_ns": 163840,
+            "upper_bound_ns": 174292
+          },
+          "p99_ns": {
+            "lower_bound_ns": 163840,
+            "upper_bound_ns": 174292
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "562960"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 265420800,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 84263403,
+          "mean_ns": 17934249.555555556,
+          "minimum_ns": 6911811,
+          "p50_ns": {
+            "lower_bound_ns": 9437184,
+            "upper_bound_ns": 10485759
+          },
+          "p95_ns": {
+            "lower_bound_ns": 83886080,
+            "upper_bound_ns": 84263403
+          },
+          "p99_ns": {
+            "lower_bound_ns": 83886080,
+            "upper_bound_ns": 84263403
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "161408246"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 6557769,
+          "mean_ns": 890852.3488372093,
+          "minimum_ns": 18417,
+          "p50_ns": {
+            "lower_bound_ns": 147456,
+            "upper_bound_ns": 163839
+          },
+          "p95_ns": {
+            "lower_bound_ns": 3670016,
+            "upper_bound_ns": 3932159
+          },
+          "p99_ns": {
+            "lower_bound_ns": 6291456,
+            "upper_bound_ns": 6557769
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 43,
+          "saturated_observations": 0,
+          "total_ns": "38306651"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 0,
+      "height": 1080,
+      "pairs": 16,
+      "pairs_read_back": 16,
+      "payload_bytes": 132710400,
+      "payload_mib_per_second": 451.09406469881293,
+      "peak_rss_kib": 7048,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "wide",
+      "repeat": 1,
+      "total_seconds_including_commit_verification": 0.280567868,
+      "variant": "after",
+      "width": 1920
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 10346691639241157437,
+        "manifest.json": 13218886674506840898,
+        "records.jsonl": 1608122882771287941,
+        "snapshot.json": 14341620106215107096
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 20696266,
+          "mean_ns": 11663178.5,
+          "minimum_ns": 5282598,
+          "p50_ns": {
+            "lower_bound_ns": 6291456,
+            "upper_bound_ns": 6815743
+          },
+          "p95_ns": {
+            "lower_bound_ns": 18874368,
+            "upper_bound_ns": 20696266
+          },
+          "p99_ns": {
+            "lower_bound_ns": 18874368,
+            "upper_bound_ns": 20696266
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 16,
+          "saturated_observations": 0,
+          "total_ns": "186610856"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 16,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 84570111,
+          "mean_ns": 84570111.0,
+          "minimum_ns": 84570111,
+          "p50_ns": {
+            "lower_bound_ns": 84570111,
+            "upper_bound_ns": 84570111
+          },
+          "p95_ns": {
+            "lower_bound_ns": 84570111,
+            "upper_bound_ns": 84570111
+          },
+          "p99_ns": {
+            "lower_bound_ns": 84570111,
+            "upper_bound_ns": 84570111
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "84570111"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 81042,
+          "mean_ns": 12275.326086956522,
+          "minimum_ns": 166,
+          "p50_ns": {
+            "lower_bound_ns": 1408,
+            "upper_bound_ns": 1535
+          },
+          "p95_ns": {
+            "lower_bound_ns": 61440,
+            "upper_bound_ns": 65535
+          },
+          "p99_ns": {
+            "lower_bound_ns": 73728,
+            "upper_bound_ns": 81042
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "564665"
+        },
+        "payload_files": 8,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 148208,
+          "mean_ns": 61296.444444444445,
+          "minimum_ns": 28000,
+          "p50_ns": {
+            "lower_bound_ns": 40960,
+            "upper_bound_ns": 45055
+          },
+          "p95_ns": {
+            "lower_bound_ns": 147456,
+            "upper_bound_ns": 148208
+          },
+          "p99_ns": {
+            "lower_bound_ns": 147456,
+            "upper_bound_ns": 148208
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "551668"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 265420800,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 73790040,
+          "mean_ns": 18084101.777777776,
+          "minimum_ns": 10096612,
+          "p50_ns": {
+            "lower_bound_ns": 10485760,
+            "upper_bound_ns": 11534335
+          },
+          "p95_ns": {
+            "lower_bound_ns": 67108864,
+            "upper_bound_ns": 73790040
+          },
+          "p99_ns": {
+            "lower_bound_ns": 67108864,
+            "upper_bound_ns": 73790040
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "162756916"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 1615671,
+          "mean_ns": 386674.8554216867,
+          "minimum_ns": 2917,
+          "p50_ns": {
+            "lower_bound_ns": 114688,
+            "upper_bound_ns": 122879
+          },
+          "p95_ns": {
+            "lower_bound_ns": 1441792,
+            "upper_bound_ns": 1572863
+          },
+          "p99_ns": {
+            "lower_bound_ns": 1572864,
+            "upper_bound_ns": 1615671
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 83,
+          "saturated_observations": 0,
+          "total_ns": "32094013"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 0,
+      "height": 1080,
+      "pairs": 16,
+      "pairs_read_back": 16,
+      "payload_bytes": 132710400,
+      "payload_mib_per_second": 465.2112158164866,
+      "peak_rss_kib": 7164,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "wide",
+      "repeat": 1,
+      "total_seconds_including_commit_verification": 0.272053845,
+      "variant": "before",
+      "width": 1920
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 10346691639241157437,
+        "manifest.json": 13218886674506840898,
+        "records.jsonl": 1608122882771287941,
+        "snapshot.json": 14341620106215107096
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 26252282,
+          "mean_ns": 13329443.625,
+          "minimum_ns": 3260676,
+          "p50_ns": {
+            "lower_bound_ns": 5242880,
+            "upper_bound_ns": 5767167
+          },
+          "p95_ns": {
+            "lower_bound_ns": 25165824,
+            "upper_bound_ns": 26252282
+          },
+          "p99_ns": {
+            "lower_bound_ns": 25165824,
+            "upper_bound_ns": 26252282
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 16,
+          "saturated_observations": 0,
+          "total_ns": "213271098"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 16,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 137324218,
+          "mean_ns": 137324218.0,
+          "minimum_ns": 137324218,
+          "p50_ns": {
+            "lower_bound_ns": 137324218,
+            "upper_bound_ns": 137324218
+          },
+          "p95_ns": {
+            "lower_bound_ns": 137324218,
+            "upper_bound_ns": 137324218
+          },
+          "p99_ns": {
+            "lower_bound_ns": 137324218,
+            "upper_bound_ns": 137324218
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "137324218"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 3266051,
+          "mean_ns": 2360003.8913043477,
+          "minimum_ns": 2078298,
+          "p50_ns": {
+            "lower_bound_ns": 2097152,
+            "upper_bound_ns": 2359295
+          },
+          "p95_ns": {
+            "lower_bound_ns": 2621440,
+            "upper_bound_ns": 2883583
+          },
+          "p99_ns": {
+            "lower_bound_ns": 3145728,
+            "upper_bound_ns": 3266051
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "108560179"
+        },
+        "index_flushes": 8,
+        "index_write_calls": 8,
+        "payload_files": 8,
+        "payload_write_calls": 16,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 82084,
+          "mean_ns": 59333.444444444445,
+          "minimum_ns": 34458,
+          "p50_ns": {
+            "lower_bound_ns": 53248,
+            "upper_bound_ns": 57343
+          },
+          "p95_ns": {
+            "lower_bound_ns": 81920,
+            "upper_bound_ns": 82084
+          },
+          "p99_ns": {
+            "lower_bound_ns": 81920,
+            "upper_bound_ns": 82084
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "534001"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 265420800,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 100418906,
+          "mean_ns": 18157407.222222224,
+          "minimum_ns": 6802519,
+          "p50_ns": {
+            "lower_bound_ns": 7340032,
+            "upper_bound_ns": 7864319
+          },
+          "p95_ns": {
+            "lower_bound_ns": 92274688,
+            "upper_bound_ns": 100418906
+          },
+          "p99_ns": {
+            "lower_bound_ns": 92274688,
+            "upper_bound_ns": 100418906
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "163416665"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 3806177,
+          "mean_ns": 545605.1860465116,
+          "minimum_ns": 33625,
+          "p50_ns": {
+            "lower_bound_ns": 131072,
+            "upper_bound_ns": 147455
+          },
+          "p95_ns": {
+            "lower_bound_ns": 1966080,
+            "upper_bound_ns": 2097151
+          },
+          "p99_ns": {
+            "lower_bound_ns": 3670016,
+            "upper_bound_ns": 3806177
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 43,
+          "saturated_observations": 0,
+          "total_ns": "23461023"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 2,
+      "height": 1080,
+      "pairs": 16,
+      "pairs_read_back": 16,
+      "payload_bytes": 132710400,
+      "payload_mib_per_second": 357.98329635867356,
+      "peak_rss_kib": 7080,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "wide",
+      "repeat": 1,
+      "total_seconds_including_commit_verification": 0.353543032,
+      "variant": "after",
+      "width": 1920
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 10346691639241157437,
+        "manifest.json": 13218886674506840898,
+        "records.jsonl": 1608122882771287941,
+        "snapshot.json": 14341620106215107096
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 32460341,
+          "mean_ns": 16460678.9375,
+          "minimum_ns": 4989972,
+          "p50_ns": {
+            "lower_bound_ns": 6291456,
+            "upper_bound_ns": 6815743
+          },
+          "p95_ns": {
+            "lower_bound_ns": 31457280,
+            "upper_bound_ns": 32460341
+          },
+          "p99_ns": {
+            "lower_bound_ns": 31457280,
+            "upper_bound_ns": 32460341
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 16,
+          "saturated_observations": 0,
+          "total_ns": "263370863"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 16,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 127724691,
+          "mean_ns": 127724691.0,
+          "minimum_ns": 127724691,
+          "p50_ns": {
+            "lower_bound_ns": 127724691,
+            "upper_bound_ns": 127724691
+          },
+          "p95_ns": {
+            "lower_bound_ns": 127724691,
+            "upper_bound_ns": 127724691
+          },
+          "p99_ns": {
+            "lower_bound_ns": 127724691,
+            "upper_bound_ns": 127724691
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "127724691"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 3128009,
+          "mean_ns": 2451063.0,
+          "minimum_ns": 2121881,
+          "p50_ns": {
+            "lower_bound_ns": 2359296,
+            "upper_bound_ns": 2621439
+          },
+          "p95_ns": {
+            "lower_bound_ns": 2883584,
+            "upper_bound_ns": 3128009
+          },
+          "p99_ns": {
+            "lower_bound_ns": 2883584,
+            "upper_bound_ns": 3128009
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "112748898"
+        },
+        "payload_files": 8,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 168208,
+          "mean_ns": 81139.0,
+          "minimum_ns": 36584,
+          "p50_ns": {
+            "lower_bound_ns": 61440,
+            "upper_bound_ns": 65535
+          },
+          "p95_ns": {
+            "lower_bound_ns": 163840,
+            "upper_bound_ns": 168208
+          },
+          "p99_ns": {
+            "lower_bound_ns": 163840,
+            "upper_bound_ns": 168208
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "730251"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 265420800,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 83624693,
+          "mean_ns": 20169139.666666668,
+          "minimum_ns": 10674238,
+          "p50_ns": {
+            "lower_bound_ns": 11534336,
+            "upper_bound_ns": 12582911
+          },
+          "p95_ns": {
+            "lower_bound_ns": 75497472,
+            "upper_bound_ns": 83624693
+          },
+          "p99_ns": {
+            "lower_bound_ns": 75497472,
+            "upper_bound_ns": 83624693
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "181522257"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 1912714,
+          "mean_ns": 350409.6144578313,
+          "minimum_ns": 2666,
+          "p50_ns": {
+            "lower_bound_ns": 106496,
+            "upper_bound_ns": 114687
+          },
+          "p95_ns": {
+            "lower_bound_ns": 1179648,
+            "upper_bound_ns": 1310719
+          },
+          "p99_ns": {
+            "lower_bound_ns": 1835008,
+            "upper_bound_ns": 1912714
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 83,
+          "saturated_observations": 0,
+          "total_ns": "29083998"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 2,
+      "height": 1080,
+      "pairs": 16,
+      "pairs_read_back": 16,
+      "payload_bytes": 132710400,
+      "payload_mib_per_second": 321.1452002443375,
+      "peak_rss_kib": 7196,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "wide",
+      "repeat": 1,
+      "total_seconds_including_commit_verification": 0.394097436,
+      "variant": "before",
+      "width": 1920
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 13360648152112496844,
+        "manifest.json": 13021941132274102875,
+        "records.jsonl": 285206044257109314,
+        "snapshot.json": 1287053468520360510
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 10212070,
+          "mean_ns": 996907.765625,
+          "minimum_ns": 374084,
+          "p50_ns": {
+            "lower_bound_ns": 524288,
+            "upper_bound_ns": 589823
+          },
+          "p95_ns": {
+            "lower_bound_ns": 6815744,
+            "upper_bound_ns": 7340031
+          },
+          "p99_ns": {
+            "lower_bound_ns": 8388608,
+            "upper_bound_ns": 9437183
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 128,
+          "saturated_observations": 0,
+          "total_ns": "127604194"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 128,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 63895845,
+          "mean_ns": 63895845.0,
+          "minimum_ns": 63895845,
+          "p50_ns": {
+            "lower_bound_ns": 63895845,
+            "upper_bound_ns": 63895845
+          },
+          "p95_ns": {
+            "lower_bound_ns": 63895845,
+            "upper_bound_ns": 63895845
+          },
+          "p99_ns": {
+            "lower_bound_ns": 63895845,
+            "upper_bound_ns": 63895845
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "63895845"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 29000,
+          "mean_ns": 6289.891304347826,
+          "minimum_ns": 166,
+          "p50_ns": {
+            "lower_bound_ns": 1280,
+            "upper_bound_ns": 1407
+          },
+          "p95_ns": {
+            "lower_bound_ns": 24576,
+            "upper_bound_ns": 26623
+          },
+          "p99_ns": {
+            "lower_bound_ns": 28672,
+            "upper_bound_ns": 29000
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "289335"
+        },
+        "payload_files": 8,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 90166,
+          "mean_ns": 38731.444444444445,
+          "minimum_ns": 14417,
+          "p50_ns": {
+            "lower_bound_ns": 26624,
+            "upper_bound_ns": 28671
+          },
+          "p95_ns": {
+            "lower_bound_ns": 90112,
+            "upper_bound_ns": 90166
+          },
+          "p99_ns": {
+            "lower_bound_ns": 90112,
+            "upper_bound_ns": 90166
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "348583"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 262144000,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 55985240,
+          "mean_ns": 12558405.222222222,
+          "minimum_ns": 6260725,
+          "p50_ns": {
+            "lower_bound_ns": 6815744,
+            "upper_bound_ns": 7340031
+          },
+          "p95_ns": {
+            "lower_bound_ns": 54525952,
+            "upper_bound_ns": 55985240
+          },
+          "p99_ns": {
+            "lower_bound_ns": 54525952,
+            "upper_bound_ns": 55985240
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "113025647"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 455126,
+          "mean_ns": 55933.386064030135,
+          "minimum_ns": 542,
+          "p50_ns": {
+            "lower_bound_ns": 24576,
+            "upper_bound_ns": 26623
+          },
+          "p95_ns": {
+            "lower_bound_ns": 180224,
+            "upper_bound_ns": 196607
+          },
+          "p99_ns": {
+            "lower_bound_ns": 262144,
+            "upper_bound_ns": 294911
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 531,
+          "saturated_observations": 0,
+          "total_ns": "29700628"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 0,
+      "height": 400,
+      "pairs": 128,
+      "pairs_read_back": 128,
+      "payload_bytes": 131072000,
+      "payload_mib_per_second": 650.9186464326922,
+      "peak_rss_kib": 3608,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "compact",
+      "repeat": 2,
+      "total_seconds_including_commit_verification": 0.192036287,
+      "variant": "before",
+      "width": 640
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 13360648152112496844,
+        "manifest.json": 13021941132274102875,
+        "records.jsonl": 285206044257109314,
+        "snapshot.json": 1287053468520360510
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 16104795,
+          "mean_ns": 1623771.8515625,
+          "minimum_ns": 443626,
+          "p50_ns": {
+            "lower_bound_ns": 786432,
+            "upper_bound_ns": 851967
+          },
+          "p95_ns": {
+            "lower_bound_ns": 12582912,
+            "upper_bound_ns": 13631487
+          },
+          "p99_ns": {
+            "lower_bound_ns": 14680064,
+            "upper_bound_ns": 15728639
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 128,
+          "saturated_observations": 0,
+          "total_ns": "207842797"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 128,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 119145667,
+          "mean_ns": 119145667.0,
+          "minimum_ns": 119145667,
+          "p50_ns": {
+            "lower_bound_ns": 119145667,
+            "upper_bound_ns": 119145667
+          },
+          "p95_ns": {
+            "lower_bound_ns": 119145667,
+            "upper_bound_ns": 119145667
+          },
+          "p99_ns": {
+            "lower_bound_ns": 119145667,
+            "upper_bound_ns": 119145667
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "119145667"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 113917,
+          "mean_ns": 12657.54347826087,
+          "minimum_ns": 167,
+          "p50_ns": {
+            "lower_bound_ns": 1664,
+            "upper_bound_ns": 1791
+          },
+          "p95_ns": {
+            "lower_bound_ns": 49152,
+            "upper_bound_ns": 53247
+          },
+          "p99_ns": {
+            "lower_bound_ns": 106496,
+            "upper_bound_ns": 113917
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "582247"
+        },
+        "index_flushes": 8,
+        "index_write_calls": 8,
+        "payload_files": 8,
+        "payload_write_calls": 128,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 158834,
+          "mean_ns": 72046.55555555556,
+          "minimum_ns": 28917,
+          "p50_ns": {
+            "lower_bound_ns": 40960,
+            "upper_bound_ns": 45055
+          },
+          "p95_ns": {
+            "lower_bound_ns": 147456,
+            "upper_bound_ns": 158834
+          },
+          "p99_ns": {
+            "lower_bound_ns": 147456,
+            "upper_bound_ns": 158834
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "648419"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 262144000,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 105733462,
+          "mean_ns": 23006601.444444444,
+          "minimum_ns": 11197573,
+          "p50_ns": {
+            "lower_bound_ns": 12582912,
+            "upper_bound_ns": 13631487
+          },
+          "p95_ns": {
+            "lower_bound_ns": 100663296,
+            "upper_bound_ns": 105733462
+          },
+          "p99_ns": {
+            "lower_bound_ns": 100663296,
+            "upper_bound_ns": 105733462
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "207059413"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 912419,
+          "mean_ns": 229697.68387096774,
+          "minimum_ns": 10916,
+          "p50_ns": {
+            "lower_bound_ns": 147456,
+            "upper_bound_ns": 163839
+          },
+          "p95_ns": {
+            "lower_bound_ns": 589824,
+            "upper_bound_ns": 655359
+          },
+          "p99_ns": {
+            "lower_bound_ns": 655360,
+            "upper_bound_ns": 720895
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 155,
+          "saturated_observations": 0,
+          "total_ns": "35603141"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 0,
+      "height": 400,
+      "pairs": 128,
+      "pairs_read_back": 128,
+      "payload_bytes": 131072000,
+      "payload_mib_per_second": 381.52483738747577,
+      "peak_rss_kib": 3512,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "compact",
+      "repeat": 2,
+      "total_seconds_including_commit_verification": 0.327632667,
+      "variant": "after",
+      "width": 640
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 13360648152112496844,
+        "manifest.json": 13021941132274102875,
+        "records.jsonl": 285206044257109314,
+        "snapshot.json": 1287053468520360510
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 33138092,
+          "mean_ns": 2306740.53125,
+          "minimum_ns": 371751,
+          "p50_ns": {
+            "lower_bound_ns": 851968,
+            "upper_bound_ns": 917503
+          },
+          "p95_ns": {
+            "lower_bound_ns": 23068672,
+            "upper_bound_ns": 25165823
+          },
+          "p99_ns": {
+            "lower_bound_ns": 27262976,
+            "upper_bound_ns": 29360127
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 128,
+          "saturated_observations": 0,
+          "total_ns": "295262788"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 128,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 151295340,
+          "mean_ns": 151295340.0,
+          "minimum_ns": 151295340,
+          "p50_ns": {
+            "lower_bound_ns": 151295340,
+            "upper_bound_ns": 151295340
+          },
+          "p95_ns": {
+            "lower_bound_ns": 151295340,
+            "upper_bound_ns": 151295340
+          },
+          "p99_ns": {
+            "lower_bound_ns": 151295340,
+            "upper_bound_ns": 151295340
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "151295340"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 3878719,
+          "mean_ns": 2513642.9565217393,
+          "minimum_ns": 2122964,
+          "p50_ns": {
+            "lower_bound_ns": 2359296,
+            "upper_bound_ns": 2621439
+          },
+          "p95_ns": {
+            "lower_bound_ns": 2883584,
+            "upper_bound_ns": 3145727
+          },
+          "p99_ns": {
+            "lower_bound_ns": 3670016,
+            "upper_bound_ns": 3878719
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "115627576"
+        },
+        "payload_files": 8,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 143251,
+          "mean_ns": 75023.33333333333,
+          "minimum_ns": 37542,
+          "p50_ns": {
+            "lower_bound_ns": 57344,
+            "upper_bound_ns": 61439
+          },
+          "p95_ns": {
+            "lower_bound_ns": 131072,
+            "upper_bound_ns": 143251
+          },
+          "p99_ns": {
+            "lower_bound_ns": 131072,
+            "upper_bound_ns": 143251
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "675210"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 262144000,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 111859146,
+          "mean_ns": 24130586.0,
+          "minimum_ns": 11027739,
+          "p50_ns": {
+            "lower_bound_ns": 12582912,
+            "upper_bound_ns": 13631487
+          },
+          "p95_ns": {
+            "lower_bound_ns": 109051904,
+            "upper_bound_ns": 111859146
+          },
+          "p99_ns": {
+            "lower_bound_ns": 109051904,
+            "upper_bound_ns": 111859146
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "217175274"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 1063586,
+          "mean_ns": 91590.34839924671,
+          "minimum_ns": 1584,
+          "p50_ns": {
+            "lower_bound_ns": 36864,
+            "upper_bound_ns": 40959
+          },
+          "p95_ns": {
+            "lower_bound_ns": 294912,
+            "upper_bound_ns": 327679
+          },
+          "p99_ns": {
+            "lower_bound_ns": 425984,
+            "upper_bound_ns": 458751
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 531,
+          "saturated_observations": 0,
+          "total_ns": "48634475"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 2,
+      "height": 400,
+      "pairs": 128,
+      "pairs_read_back": 128,
+      "payload_bytes": 131072000,
+      "payload_mib_per_second": 277.24571552511355,
+      "peak_rss_kib": 3652,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "compact",
+      "repeat": 2,
+      "total_seconds_including_commit_verification": 0.450863595,
+      "variant": "before",
+      "width": 640
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 13360648152112496844,
+        "manifest.json": 13021941132274102875,
+        "records.jsonl": 285206044257109314,
+        "snapshot.json": 1287053468520360510
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 38179232,
+          "mean_ns": 2467679.75,
+          "minimum_ns": 365251,
+          "p50_ns": {
+            "lower_bound_ns": 851968,
+            "upper_bound_ns": 917503
+          },
+          "p95_ns": {
+            "lower_bound_ns": 20971520,
+            "upper_bound_ns": 23068671
+          },
+          "p99_ns": {
+            "lower_bound_ns": 31457280,
+            "upper_bound_ns": 33554431
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 128,
+          "saturated_observations": 0,
+          "total_ns": "315863008"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 128,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 160291074,
+          "mean_ns": 160291074.0,
+          "minimum_ns": 160291074,
+          "p50_ns": {
+            "lower_bound_ns": 160291074,
+            "upper_bound_ns": 160291074
+          },
+          "p95_ns": {
+            "lower_bound_ns": 160291074,
+            "upper_bound_ns": 160291074
+          },
+          "p99_ns": {
+            "lower_bound_ns": 160291074,
+            "upper_bound_ns": 160291074
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "160291074"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 4174304,
+          "mean_ns": 2684818.2608695654,
+          "minimum_ns": 2108381,
+          "p50_ns": {
+            "lower_bound_ns": 2359296,
+            "upper_bound_ns": 2621439
+          },
+          "p95_ns": {
+            "lower_bound_ns": 3407872,
+            "upper_bound_ns": 3670015
+          },
+          "p99_ns": {
+            "lower_bound_ns": 3932160,
+            "upper_bound_ns": 4174304
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "123501640"
+        },
+        "index_flushes": 8,
+        "index_write_calls": 8,
+        "payload_files": 8,
+        "payload_write_calls": 128,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 149125,
+          "mean_ns": 98129.55555555556,
+          "minimum_ns": 43666,
+          "p50_ns": {
+            "lower_bound_ns": 98304,
+            "upper_bound_ns": 106495
+          },
+          "p95_ns": {
+            "lower_bound_ns": 147456,
+            "upper_bound_ns": 149125
+          },
+          "p99_ns": {
+            "lower_bound_ns": 147456,
+            "upper_bound_ns": 149125
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "883166"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 262144000,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 119683751,
+          "mean_ns": 25838952.0,
+          "minimum_ns": 8272607,
+          "p50_ns": {
+            "lower_bound_ns": 14680064,
+            "upper_bound_ns": 15728639
+          },
+          "p95_ns": {
+            "lower_bound_ns": 117440512,
+            "upper_bound_ns": 119683751
+          },
+          "p99_ns": {
+            "lower_bound_ns": 117440512,
+            "upper_bound_ns": 119683751
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "232550568"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 2565049,
+          "mean_ns": 262994.53548387095,
+          "minimum_ns": 31917,
+          "p50_ns": {
+            "lower_bound_ns": 212992,
+            "upper_bound_ns": 229375
+          },
+          "p95_ns": {
+            "lower_bound_ns": 524288,
+            "upper_bound_ns": 589823
+          },
+          "p99_ns": {
+            "lower_bound_ns": 786432,
+            "upper_bound_ns": 851967
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 155,
+          "saturated_observations": 0,
+          "total_ns": "40764153"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 2,
+      "height": 400,
+      "pairs": 128,
+      "pairs_read_back": 128,
+      "payload_bytes": 131072000,
+      "payload_mib_per_second": 260.5889854764627,
+      "peak_rss_kib": 3548,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "compact",
+      "repeat": 2,
+      "total_seconds_including_commit_verification": 0.479682592,
+      "variant": "after",
+      "width": 640
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 10346691639241157437,
+        "manifest.json": 13218886674506840898,
+        "records.jsonl": 1608122882771287941,
+        "snapshot.json": 14341620106215107096
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 23197982,
+          "mean_ns": 13331081.625,
+          "minimum_ns": 6743352,
+          "p50_ns": {
+            "lower_bound_ns": 7340032,
+            "upper_bound_ns": 7864319
+          },
+          "p95_ns": {
+            "lower_bound_ns": 23068672,
+            "upper_bound_ns": 23197982
+          },
+          "p99_ns": {
+            "lower_bound_ns": 23068672,
+            "upper_bound_ns": 23197982
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 16,
+          "saturated_observations": 0,
+          "total_ns": "213297306"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 16,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 107876844,
+          "mean_ns": 107876844.0,
+          "minimum_ns": 107876844,
+          "p50_ns": {
+            "lower_bound_ns": 107876844,
+            "upper_bound_ns": 107876844
+          },
+          "p95_ns": {
+            "lower_bound_ns": 107876844,
+            "upper_bound_ns": 107876844
+          },
+          "p99_ns": {
+            "lower_bound_ns": 107876844,
+            "upper_bound_ns": 107876844
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "107876844"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 116375,
+          "mean_ns": 11742.804347826086,
+          "minimum_ns": 167,
+          "p50_ns": {
+            "lower_bound_ns": 1920,
+            "upper_bound_ns": 2047
+          },
+          "p95_ns": {
+            "lower_bound_ns": 36864,
+            "upper_bound_ns": 40959
+          },
+          "p99_ns": {
+            "lower_bound_ns": 114688,
+            "upper_bound_ns": 116375
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "540169"
+        },
+        "payload_files": 8,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 161959,
+          "mean_ns": 82903.33333333333,
+          "minimum_ns": 39709,
+          "p50_ns": {
+            "lower_bound_ns": 73728,
+            "upper_bound_ns": 81919
+          },
+          "p95_ns": {
+            "lower_bound_ns": 147456,
+            "upper_bound_ns": 161959
+          },
+          "p99_ns": {
+            "lower_bound_ns": 147456,
+            "upper_bound_ns": 161959
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "746130"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 265420800,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 92418800,
+          "mean_ns": 21493296.222222224,
+          "minimum_ns": 11137531,
+          "p50_ns": {
+            "lower_bound_ns": 12582912,
+            "upper_bound_ns": 13631487
+          },
+          "p95_ns": {
+            "lower_bound_ns": 92274688,
+            "upper_bound_ns": 92418800
+          },
+          "p99_ns": {
+            "lower_bound_ns": 92274688,
+            "upper_bound_ns": 92418800
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "193439666"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 2200881,
+          "mean_ns": 530499.5542168674,
+          "minimum_ns": 3000,
+          "p50_ns": {
+            "lower_bound_ns": 163840,
+            "upper_bound_ns": 180223
+          },
+          "p95_ns": {
+            "lower_bound_ns": 1703936,
+            "upper_bound_ns": 1835007
+          },
+          "p99_ns": {
+            "lower_bound_ns": 2097152,
+            "upper_bound_ns": 2200881
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 83,
+          "saturated_observations": 0,
+          "total_ns": "44031463"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 0,
+      "height": 1080,
+      "pairs": 16,
+      "pairs_read_back": 16,
+      "payload_bytes": 132710400,
+      "payload_mib_per_second": 393.19865998455896,
+      "peak_rss_kib": 7156,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "wide",
+      "repeat": 2,
+      "total_seconds_including_commit_verification": 0.321879276,
+      "variant": "before",
+      "width": 1920
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 10346691639241157437,
+        "manifest.json": 13218886674506840898,
+        "records.jsonl": 1608122882771287941,
+        "snapshot.json": 14341620106215107096
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 15159793,
+          "mean_ns": 7853563.625,
+          "minimum_ns": 3240176,
+          "p50_ns": {
+            "lower_bound_ns": 4718592,
+            "upper_bound_ns": 5242879
+          },
+          "p95_ns": {
+            "lower_bound_ns": 14680064,
+            "upper_bound_ns": 15159793
+          },
+          "p99_ns": {
+            "lower_bound_ns": 14680064,
+            "upper_bound_ns": 15159793
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 16,
+          "saturated_observations": 0,
+          "total_ns": "125657018"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 16,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 55219780,
+          "mean_ns": 55219780.0,
+          "minimum_ns": 55219780,
+          "p50_ns": {
+            "lower_bound_ns": 55219780,
+            "upper_bound_ns": 55219780
+          },
+          "p95_ns": {
+            "lower_bound_ns": 55219780,
+            "upper_bound_ns": 55219780
+          },
+          "p99_ns": {
+            "lower_bound_ns": 55219780,
+            "upper_bound_ns": 55219780
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "55219780"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 75083,
+          "mean_ns": 8315.282608695652,
+          "minimum_ns": 167,
+          "p50_ns": {
+            "lower_bound_ns": 1792,
+            "upper_bound_ns": 1919
+          },
+          "p95_ns": {
+            "lower_bound_ns": 36864,
+            "upper_bound_ns": 40959
+          },
+          "p99_ns": {
+            "lower_bound_ns": 73728,
+            "upper_bound_ns": 75083
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "382503"
+        },
+        "index_flushes": 8,
+        "index_write_calls": 8,
+        "payload_files": 8,
+        "payload_write_calls": 16,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 118167,
+          "mean_ns": 41310.22222222222,
+          "minimum_ns": 19541,
+          "p50_ns": {
+            "lower_bound_ns": 26624,
+            "upper_bound_ns": 28671
+          },
+          "p95_ns": {
+            "lower_bound_ns": 114688,
+            "upper_bound_ns": 118167
+          },
+          "p99_ns": {
+            "lower_bound_ns": 114688,
+            "upper_bound_ns": 118167
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "371792"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 265420800,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 48431510,
+          "mean_ns": 12000843.888888888,
+          "minimum_ns": 6347226,
+          "p50_ns": {
+            "lower_bound_ns": 7340032,
+            "upper_bound_ns": 7864319
+          },
+          "p95_ns": {
+            "lower_bound_ns": 46137344,
+            "upper_bound_ns": 48431510
+          },
+          "p99_ns": {
+            "lower_bound_ns": 46137344,
+            "upper_bound_ns": 48431510
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "108007595"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 2738841,
+          "mean_ns": 443591.3953488372,
+          "minimum_ns": 9625,
+          "p50_ns": {
+            "lower_bound_ns": 73728,
+            "upper_bound_ns": 81919
+          },
+          "p95_ns": {
+            "lower_bound_ns": 1703936,
+            "upper_bound_ns": 1835007
+          },
+          "p99_ns": {
+            "lower_bound_ns": 2621440,
+            "upper_bound_ns": 2738841
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 43,
+          "saturated_observations": 0,
+          "total_ns": "19074430"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 0,
+      "height": 1080,
+      "pairs": 16,
+      "pairs_read_back": 16,
+      "payload_bytes": 132710400,
+      "payload_mib_per_second": 698.6320545629247,
+      "peak_rss_kib": 7052,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "wide",
+      "repeat": 2,
+      "total_seconds_including_commit_verification": 0.181157591,
+      "variant": "after",
+      "width": 1920
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 10346691639241157437,
+        "manifest.json": 13218886674506840898,
+        "records.jsonl": 1608122882771287941,
+        "snapshot.json": 14341620106215107096
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 22909148,
+          "mean_ns": 11267281.75,
+          "minimum_ns": 2894758,
+          "p50_ns": {
+            "lower_bound_ns": 3145728,
+            "upper_bound_ns": 3407871
+          },
+          "p95_ns": {
+            "lower_bound_ns": 20971520,
+            "upper_bound_ns": 22909148
+          },
+          "p99_ns": {
+            "lower_bound_ns": 20971520,
+            "upper_bound_ns": 22909148
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 16,
+          "saturated_observations": 0,
+          "total_ns": "180276508"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 16,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 78143093,
+          "mean_ns": 78143093.0,
+          "minimum_ns": 78143093,
+          "p50_ns": {
+            "lower_bound_ns": 78143093,
+            "upper_bound_ns": 78143093
+          },
+          "p95_ns": {
+            "lower_bound_ns": 78143093,
+            "upper_bound_ns": 78143093
+          },
+          "p99_ns": {
+            "lower_bound_ns": 78143093,
+            "upper_bound_ns": 78143093
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "78143093"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 3116176,
+          "mean_ns": 2327731.217391304,
+          "minimum_ns": 2088423,
+          "p50_ns": {
+            "lower_bound_ns": 2097152,
+            "upper_bound_ns": 2359295
+          },
+          "p95_ns": {
+            "lower_bound_ns": 2883584,
+            "upper_bound_ns": 3116176
+          },
+          "p99_ns": {
+            "lower_bound_ns": 2883584,
+            "upper_bound_ns": 3116176
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "107075636"
+        },
+        "payload_files": 8,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 65542,
+          "mean_ns": 39023.22222222222,
+          "minimum_ns": 26625,
+          "p50_ns": {
+            "lower_bound_ns": 30720,
+            "upper_bound_ns": 32767
+          },
+          "p95_ns": {
+            "lower_bound_ns": 65536,
+            "upper_bound_ns": 65542
+          },
+          "p99_ns": {
+            "lower_bound_ns": 65536,
+            "upper_bound_ns": 65542
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "351209"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 265420800,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 48753470,
+          "mean_ns": 11077882.777777778,
+          "minimum_ns": 6105642,
+          "p50_ns": {
+            "lower_bound_ns": 6105642,
+            "upper_bound_ns": 6291455
+          },
+          "p95_ns": {
+            "lower_bound_ns": 46137344,
+            "upper_bound_ns": 48753470
+          },
+          "p99_ns": {
+            "lower_bound_ns": 46137344,
+            "upper_bound_ns": 48753470
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "99700945"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 592210,
+          "mean_ns": 120961.77108433735,
+          "minimum_ns": 2292,
+          "p50_ns": {
+            "lower_bound_ns": 61440,
+            "upper_bound_ns": 65535
+          },
+          "p95_ns": {
+            "lower_bound_ns": 360448,
+            "upper_bound_ns": 393215
+          },
+          "p99_ns": {
+            "lower_bound_ns": 589824,
+            "upper_bound_ns": 592210
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 83,
+          "saturated_observations": 0,
+          "total_ns": "10039827"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 2,
+      "height": 1080,
+      "pairs": 16,
+      "pairs_read_back": 16,
+      "payload_bytes": 132710400,
+      "payload_mib_per_second": 484.64427332436696,
+      "peak_rss_kib": 7192,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "wide",
+      "repeat": 2,
+      "total_seconds_including_commit_verification": 0.261145147,
+      "variant": "before",
+      "width": 1920
+    },
+    {
+      "artifact_hashes": {
+        "COMPLETE": 10210688393488241566,
+        "checkpoint.json": 10346691639241157437,
+        "manifest.json": 13218886674506840898,
+        "records.jsonl": 1608122882771287941,
+        "snapshot.json": 14341620106215107096
+      },
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 22537397,
+          "mean_ns": 11117807.1875,
+          "minimum_ns": 2882925,
+          "p50_ns": {
+            "lower_bound_ns": 3145728,
+            "upper_bound_ns": 3407871
+          },
+          "p95_ns": {
+            "lower_bound_ns": 20971520,
+            "upper_bound_ns": 22537397
+          },
+          "p99_ns": {
+            "lower_bound_ns": 20971520,
+            "upper_bound_ns": 22537397
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 16,
+          "saturated_observations": 0,
+          "total_ns": "177884915"
+        },
+        "checkpoints": 8,
+        "clock": "monotonic-duration",
+        "durable_pairs": 16,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 78810179,
+          "mean_ns": 78810179.0,
+          "minimum_ns": 78810179,
+          "p50_ns": {
+            "lower_bound_ns": 78810179,
+            "upper_bound_ns": 78810179
+          },
+          "p95_ns": {
+            "lower_bound_ns": 78810179,
+            "upper_bound_ns": 78810179
+          },
+          "p99_ns": {
+            "lower_bound_ns": 78810179,
+            "upper_bound_ns": 78810179
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "78810179"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 3128050,
+          "mean_ns": 2335937.782608696,
+          "minimum_ns": 2071256,
+          "p50_ns": {
+            "lower_bound_ns": 2097152,
+            "upper_bound_ns": 2359295
+          },
+          "p95_ns": {
+            "lower_bound_ns": 2621440,
+            "upper_bound_ns": 2883583
+          },
+          "p99_ns": {
+            "lower_bound_ns": 2883584,
+            "upper_bound_ns": 3128050
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 46,
+          "saturated_observations": 0,
+          "total_ns": "107453138"
+        },
+        "index_flushes": 8,
+        "index_write_calls": 8,
+        "payload_files": 8,
+        "payload_write_calls": 16,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 56125,
+          "mean_ns": 22273.11111111111,
+          "minimum_ns": 11042,
+          "p50_ns": {
+            "lower_bound_ns": 16384,
+            "upper_bound_ns": 18431
+          },
+          "p95_ns": {
+            "lower_bound_ns": 53248,
+            "upper_bound_ns": 56125
+          },
+          "p99_ns": {
+            "lower_bound_ns": 53248,
+            "upper_bound_ns": 56125
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "200458"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 265420800,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 48970720,
+          "mean_ns": 11146623.777777778,
+          "minimum_ns": 6201725,
+          "p50_ns": {
+            "lower_bound_ns": 6291456,
+            "upper_bound_ns": 6815743
+          },
+          "p95_ns": {
+            "lower_bound_ns": 46137344,
+            "upper_bound_ns": 48970720
+          },
+          "p99_ns": {
+            "lower_bound_ns": 46137344,
+            "upper_bound_ns": 48970720
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 9,
+          "saturated_observations": 0,
+          "total_ns": "100319614"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 741502,
+          "mean_ns": 162813.37209302327,
+          "minimum_ns": 5875,
+          "p50_ns": {
+            "lower_bound_ns": 32768,
+            "upper_bound_ns": 36863
+          },
+          "p95_ns": {
+            "lower_bound_ns": 458752,
+            "upper_bound_ns": 491519
+          },
+          "p99_ns": {
+            "lower_bound_ns": 720896,
+            "upper_bound_ns": 741502
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 43,
+          "saturated_observations": 0,
+          "total_ns": "7000975"
+        }
+      },
+      "files": 13,
+      "fsync_delay_ms": 2,
+      "height": 1080,
+      "pairs": 16,
+      "pairs_read_back": 16,
+      "payload_bytes": 132710400,
+      "payload_mib_per_second": 488.1230299667874,
+      "peak_rss_kib": 7080,
+      "peak_rss_source": "/proc/self/status VmHWM; entire isolated child, sampled before post-timer materialized comparison; not anonymous-only RSS",
+      "profile": "wide",
+      "repeat": 2,
+      "total_seconds_including_commit_verification": 0.259284017,
+      "variant": "after",
+      "width": 1920
+    }
+  ],
+  "runs": 24,
+  "baseline": "905d77077e06e5ef2c8e3e43f8654749b6a7e08a",
+  "write_counts": [
+    {
+      "variant": "before",
+      "counts": {
+        "payload_write": 384,
+        "payload_writev": 0,
+        "index_write": 128,
+        "index_writev": 0
+      }
+    },
+    {
+      "variant": "after",
+      "counts": {
+        "payload_write": 0,
+        "payload_writev": 128,
+        "index_write": 8,
+        "index_writev": 0
+      }
+    }
+  ],
+  "artifact_hashes_method": "Rust DefaultHasher noncryptographic comparison checksum; per-extent SHA256 remains validated by reader"
+}

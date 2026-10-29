@@ -385,7 +385,10 @@ fn sigkill_preserves_the_last_checkpoint_without_running_drop() {
 #[test]
 fn checkpoint_write_sync_and_rename_failures_never_promote_an_unverified_prefix() {
     for (op, suffix, nth, expected) in [
-        ("write", "/payload-00000000000000000002.bin", "1", 32),
+        ("writev", "/payload-00000000000000000002.bin", "1", 32),
+        ("writev", "/payload-00000000000000000002.bin", "2", 32),
+        ("write", "/records.jsonl", "1", 32),
+        ("write", "/records.jsonl", "2", 32),
         ("fsync", "/payload-00000000000000000002.bin", "1", 32),
         ("fsync", "/records.jsonl", "1", 32),
         ("fsync", "/.checkpoint.tmp", "1", 32),
@@ -402,6 +405,12 @@ fn checkpoint_write_sync_and_rename_failures_never_promote_an_unverified_prefix(
             .env("GDP_CHUNK_ROOT", root.path())
             .env("GDP_IO_ARMED", root.path().join("armed"))
             .env("GDP_IO_FAIL_NTH", nth);
+        if op == "writev" && nth == "2" {
+            command.env("GDP_IO_WRITEV_MAX_BYTES", "7");
+        }
+        if op == "write" && nth == "2" {
+            command.env("GDP_IO_WRITE_MAX_BYTES", "7");
+        }
         io_faults::inject(&mut command, &library, op, suffix, &marker);
         let output = command.output().unwrap();
         assert!(
@@ -794,4 +803,81 @@ fn checkpoint_and_final_streaming_verification_both_read_actual_payload_bytes() 
         }
         assert!(!dir.path().join("capture/COMPLETE").exists());
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "child proving actual writev short writes and EINTR remain lossless"]
+fn short_writev_child() {
+    let root = std::path::PathBuf::from(std::env::var_os("GDP_CHUNK_ROOT").unwrap());
+    let (snapshot, pair, pixels) = fixture();
+    let mut writer =
+        RawRecordingWriter::begin_chunked(&root, "capture", snapshot, 1_000_000).unwrap();
+    let diagnostics = writer.diagnostics();
+    append(&mut writer, &pair, &pixels, 1);
+    let path = writer.finish().unwrap();
+    assert_eq!(read_all(&path, false)[0].depth, pixels);
+    assert!(
+        diagnostics.report()["payload_write_calls"]
+            .as_u64()
+            .unwrap()
+            > 2
+    );
+    assert_eq!(diagnostics.report()["index_flushes"], 1);
+    assert_eq!(diagnostics.report()["durable_pairs"], 1);
+}
+#[cfg(target_os = "linux")]
+#[test]
+fn real_short_writev_and_interrupted_call_preserve_all_payload_extents() {
+    let root = tempfile::tempdir().unwrap();
+    let library = io_faults::compile(root.path());
+    let marker = root.path().join("injected");
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", "short_writev_child", "--ignored", "--nocapture"])
+        .env("GDP_CHUNK_ROOT", root.path())
+        .env("GDP_IO_WRITEV_MAX_BYTES", "7")
+        .env("GDP_IO_ERRNO", "EINTR");
+    io_faults::inject(
+        &mut command,
+        &library,
+        "writev",
+        "/payload-00000000000000000001.bin",
+        &marker,
+    );
+    let result = command.output().unwrap();
+    assert!(
+        result.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    io_faults::assert_injected(&marker, "writev");
+}
+
+#[test]
+fn index_staging_is_bounded_and_flushed_before_checkpoint_acknowledgement() {
+    let (snapshot, pair, pixels) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let mut writer =
+        RawRecordingWriter::begin_chunked(dir.path(), "capture", snapshot, 1_000_000).unwrap();
+    let diagnostics = writer.diagnostics();
+    append(&mut writer, &pair, &pixels, 1);
+    let index = dir.path().join("capture.partial/records.jsonl");
+    assert_eq!(fs::metadata(&index).unwrap().len(), 0);
+    assert_eq!(diagnostics.report()["index_flushes"], 0);
+    writer.checkpoint().unwrap();
+    assert!(fs::metadata(index).unwrap().len() > 0);
+    assert_eq!(diagnostics.report()["index_flushes"], 1);
+    assert_eq!(diagnostics.report()["index_write_calls"], 1);
+    assert_eq!(diagnostics.report()["payload_write_calls"], 1);
+    assert_eq!(read_all(&dir.path().join("capture.partial"), true).len(), 1);
+    append(&mut writer, &pair, &pixels, 2);
+    let path = writer.finish().unwrap();
+    assert_eq!(read_all(&path, false).len(), 2);
+    assert_eq!(diagnostics.report()["index_flushes"], 2);
+    assert_eq!(
+        diagnostics.report()["validation_image_bytes"],
+        2 * 2 * (4 + pixels.len())
+    );
 }

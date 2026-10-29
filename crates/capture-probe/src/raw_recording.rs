@@ -1265,7 +1265,11 @@ mod tests {
             ("commit-delay", "fsync", "/COMPLETE"),
             ("commit-failure", "fsync", "/COMPLETE"),
             ("chunk-fsync", "fsync", "/payload-00000000000000000001.bin"),
-            ("append-write", "write", "/payload-00000000000000000001.bin"),
+            (
+                "append-writev",
+                "writev",
+                "/payload-00000000000000000001.bin",
+            ),
         ] {
             let delayed = case != "commit-failure";
             let marker = dir.join(case);
@@ -1351,7 +1355,7 @@ mod tests {
         if delayed {
             assert_eq!(status["state"], "complete");
             assert!(
-                status["disk_stages"][if case == "append-write" {
+                status["disk_stages"][if case == "append-writev" {
                     "write"
                 } else {
                     "fsync"
