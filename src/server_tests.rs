@@ -305,7 +305,11 @@ fn preview_start_uses_bound_private_config_and_refuses_a_running_formal_group() 
             .starts_with("CAMERAS_RUNNING")
     );
     f.ctl.stop("camera", true).unwrap();
+    let stale = f.ctl.root.join("work/web-preview/camera_a/out");
+    fs::create_dir_all(&stale).unwrap();
+    atomic(&stale.join("color.jpg"), b"old frame").unwrap();
     start_preview(&f.ctl, "camera_a").unwrap();
+    assert!(!stale.join("color.jpg").exists());
     let folder = f.ctl.root.join("work/web-preview/camera_a/config");
     for file in [
         "camera.yaml",
@@ -334,4 +338,165 @@ fn preview_start_uses_bound_private_config_and_refuses_a_running_formal_group() 
         config["camera_name"],
         f.inventory["cameras"][0]["frame_prefix"]
     );
+}
+
+#[test]
+fn editable_config_rejects_incomplete_unknown_or_undetected_bindings_before_saving() {
+    for mode in 0..6 {
+        let f = Fixture::new(true, 1);
+        let before = fs::read(f.ctl.root.join("inventory.json")).unwrap();
+        let mut payload = json!({"revision":f.ctl.revision().unwrap(),"cameras":f.inventory["cameras"].as_array().unwrap().iter().map(|c|json!({"name":c["name"],"parameters":{}})).collect::<Vec<_>>()});
+        match mode {
+            0 => {
+                payload["cameras"].as_array_mut().unwrap().pop();
+            }
+            1 => payload["cameras"][1]["name"] = payload["cameras"][0]["name"].clone(),
+            2 => payload["cameras"][0]["unsupported"] = json!(true),
+            3 => payload["cameras"][0]["parameters"] = json!({"unsupported":true}),
+            4 => payload["cameras"][0]["serial_number"] = json!("UNDETECTED"),
+            _ => payload["cameras"][0]["parameters"] = json!({"color_width":0}),
+        }
+        assert!(save_config(&f.ctl, &payload).is_err(), "{mode}");
+        assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
+    }
+}
+#[test]
+fn editable_bindings_use_detected_model_and_changes_invalidate_confirmation() {
+    let mut f = Fixture::new(true, 1);
+    f.prepare_host();
+    let sys = f
+        .ctl
+        .host_root
+        .as_ref()
+        .unwrap()
+        .join("sys/bus/usb/devices/1-0/serial");
+    atomic(&sys, b"NEW_SYNTHETIC_SERIAL").unwrap();
+    let mut payload = json!({"revision":f.ctl.revision().unwrap(),"cameras":f.inventory["cameras"].as_array().unwrap().iter().map(|c|json!({"name":c["name"],"parameters":{}})).collect::<Vec<_>>()});
+    payload["cameras"][0]["serial_number"] = json!("NEW_SYNTHETIC_SERIAL");
+    payload["cameras"][0]["parameters"] = json!({"color_width":1280});
+    save_config(&f.ctl, &payload).unwrap();
+    let saved = f.ctl.load().unwrap();
+    assert_eq!(saved["cameras"][0]["serial_number"], "NEW_SYNTHETIC_SERIAL");
+    assert_eq!(saved["cameras"][0]["profiles_verified"], false);
+    assert!(saved["cameras"][0]["verification"].is_null());
+}
+
+#[test]
+fn rust_preview_confirmation_requires_current_runtime_binding_and_rechecks_instance() {
+    let mut f = Fixture::new(false, 1);
+    f.prepare_host();
+    let runtime = f.install_rust_runtime();
+    f.ctl.stop("camera", true).unwrap();
+    start_preview(&f.ctl, "camera_a").unwrap();
+    let folder = f.ctl.root.join("work/web-preview/camera_a");
+    assert_eq!(
+        read_json(&folder.join("config/runtime-binding.json")).unwrap(),
+        runtime
+    );
+    atomic_json(&folder.join("out/status.json"),&json!({"color":{"received_at":now(),"frames":5,"width":640,"height":480},"depth":{"received_at":now(),"frames":5,"width":640,"height":480}})).unwrap();
+    let id = "f".repeat(64);
+    let item = json!({"Id":id,"Name":"/orbbec-web-preview-camera_a","Config":{"Labels":{"orbbec.web.preview":PROJECT}},"State":{"Running":true},"Mounts":[{"Destination":"/config","Source":folder.join("config")}]});
+    let previous = f.ctl.command_runner.clone().unwrap();
+    f.ctl.command_runner = Some(Arc::new(move |args, input| {
+        if args.get(1).is_some_and(|a| a == "ps")
+            && args.iter().any(|a| a.contains("orbbec.web.preview"))
+        {
+            return Ok(id.clone());
+        }
+        if args.get(1).is_some_and(|a| a == "inspect") && args.iter().any(|a| a == &id) {
+            return Ok(json!([item]).to_string());
+        }
+        if args.get(1).is_some_and(|a| a == "exec") && args.iter().any(|a| a == "/app/health.py") {
+            return Ok(String::new());
+        }
+        previous(args, input)
+    }));
+    confirm(&f.ctl, "camera_a").unwrap();
+    let saved = f.ctl.load().unwrap();
+    assert_eq!(
+        saved["cameras"][0]["verification"]["runtime_digest"],
+        crate::capture_backend::runtime_digest(&runtime)
+    );
+    atomic_json(
+        &folder.join("config/runtime-binding.json"),
+        &json!({"wrong":true}),
+    )
+    .unwrap();
+    assert!(
+        confirm(&f.ctl, "camera_a")
+            .unwrap_err()
+            .to_string()
+            .starts_with("RUST_CONFIRMATION_STALE")
+    );
+}
+
+#[test]
+fn capability_http_negotiation_reports_build_identity_and_rejects_unknown_requirements() {
+    let f = Fixture::new(false, 1);
+    let m = manager(&f);
+    let (status, description) = get(&m, "/api/capabilities");
+    assert_eq!(status, 200);
+    assert!(description.is_object());
+    let requirement = json!({"protocols":{"snapshot":1}});
+    let (status, negotiated) = get(&m, &encoded("/api/capabilities", "require", &requirement));
+    assert_eq!(status, 200);
+    assert_eq!(negotiated["negotiated"], requirement);
+    assert_eq!(
+        get(
+            &m,
+            &encoded(
+                "/api/capabilities",
+                "require",
+                &json!({"protocols":{"unknown":1}})
+            )
+        )
+        .0,
+        400
+    );
+    let (status, build) = get(&m, "/api/build-info");
+    assert_eq!(status, 200);
+    assert!(build.to_string().contains("geminidepthport"));
+}
+
+#[test]
+fn stopped_owned_preview_exposes_logs_and_cleanup_never_stops_a_foreign_mount() {
+    let mut f = Fixture::new(true, 1);
+    let folder = f.ctl.root.join("work/web-preview/camera_a/config");
+    fs::create_dir_all(&folder).unwrap();
+    let id = "f".repeat(64);
+    let item = json!({"Id":id,"Name":"/orbbec-web-preview-camera_a","Config":{"Labels":{"orbbec.web.preview":PROJECT}},"State":{"Running":false},"Mounts":[{"Destination":"/config","Source":folder}]});
+    let previous = f.ctl.command_runner.clone().unwrap();
+    f.ctl.command_runner = Some(Arc::new(move |args, input| {
+        if args.get(1).is_some_and(|a| a == "ps")
+            && args.iter().any(|a| a.contains("orbbec.web.preview"))
+        {
+            return Ok(id.clone());
+        }
+        if args.get(1).is_some_and(|a| a == "inspect") && args.iter().any(|a| a == &id) {
+            return Ok(json!([item]).to_string());
+        }
+        if args.get(1).is_some_and(|a| a == "ps") && args.iter().any(|a| a == "{{json .}}") {
+            return Ok(String::new());
+        }
+        if args.get(1).is_some_and(|a| a == "logs") {
+            return Ok("preview failed before becoming ready".into());
+        }
+        if args.get(1).is_some_and(|a| a == "rm") {
+            return Ok(String::new());
+        }
+        previous(args, input)
+    }));
+    let m = manager(&f);
+    let state = state(&m).unwrap();
+    assert_eq!(
+        state["previews"]["camera_a"]["error"],
+        "preview failed before becoming ready"
+    );
+    let (status, logs) = get(&m, "/api/preview/logs?role=camera_a");
+    assert_eq!(status, 200);
+    assert_eq!(logs["log"], "preview failed before becoming ready");
+    stop_preview(&f.ctl, "camera_a").unwrap();
+    stop_owned_previews(&f.ctl).unwrap();
+    let foreign = json!({"Mounts":[{"Destination":"/data","Source":folder}]});
+    assert!(!f.ctl.owns_preview(&foreign));
 }

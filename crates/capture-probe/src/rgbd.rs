@@ -866,4 +866,54 @@ mod tests {
         v["ros"]["stamp_source"] = json!("sdk-system-unix");
         assert!(Config::parse(&v.to_string()).is_ok());
     }
+    #[test]
+    fn invalid_binding_profiles_and_clock_policies_fail_before_sdk_loading() {
+        for (pointer, value, reason) in [
+            (
+                "/sdk_library",
+                json!("relative.so"),
+                "absolute SDK library required",
+            ),
+            (
+                "/depth/frame_id",
+                json!("color"),
+                "distinct optical frames required",
+            ),
+            (
+                "/depth/unit_policy",
+                json!("guess"),
+                "explicit depth unit policy required",
+            ),
+            ("/pairing/clock", json!("guess"), "pair clock required"),
+            ("/color/width", json!(20000), "profile limit"),
+        ] {
+            let mut v = config();
+            if pointer == "/depth/frame_id" {
+                v["color"]["frame_id"] = json!("color");
+            }
+            *v.pointer_mut(pointer).unwrap() = value;
+            let error = Config::parse(&v.to_string())
+                .err()
+                .expect("invalid input must fail");
+            assert!(error.to_string().contains(reason), "{error}");
+        }
+        let mut v = config();
+        v["ros"] = json!({"bridge":"/private/bridge.so","namespace":"relative","stamp_source":"sdk-system-unix"});
+        assert!(
+            Config::parse(&v.to_string())
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("explicit namespace required")
+        );
+        let mut v = config();
+        v["quality_policy"] = json!({"version":1,"max_source_age_ns":500000000,"max_future_ns":100000000,"max_pair_delta_us":1,"min_valid_fraction":0.0,"max_zero_fraction":1.0,"action":"fail-closed"});
+        assert!(
+            Config::parse(&v.to_string())
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("quality and pairing skew policies differ")
+        );
+    }
 }

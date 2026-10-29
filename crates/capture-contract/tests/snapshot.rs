@@ -161,3 +161,112 @@ fn legacy_import_verifies_old_digest_without_creating_runtime_claims() {
     corrupt["cameras"][0]["name"] = json!("different");
     assert!(import_legacy(&serde_json::to_vec(&corrupt).unwrap(), "synthetic").is_err());
 }
+
+#[test]
+fn calibration_rejects_uncertified_or_unbound_runtime_provenance() {
+    for (mode, expected) in [
+        (0, "CALIBRATION_VERSION"),
+        (1, "PHYSICAL_VERIFICATION_NOT_CERTIFIED"),
+        (2, "CALIBRATION_MODEL_COUNT"),
+        (3, "MODEL_NAME_INVALID"),
+        (4, "CALIBRATION_TRANSFORM_UNBOUND"),
+        (5, "CALIBRATION_DUPLICATE_FRAME"),
+        (6, "LEGACY_PROVENANCE_INVALID"),
+        (7, "RUNTIME_CALIBRATION_PROVENANCE_REQUIRED"),
+    ] {
+        let mut c = live().calibration;
+        match mode {
+            0 => c.version = 2,
+            1 => c.physical_accuracy_verified = true,
+            2 => c.models.clear(),
+            3 => {
+                let model = c.models.remove("depth").unwrap();
+                c.models.insert("bad name".into(), model);
+            }
+            4 => c.transforms.push(RigidTransform {
+                source_frame: "depth".into(),
+                target_frame: "missing".into(),
+                rotation_row_major: [1., 0., 0., 0., 1., 0., 0., 0., 1.],
+                translation_m: [0.; 3],
+            }),
+            5 => {
+                c.models.insert("other".into(), c.models["depth"].clone());
+            }
+            6 => c.source = CalibrationSource::LegacyImport,
+            _ => c.observed_unix_ns = Some(0),
+        }
+        assert_eq!(c.validate().unwrap_err().code, expected);
+    }
+    let mut s = live();
+    s.version = 2;
+    assert_eq!(s.validate().unwrap_err().code, "SNAPSHOT_VERSION");
+    let mut s = live();
+    s.binding.session_id = SessionId::parse("f".repeat(32)).unwrap();
+    assert_eq!(
+        s.validate().unwrap_err().code,
+        "CALIBRATION_SESSION_MISMATCH"
+    );
+}
+
+#[test]
+fn legacy_distortion_variants_and_ambiguous_camera_selection_keep_provenance_offline() {
+    fn encode(mut value: Value) -> Vec<u8> {
+        let digest =
+            ring::digest::digest(&ring::digest::SHA256, &serde_json::to_vec(&value).unwrap());
+        let mut hash = String::new();
+        use std::fmt::Write;
+        for b in digest.as_ref() {
+            write!(&mut hash, "{b:02x}").unwrap();
+        }
+        value["snapshot_sha256"] = json!(hash);
+        serde_json::to_vec(&value).unwrap()
+    }
+    for (name, count) in [
+        ("rational_polynomial", 8),
+        ("equidistant", 4),
+        ("unsupported", 0),
+    ] {
+        let m = &live().calibration.models["depth"];
+        let old = json!({"kind":"geminidepthport-calibration-v1","structural_validation":true,"physical_accuracy_verified":false,"cameras":[{"name":"synthetic","intrinsics":{"depth":{"frame_id":m.frame_id,"width":m.width,"height":m.height,"k":m.k,"distortion_model":name,"d":vec![0;count]}}}]});
+        let result = import_legacy(&encode(old.clone()), "synthetic");
+        if name == "unsupported" {
+            assert_eq!(result.unwrap_err().code, "LEGACY_DISTORTION_UNSUPPORTED");
+        } else {
+            assert!(!result.unwrap().actual_runtime_observed);
+        }
+        assert_eq!(
+            import_legacy(&encode(old.clone()), "missing")
+                .unwrap_err()
+                .code,
+            "LEGACY_CAMERA_AMBIGUOUS_OR_MISSING"
+        );
+        let mut duplicate = old.clone();
+        duplicate["cameras"]
+            .as_array_mut()
+            .unwrap()
+            .push(old["cameras"][0].clone());
+        assert_eq!(
+            import_legacy(&encode(duplicate), "synthetic")
+                .unwrap_err()
+                .code,
+            "LEGACY_CAMERA_AMBIGUOUS_OR_MISSING"
+        );
+    }
+}
+
+#[test]
+fn legacy_digest_preserves_negative_fractional_and_scientific_parameters() {
+    let mut old = json!({"kind":"geminidepthport-calibration-v1","structural_validation":true,"physical_accuracy_verified":false,"parameters":[-12.34,1.234e20,12.345],"cameras":[{"name":"synthetic","intrinsics":{"depth":{"frame_id":"depth","width":1,"height":1,"k":[1,0,0,0,1,0,0,0,1],"distortion_model":"plumb_bob","d":[0,0,0,0,0]}}}]});
+    let digest = ring::digest::digest(&ring::digest::SHA256, &serde_json::to_vec(&old).unwrap());
+    let mut hash = String::new();
+    use std::fmt::Write;
+    for b in digest.as_ref() {
+        write!(&mut hash, "{b:02x}").unwrap();
+    }
+    old["snapshot_sha256"] = json!(hash);
+    assert!(
+        !import_legacy(&serde_json::to_vec(&old).unwrap(), "synthetic")
+            .unwrap()
+            .actual_runtime_observed
+    );
+}

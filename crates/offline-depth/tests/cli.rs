@@ -537,3 +537,113 @@ fn d2c_overflow_is_explicit_and_never_clamped_or_completed() {
     assert!(!output.path().join("overflow.partial/COMPLETE").exists());
     assert_eq!(fs::read(input.path().join("depth.raw16")).unwrap(), bytes);
 }
+
+#[test]
+fn d2c_distortion_models_and_big_endian_input_keep_numerical_depth() {
+    for (name, count, accepted) in [
+        ("plumb_bob", 5, true),
+        ("rational_polynomial", 8, true),
+        ("equidistant", 4, false),
+    ] {
+        let input = tempfile::tempdir().unwrap();
+        let mut manifest = fixture(input.path(), false, 0.);
+        let old: SnapshotEnvelope =
+            serde_json::from_slice(&fs::read(input.path().join("snapshot.json")).unwrap()).unwrap();
+        let mut snapshot = old.content;
+        for model in snapshot.calibration.models.values_mut() {
+            model.distortion_model = match name {
+                "plumb_bob" => DistortionModel::PlumbBob,
+                "rational_polynomial" => DistortionModel::RationalPolynomial,
+                _ => DistortionModel::Equidistant,
+            };
+            model.distortion_coefficients = vec![0.; count];
+        }
+        snapshot.binding.calibration_id = snapshot.calibration.id().unwrap();
+        let snapshot = snapshot.seal().unwrap();
+        fs::write(
+            input.path().join("snapshot.json"),
+            snapshot.to_bytes().unwrap(),
+        )
+        .unwrap();
+        manifest.binding = snapshot.content.binding.clone();
+        let mut evidence: BoundPairEvidence =
+            serde_json::from_slice(&fs::read(input.path().join("pair.json")).unwrap()).unwrap();
+        for frame in [&mut evidence.color, &mut evidence.depth] {
+            frame.context.calibration_id = manifest.binding.calibration_id.clone();
+            frame.context.snapshot_id = snapshot.snapshot_id.clone();
+        }
+        let bytes = serde_json::to_vec(&evidence).unwrap();
+        fs::write(input.path().join("pair.json"), &bytes).unwrap();
+        manifest.pairs[0].evidence_sha256 = sha256(&bytes);
+        let pixels = [0x03, 0xe8, 0, 0];
+        fs::write(input.path().join("depth.raw16"), pixels).unwrap();
+        manifest.pairs[0].depth_sha256 = sha256(&pixels);
+        manifest.pairs[0].endian = StorageEndian::Big;
+        write_manifest(input.path(), &manifest);
+        let output = tempfile::tempdir().unwrap();
+        let result = cli(
+            input.path(),
+            &[
+                "--d2c",
+                "--output",
+                output.path().to_str().unwrap(),
+                "--job",
+                "model",
+            ],
+        );
+        assert_eq!(result.status.success(), accepted, "{result:?}");
+        if accepted {
+            assert_eq!(
+                decoded(&output.path().join("model/frames/00000000000000000000.png")),
+                [1000, 0]
+            );
+        } else {
+            assert!(String::from_utf8_lossy(&result.stdout).contains("D2C_MODEL_UNSUPPORTED"));
+        }
+    }
+}
+
+#[test]
+fn directory_source_reports_manifest_limits_and_stable_schema_errors() {
+    let input = tempfile::tempdir().unwrap();
+    let original = fixture(input.path(), false, 0.);
+    for mode in 0..5 {
+        let mut m = original.clone();
+        let expected = match mode {
+            0 => {
+                m.version = 2;
+                "SOURCE_VERSION"
+            }
+            1 => {
+                m.pairs.clear();
+                "SOURCE_PAIR_LIMIT"
+            }
+            2 => {
+                m.pairs[0].depth_sha256 = "X".repeat(64);
+                "SOURCE_PAIR_MANIFEST"
+            }
+            3 => {
+                m.snapshot = "missing.json".into();
+                "INPUT_OUTPUT_IO"
+            }
+            _ => {
+                m.pairs[0].pair_sequence = 2;
+                "PAIR_SEQUENCE_BINDING"
+            }
+        };
+        write_manifest(input.path(), &m);
+        let result = cli(input.path(), &["--validate-only"]);
+        assert!(!result.status.success());
+        assert!(
+            String::from_utf8_lossy(&result.stdout).contains(expected),
+            "{result:?}"
+        );
+    }
+    fs::write(
+        input.path().join("manifest.json"),
+        b"{\"version\":\"invalid\"}",
+    )
+    .unwrap();
+    let result = cli(input.path(), &["--validate-only"]);
+    assert!(String::from_utf8_lossy(&result.stdout).contains("JSON_SCHEMA"));
+}

@@ -93,6 +93,36 @@ fn fixture() -> Fixture {
         "return 5678;",
         "return 1700000000000000ULL+service_sequence*33333;",
     );
+    replace(
+        &mut sdk_source,
+        "if(ms==1)return NULL;usleep(10000);service_sequence++;return make(5);",
+        "usleep(10000);if(getenv(\"GDP_MOCK_WAIT_ERROR\")){*e=(error*)1;return NULL;}if(ms==1||getenv(\"GDP_MOCK_TIMEOUT\")||(getenv(\"GDP_MOCK_STALL\")&&service_sequence>3))return NULL;service_sequence++;return make(5);",
+    );
+    replace(
+        &mut sdk_source,
+        "return service_sequence;",
+        "return getenv(\"GDP_MOCK_DUPLICATE\")&&service_sequence>2?2:service_sequence;",
+    );
+    replace(
+        &mut sdk_source,
+        "return service_sequence*33333;",
+        "return service_sequence*33333+(getenv(\"GDP_MOCK_SKEW\")&&p->stream==3?30000:0);",
+    );
+    replace(
+        &mut sdk_source,
+        "return 0.1f;",
+        "return getenv(\"GDP_MOCK_SCALE\")?strtof(getenv(\"GDP_MOCK_SCALE\"),NULL):0.1f;",
+    );
+    replace(
+        &mut sdk_source,
+        "obj *f=make(5);f->stream=2;return f;",
+        "if(getenv(\"GDP_MOCK_MISSING_COLOR\"))return NULL;obj *f=make(5);f->stream=2;return f;",
+    );
+    replace(
+        &mut sdk_source,
+        "(void)d;(void)e;const char *helper_path",
+        "(void)d;(void)e;if(getenv(\"GDP_MOCK_OPEN_ERROR\")){*e=(error*)1;return NULL;}const char *helper_path",
+    );
     let sdk_c = root.join("mock-sdk.c");
     fs::write(&sdk_c, sdk_source).unwrap();
     compile("cc", &sdk_c, &sdk, None);
@@ -129,6 +159,16 @@ fn fixture() -> Fixture {
         &mut bridge_source,
         "if(p.last.pair_sequence==2){event(\"evidence-failed\");return 2;}",
         "",
+    );
+    replace(
+        &mut bridge_source,
+        "auto &p = *static_cast<Mock *>(handle);",
+        "auto &p = *static_cast<Mock *>(handle); if(std::getenv(\"GDP_MOCK_DEPTH_PUBLISH_ERROR\") && p.frame_id==\"depth_optical\")return 2;",
+    );
+    replace(
+        &mut bridge_source,
+        "if(!handle||!gdp_ros::pair_valid(pair))return 1;",
+        "if(!handle||!gdp_ros::pair_valid(pair))return 1;\n  if(std::getenv(\"GDP_MOCK_PAIR_PUBLISH_ERROR\"))return 2;",
     );
     let bridge_cpp = root.join("mock-bridge.cpp");
     fs::write(&bridge_cpp, bridge_source).unwrap();
@@ -863,4 +903,111 @@ fn interrupted_raw_capture_never_commits_an_incomplete_pair_target() {
     stop(&mut supervisor);
     assert!(!Path::new(ready["raw_recording"]["job_path"].as_str().unwrap()).exists());
     assert_eq!(status(&f).unwrap()["ready"], false);
+}
+
+fn quality_only(f: &Fixture) {
+    configure_runtime_quality(f, 10, 1_000_000);
+    let mut value: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    value.as_object_mut().unwrap().remove("raw_recording");
+    value["service"]["startup_timeout_ms"] = json!(2000);
+    fs::write(&f.config, value.to_string()).unwrap();
+}
+fn expect_terminal_failure(f: &Fixture, key: &str, value: &str) -> Value {
+    let mut supervisor = Command::new(env!("CARGO_BIN_EXE_capture-service"))
+        .args(["--config", f.config.to_str().unwrap()])
+        .env(key, value)
+        .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+        .env("GDP_ROS_MOCK_EVENTS", &f.events)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    let exit = loop {
+        if let Some(exit) = supervisor.try_wait().unwrap() {
+            break exit;
+        }
+        if started.elapsed() > Duration::from_secs(7) {
+            supervisor.kill().unwrap();
+            supervisor.wait().unwrap();
+            panic!("failure deadline: {:?}", status(f));
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert!(!exit.success());
+    let terminal = status(f).unwrap();
+    assert_eq!(terminal["ready"], false);
+    assert_eq!(terminal["restart_attempt"], 0);
+    let summary = fs::read_dir(f.root.join("quality"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path()
+        .join("summary.json");
+    let finalized: Value = serde_json::from_slice(&fs::read(summary).unwrap()).unwrap();
+    assert_eq!(finalized["summary"]["finalized"], true);
+    terminal
+}
+#[test]
+fn quality_runtime_tracks_missing_skewed_regressing_and_invalid_pixel_failures() {
+    for (key, value, metric) in [
+        ("GDP_MOCK_MISSING_COLOR", "1", "missing_pairs"),
+        ("GDP_MOCK_SKEW", "1", "skew_rejections"),
+        ("GDP_MOCK_DUPLICATE", "1", "monotonic_rejections"),
+        ("GDP_MOCK_SCALE", "10", "pairs_rejected"),
+        ("GDP_MOCK_TIMEOUT", "1", "poll_timeouts"),
+        ("GDP_MOCK_STALL", "1", "poll_timeouts"),
+    ] {
+        let f = fixture();
+        quality_only(&f);
+        let terminal = expect_terminal_failure(&f, key, value);
+        assert!(terminal[metric].as_u64().unwrap() > 0, "{key}: {terminal}");
+    }
+}
+#[test]
+fn disconnected_or_failed_publishers_finalize_bound_quality_without_false_readiness() {
+    for key in [
+        "GDP_MOCK_OPEN_ERROR",
+        "GDP_MOCK_WAIT_ERROR",
+        "GDP_MOCK_DEPTH_PUBLISH_ERROR",
+        "GDP_MOCK_PAIR_PUBLISH_ERROR",
+    ] {
+        let f = fixture();
+        quality_only(&f);
+        let terminal = expect_terminal_failure(&f, key, "1");
+        if key.contains("PUBLISH") {
+            assert!(terminal["publish_failures"].as_u64().unwrap() > 0);
+            assert!(terminal["individual_publish_calls"].as_u64().unwrap() > 0);
+        } else {
+            assert_eq!(terminal["pairs_accepted"], 0);
+        }
+    }
+}
+#[test]
+fn unit_scale_quality_measurement_and_startup_discard_do_not_require_normalization_or_raw_output() {
+    let f = fixture();
+    quality_only(&f);
+    let mut value: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    value["depth"]["unit_policy"] = json!("require-mm");
+    value["startup_discovery_seconds"] = json!(0.05);
+    fs::write(&f.config, value.to_string()).unwrap();
+    let mut supervisor = Command::new(env!("CARGO_BIN_EXE_capture-service"))
+        .args(["--config", f.config.to_str().unwrap()])
+        .env("GDP_MOCK_SCALE", "1")
+        .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+        .env("GDP_ROS_MOCK_EVENTS", &f.events)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let ready = wait_status(&f, &mut supervisor, |v| v["ready"] == true);
+    assert!(ready["snapshot_id"].as_str().is_some());
+    assert!(ready["raw_recording"].is_null());
+    let current: Value = serde_json::from_slice(
+        &fs::read(ready["quality"]["current_path"].as_str().unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert!(current["last_observed"]["depth"]["pixel_measurement"].is_object());
+    stop(&mut supervisor);
 }

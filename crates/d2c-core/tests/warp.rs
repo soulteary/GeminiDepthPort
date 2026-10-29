@@ -389,3 +389,62 @@ fn inverse_failure_does_not_turn_into_a_valid_depth_and_dimension_errors_clear_o
     );
     assert!(out.output().is_none());
 }
+
+#[test]
+fn extreme_geometry_is_counted_without_nonfinite_output_and_packing_checks_length() {
+    let mut k = camera(1, 1).intrinsics();
+    k.cx = -1e100;
+    let source = CameraModel::new(k, DistortionModel::PinholeZero).unwrap();
+    let lut = rays(&source);
+    let pixels = bytes(&[65535]);
+    let mut out = buffer();
+    let scale = DepthScale::millimeters_per_count(1e200).unwrap();
+    assert_eq!(scale.value(), 1e200);
+    let view = RawDepthView::new(&pixels, 1, 1, 2, Endian::Little, scale).unwrap();
+    let result = warp_depth_to_color(
+        view,
+        &lut,
+        &camera(1, 1),
+        DepthToColorTransform::new(I, [0.; 3]).unwrap(),
+        &mut out,
+    )
+    .unwrap();
+    // All projection coordinates remain finite here but cannot hit the sensor.
+    assert_eq!(result.stats.out_of_bounds, 1);
+    assert_eq!(
+        result.write_packed_le(&mut [0]),
+        Err(WarpError::OutputLength)
+    );
+    let distorted = CameraModel::new(
+        camera(1, 1).intrinsics(),
+        DistortionModel::BrownConrady5([1.; 5]),
+    )
+    .unwrap();
+    let result = warp_depth_to_color(
+        raw(&pixels, 1, 1, 1.),
+        &lut,
+        &distorted,
+        DepthToColorTransform::new(I, [0.; 3]).unwrap(),
+        &mut out,
+    )
+    .unwrap();
+    assert_eq!(result.stats.projection_failure, 1);
+    let err = RawDepthView::new(
+        &[],
+        0,
+        1,
+        0,
+        Endian::Little,
+        DepthScale::millimeters_per_count(1.).unwrap(),
+    )
+    .unwrap_err();
+    assert_eq!(err, WarpError::Geometry(GeometryError::InvalidDimensions));
+    assert!(err.to_string().contains("InvalidDimensions"));
+    assert!(matches!(
+        WarpOutputBuffer::new(WarpBufferLimits {
+            max_pixels: 0,
+            max_bytes: 10
+        }),
+        Err(WarpError::MemoryLimit)
+    ));
+}

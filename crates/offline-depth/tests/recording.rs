@@ -518,3 +518,265 @@ fn both_v2_provenances_export_d2c_diagnostics_without_upgrading_identity() {
         assert_eq!(stats["counters"]["source_pixels"], 2);
     }
 }
+
+fn tagged(root: &Path, record: &RecordingRecord) -> TaggedEvidence {
+    serde_json::from_slice(&fs::read(root.join(&record.evidence.path)).unwrap()).unwrap()
+}
+fn store_tagged(root: &Path, record: &mut RecordingRecord, evidence: &TaggedEvidence) {
+    record.evidence = reference(
+        root,
+        "changed-tagged.json",
+        &serde_json::to_vec(evidence).unwrap(),
+    );
+    index(root, record);
+}
+#[test]
+fn observed_publisher_metadata_is_independently_bound_and_never_upgraded_to_sdk() {
+    for invalid in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut record = fixture_v2(dir.path(), true, false);
+        let mut evidence = tagged(dir.path(), &record);
+        if let TaggedEvidence::ObservedAssociation { association, .. } = &mut evidence {
+            for (stored, frame) in [
+                (&mut record.color, &mut association.color),
+                (&mut record.depth, &mut association.depth),
+            ] {
+                frame.metadata_provenance = MetadataProvenance::PublisherReported;
+                frame.context.sequence = Some(17);
+                frame.context.device_timestamp_us = Some(0);
+                frame.context.system_timestamp_us = Some(1_000_000);
+                frame.reported_source_session = Some(SessionId::parse("e".repeat(32)).unwrap());
+                let value = serde_json::json!({"version":1,"frame_id":stored.frame_id,"stamp_sec":1,"stamp_nanosec":0,"sequence":if invalid{18}else{17},"device_timestamp_us":0,"system_timestamp_us":1_000_000,"session_id":"e".repeat(32)});
+                stored.metadata = Some(reference(
+                    dir.path(),
+                    &format!("{}-metadata.json", stored.frame_id),
+                    &serde_json::to_vec(&value).unwrap(),
+                ));
+            }
+        }
+        store_tagged(dir.path(), &mut record, &evidence);
+        let mut source = RecordingDirectorySource::open(dir.path()).unwrap();
+        if invalid {
+            assert_eq!(
+                source
+                    .next_frame()
+                    .err()
+                    .expect("must reject invalid recording")
+                    .to_string(),
+                "OBSERVED_METADATA_BINDING"
+            );
+        } else {
+            let frame = source.next_frame().unwrap().unwrap();
+            assert!(matches!(
+                frame.evidence,
+                TaggedEvidence::ObservedAssociation { .. }
+            ));
+            assert!(source.next_frame().unwrap().is_none());
+            assert!(source.next_frame().unwrap().is_none());
+        }
+    }
+}
+#[test]
+fn sdk_original_json_and_ros_wire_headers_must_match_the_recorded_pair_exactly() {
+    for invalid in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut record = fixture_v2(dir.path(), false, false);
+        let mut evidence = tagged(dir.path(), &record);
+        if let TaggedEvidence::SdkBoundPair { pair, source_json } = &mut evidence {
+            let mut original = pair.clone();
+            if invalid {
+                original.pair_sequence += 1;
+            }
+            *source_json = Some(reference(
+                dir.path(),
+                "original.json",
+                &serde_json::to_vec(&original).unwrap(),
+            ));
+            for (stored, frame) in [
+                (&mut record.color, &pair.color),
+                (&mut record.depth, &pair.depth),
+            ] {
+                stored.topic = Some(format!("/synthetic/{}", stored.frame_id));
+                stored.record_timestamp_ns = Some(1);
+                stored.header_timestamp_ns = frame.context.system_timestamp_us.map(|n| n * 1000);
+            }
+        }
+        store_tagged(dir.path(), &mut record, &evidence);
+        let mut source = RecordingDirectorySource::open(dir.path()).unwrap();
+        if invalid {
+            assert_eq!(
+                source
+                    .next_frame()
+                    .err()
+                    .expect("must reject invalid recording")
+                    .to_string(),
+                "SDK_ORIGINAL_JSON_BINDING"
+            );
+        } else {
+            assert!(source.next_frame().unwrap().is_some());
+            assert!(source.next_frame().unwrap().is_none());
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut record = fixture_v2(dir.path(), false, false);
+    record.color.topic = Some("/color".into());
+    record.color.record_timestamp_ns = Some(1);
+    record.color.header_timestamp_ns = Some(1);
+    index(dir.path(), &record);
+    assert_eq!(
+        RecordingDirectorySource::open(dir.path())
+            .unwrap()
+            .next_frame()
+            .err()
+            .expect("must reject invalid recording")
+            .to_string(),
+        "SDK_WIRE_HEADER_BINDING"
+    );
+}
+#[test]
+fn recording_manifest_payload_and_encoding_limits_are_not_silent_truncation() {
+    for mode in 0..8 {
+        let dir = tempfile::tempdir().unwrap();
+        let mut record = fixture_v2(dir.path(), true, false);
+        match mode {
+            0 => record.color.encoding = "unsupported".into(),
+            1 => record.color.stride = 1,
+            2 => record.color.file.sha256 = "G".repeat(64),
+            3 => record.color.record_timestamp_ns = None,
+            4 => record.color.camera_info = None,
+            5 => record.color.stride = usize::MAX,
+            6 => record.color.file = reference(dir.path(), "short.raw", &[0]),
+            _ => record.color.topic = Some("relative".into()),
+        }
+        index(dir.path(), &record);
+        assert!(
+            RecordingDirectorySource::open(dir.path())
+                .unwrap()
+                .next_frame()
+                .is_err(),
+            "{mode}"
+        );
+    }
+    for field in ["version", "record_count", "records_sha256"] {
+        let dir = tempfile::tempdir().unwrap();
+        fixture_v2(dir.path(), false, false);
+        let path = dir.path().join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        manifest[field] = if field == "records_sha256" {
+            serde_json::json!("bad")
+        } else {
+            serde_json::json!(0)
+        };
+        fs::write(path, manifest.to_string()).unwrap();
+        assert!(RecordingDirectorySource::open(dir.path()).is_err());
+    }
+}
+#[test]
+fn observed_rgb_and_bgr_pixels_preserve_native_depth_samples() {
+    for encoding in ["rgb8", "bgr8"] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut record = fixture_v2(dir.path(), true, false);
+        record.color.encoding = encoding.into();
+        record.color.stride = 6;
+        record.color.file = reference(dir.path(), "color-rgb.raw", &[1, 2, 3, 4, 5, 6]);
+        index(dir.path(), &record);
+        assert!(
+            RecordingDirectorySource::open(dir.path())
+                .unwrap()
+                .next_frame()
+                .is_ok()
+        );
+    }
+}
+#[test]
+fn a_second_record_must_advance_source_sequence_and_both_observed_clocks() {
+    let dir = tempfile::tempdir().unwrap();
+    let record = fixture_v2(dir.path(), true, false);
+    let line = serde_json::to_string(&record).unwrap();
+    let bytes = format!("{line}\n{line}\n");
+    fs::write(dir.path().join("records.jsonl"), &bytes).unwrap();
+    let path = dir.path().join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    manifest["record_count"] = serde_json::json!(2);
+    manifest["records_sha256"] = serde_json::json!(sha256(bytes.as_bytes()));
+    fs::write(path, manifest.to_string()).unwrap();
+    let mut source = RecordingDirectorySource::open(dir.path()).unwrap();
+    assert!(source.next_frame().unwrap().is_some());
+    assert_eq!(
+        source
+            .next_frame()
+            .err()
+            .expect("must reject invalid recording")
+            .to_string(),
+        "SOURCE_PROGRESSION"
+    );
+}
+
+#[test]
+fn sdk_raw_counts_require_the_snapshot_source_scale_and_export_original_evidence() {
+    for valid in [true, false] {
+        let input = tempfile::tempdir().unwrap();
+        let mut record = fixture_v2(input.path(), false, true);
+        let mut evidence = tagged(input.path(), &record);
+        let mut snapshot: snapshot::SnapshotEnvelope =
+            serde_json::from_slice(&fs::read(input.path().join("snapshot.json")).unwrap()).unwrap();
+        snapshot.content.depth = DepthRepresentation::Millimetres {
+            quantization: QuantizationPolicy::NearestHalfUpPreserveZeroClampPositiveRejectOverflow,
+        };
+        snapshot.content.configuration["source_depth_scale_mm"] =
+            serde_json::json!(if valid { f64::from(0.1f32) } else { 1. });
+        snapshot.content.binding.configuration_id = ConfigurationId::parse(
+            content_digest(
+                ContentKind::Configuration,
+                &serde_json::to_vec(&snapshot.content.configuration).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let snapshot = snapshot.content.seal().unwrap();
+        fs::write(
+            input.path().join("snapshot.json"),
+            snapshot.to_bytes().unwrap(),
+        )
+        .unwrap();
+        if let TaggedEvidence::SdkBoundPair { pair, source_json } = &mut evidence {
+            for frame in [&mut pair.color, &mut pair.depth] {
+                frame.context.configuration_id = snapshot.content.binding.configuration_id.clone();
+                frame.context.snapshot_id = snapshot.snapshot_id.clone();
+            }
+            *source_json = Some(reference(
+                input.path(),
+                "original.json",
+                &serde_json::to_vec(&pair).unwrap(),
+            ));
+        }
+        store_tagged(input.path(), &mut record, &evidence);
+        let output = tempfile::tempdir().unwrap();
+        let result = cli(
+            input.path(),
+            &[
+                "--recording-v2",
+                "--preserve-counts",
+                "--output",
+                output.path().to_str().unwrap(),
+                "--job",
+                "raw",
+            ],
+        );
+        assert_eq!(result.status.success(), valid, "{result:?}");
+        if valid {
+            assert_eq!(
+                decoded(&output.path().join("raw/frames/00000000000000000000.png")),
+                [10000, 0]
+            );
+            let blobs = output.path().join("raw/source-blobs");
+            // The exact source JSON is retained alongside the tagged evidence.
+            assert!(output.path().join("raw/COMPLETE").is_file());
+            assert!(fs::read_dir(blobs).unwrap().count() >= 3);
+        } else {
+            assert!(String::from_utf8_lossy(&result.stdout).contains("SDK_RAW_SOURCE_BINDING"));
+        }
+    }
+}

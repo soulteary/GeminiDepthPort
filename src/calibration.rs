@@ -233,8 +233,7 @@ pub fn export(ctl: &Controller) -> Result<Value> {
     let id = text(&container["Id"]);
     let remote = format!("/tmp/calibration-{}.json", random(16));
     let operation = (|| {
-        command(
-            &ctl.root,
+        ctl.run_with_input(
             &args(&[
                 "docker",
                 "exec",
@@ -249,7 +248,7 @@ pub fn export(ctl: &Controller) -> Result<Value> {
                 &remote,
             ]),
             140,
-            Some(&serde_json::to_vec(&req)?),
+            &serde_json::to_vec(&req)?,
         )
         .map_err(|_| {
             anyhow::anyhow!(

@@ -333,3 +333,121 @@ fn save_at_revision_rejects_an_outdated_snapshot() {
     );
     assert_eq!(ctl.load().unwrap(), changed);
 }
+
+#[test]
+fn validation_rejects_incomplete_identity_profiles_and_legacy_migration_bindings() {
+    let original: Value =
+        serde_json::from_str(include_str!("../inventory.v2.example.json")).unwrap();
+    for (path, value, code) in [
+        ("/usbfs_minimum_mb", json!(0), "USBFS_POLICY"),
+        ("/upstream_commit", json!("wrong"), "PROFILE_BASELINE"),
+        ("/cameras/0/name", json!("bad name"), "CAMERA_ID"),
+        ("/cameras/0/timestamp_source", json!(3), "CAMERA_METADATA"),
+        ("/cameras/0/parameters", json!([]), "PARAMETER_FIELDS"),
+    ] {
+        let mut d = original.clone();
+        if path == "/usbfs_minimum_mb" {
+            d["usbfs_minimum_mb"] = value;
+        } else {
+            *d.pointer_mut(path).unwrap() = value;
+        }
+        assert!(
+            config::validate(&d, true)
+                .unwrap_err()
+                .to_string()
+                .starts_with(code),
+            "{path}"
+        );
+    }
+    let legacy: Value = serde_json::from_str(include_str!("fixtures/inventory.v1.json")).unwrap();
+    for bindings in [
+        json!([]),
+        json!({"unknown":{"name":"test","namespace":"/test","frame_prefix":"test"}}),
+        json!({"head":{"name":"test"}}),
+    ] {
+        assert!(config::migrate(&legacy, &bindings).is_err());
+    }
+    assert!(config::validate(&json!([]), true).is_err());
+}
+
+#[test]
+fn fractional_negative_and_scientific_values_match_python_configuration_digests() {
+    let value: Value = serde_json::from_str("[-12.34,1.234e20,1.234e-8,12.345,0.125]").unwrap();
+    assert_eq!(
+        canonical(&value),
+        "[-12.34,1.234e+20,1.234e-08,12.345,0.125]"
+    );
+}
+
+#[test]
+fn legacy_inventory_cannot_enable_unbound_streams_or_unsupported_sources() {
+    let original: Value = serde_json::from_str(include_str!("fixtures/inventory.v1.json")).unwrap();
+    config::validate(&original, true).unwrap();
+    for (pointer, value, reason) in [
+        (
+            "/startup_timeout_seconds",
+            json!(0),
+            "Invalid legacy settings",
+        ),
+        (
+            "/cameras/0/enabled",
+            json!(false),
+            "Both head and wrist required",
+        ),
+        ("/cameras/0/name", json!("other"), "Maintain head and wrist"),
+        (
+            "/cameras/0/model",
+            json!("other"),
+            "Invalid legacy camera role",
+        ),
+        (
+            "/cameras/0/parameters/uvc_backend",
+            json!({}),
+            "Invalid parameter",
+        ),
+        (
+            "/cameras/0/parameters/uvc_backend",
+            json!("v4l2"),
+            "Unsupported legacy source",
+        ),
+        (
+            "/cameras/0/parameters/enumerate_net_device",
+            json!(true),
+            "Unsupported stream/source",
+        ),
+        (
+            "/cameras/0/parameters/enable_accel",
+            json!(true),
+            "Unsupported extra streams",
+        ),
+        (
+            "/cameras/0/parameters/enable_depth",
+            json!("true"),
+            "Boolean streams required",
+        ),
+        (
+            "/cameras/0/parameters/depth_width",
+            json!(0),
+            "Positive profile required",
+        ),
+        (
+            "/cameras/0/serial_number",
+            json!(""),
+            "Empty or duplicate binding",
+        ),
+    ] {
+        let mut d = original.clone();
+        *d.pointer_mut(pointer).unwrap() = value;
+        let error = config::validate(&d, true).unwrap_err().to_string();
+        assert!(error.contains(reason), "{pointer}: {error}");
+    }
+    let mut d = original;
+    d["cameras"][0]["parameters"]["enable_color"] = json!(false);
+    d["cameras"][0]["parameters"]["enable_depth"] = json!(false);
+    assert!(
+        config::validate(&d, true)
+            .unwrap_err()
+            .to_string()
+            .contains("Enable image stream")
+    );
+}

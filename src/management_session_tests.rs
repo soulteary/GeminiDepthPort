@@ -47,6 +47,8 @@ struct Docker {
     probe_failure: bool,
     probe_failure_camera: Option<String>,
     stop_failure: bool,
+    calibration_request: Option<Value>,
+    calibration_fault: Option<&'static str>,
 }
 pub(crate) struct Fixture {
     _temp: tempfile::TempDir,
@@ -232,7 +234,7 @@ impl Fixture {
         let state = docker.clone();
         let command_root = root.clone();
         let mut ctl = Controller::new(&root).unwrap();
-        ctl.command_runner = Some(Arc::new(move |args| {
+        ctl.command_runner = Some(Arc::new(move |args, input| {
             let mut d = state.lock().unwrap();
             d.calls.push(args.to_vec());
             match args.get(1).map(String::as_str) {
@@ -301,6 +303,40 @@ impl Fixture {
                     }
                     Ok(String::new())
                 }
+                Some("exec") if args.iter().any(|a| a == "/app/calibration_export.py") => {
+                    let request: Value = serde_json::from_slice(
+                        input.expect("calibration request must be private stdin"),
+                    )?;
+                    assert_eq!(request["kind"], crate::calibration::KIND);
+                    d.calibration_request = Some(request);
+                    if d.calibration_fault == Some("collect") {
+                        bail!("synthetic collector failed");
+                    }
+                    Ok(String::new())
+                }
+                Some("exec") if args.get(3).is_some_and(|a| a == "cat" || a == "rm") => {
+                    if args[3] == "rm" {
+                        return Ok(String::new());
+                    }
+                    if d.calibration_fault == Some("read") {
+                        bail!("synthetic evidence unreadable");
+                    }
+                    if d.calibration_fault == Some("malformed") {
+                        return Ok("bad json".into());
+                    }
+                    let mut evidence =
+                        calibration_observations(d.calibration_request.as_ref().unwrap());
+                    if d.calibration_fault == Some("binding") {
+                        evidence["request_sha256"] = json!("0".repeat(64));
+                    }
+                    if d.calibration_fault == Some("identity") {
+                        d.cameras[0].container["Id"] = json!("9".repeat(64));
+                    }
+                    if d.calibration_fault == Some("group") {
+                        d.cameras[0].container["State"]["Running"] = json!(false);
+                    }
+                    Ok(evidence.to_string())
+                }
                 Some("exec") => {
                     let index = d
                         .cameras
@@ -358,6 +394,36 @@ impl Fixture {
             generation,
             docker,
         }
+    }
+    pub(crate) fn install_rust_runtime(&mut self) -> Value {
+        let manifest = json!({"version":1,"upstream_commit":crate::capture_backend::SOURCE_COMMIT,"sdk_version":"2.10.6","communication_profile":config::COMMUNICATION,"sdk_sha256":"a".repeat(64),"bridge_sha256":"b".repeat(64),"service_sha256":"c".repeat(64),"files":{"/usr/local/bin/capture-service":"c".repeat(64),"/opt/orbbec-sdk/lib/libOrbbecSDK.so":"a".repeat(64),"/opt/gdp-ros/lib/libgeminidepthport_ros_bridge.so":"b".repeat(64),"/opt/gdp-ros/bin/gdp-usb-recover":"e".repeat(64)},"usb_recovery":{"helper":"/opt/gdp-ros/bin/gdp-usb-recover","sha256":"e".repeat(64)},"sdk_source":{"repository":"https://github.com/orbbec/OrbbecSDK_ROS2","commit":crate::capture_backend::SOURCE_COMMIT,"license_files":{"/opt/third-party/orbbec/LICENSE":"f".repeat(64)}}});
+        let image = json!([{"Id":format!("sha256:{}","a".repeat(64)),"Config":{"Labels":{"org.opencontainers.image.revision":self.inventory["upstream_commit"],"org.geminidepthport.capture-backend":"rust-v1","org.geminidepthport.explicit-bindings":"1","org.geminidepthport.communication-profile":config::COMMUNICATION}}}]);
+        let raw = manifest.to_string();
+        let previous = self.ctl.command_runner.clone().unwrap();
+        self.ctl.command_runner = Some(Arc::new(move |args, input| {
+            if args.get(1).is_some_and(|a| a == "image") {
+                return Ok(image.to_string());
+            }
+            if args.get(1).is_some_and(|a| a == "run")
+                && args
+                    .last()
+                    .is_some_and(|a| a == "/opt/gdp-capture/runtime.json")
+            {
+                return Ok(raw.clone());
+            }
+            previous(args, input)
+        }));
+        let runtime = crate::capture_backend::runtime(&self.ctl, &self.inventory).unwrap();
+        self.generation["capture_runtime"] = runtime.clone();
+        let path = self
+            .ctl
+            .root
+            .join("state/generations")
+            .join(text(&self.generation["generation"]))
+            .join("manifest.json");
+        atomic_json(&path, &self.generation).unwrap();
+        atomic_json(&self.ctl.root.join("state/current-generation.json"),&json!({"generation":self.generation["generation"],"manifest_sha256":file_hash(&path).unwrap()})).unwrap();
+        runtime
     }
     pub(crate) fn prepare_host(&mut self) {
         let host = self.ctl.root.join("host");
@@ -977,7 +1043,7 @@ fn migration_requires_exact_plan_and_preserves_a_private_byte_identical_backup()
     let mut ctl = Controller::new(temp.path()).unwrap();
     let original = include_str!("../tests/fixtures/inventory.v1.json");
     atomic(&ctl.root.join("inventory.json"), original.as_bytes()).unwrap();
-    ctl.command_runner = Some(Arc::new(|a| {
+    ctl.command_runner = Some(Arc::new(|a, _| {
         assert_eq!(a[1], "ps");
         Ok(String::new())
     }));
@@ -1106,4 +1172,157 @@ fn preflight_refuses_missing_udev_rules_and_missing_bound_device() {
     )
     .unwrap();
     error(f.ctl.preflight(&f.inventory), "DEVICE_UNAVAILABLE");
+}
+
+fn calibration_observations(request: &Value) -> Value {
+    let mut cameras = json!({});
+    for camera in request["cameras"].as_array().unwrap() {
+        let mut info = json!({});
+        for (stream, expected) in camera["streams"].as_object().unwrap() {
+            info[stream] = json!({"frame_id":expected["frame_id"],"width":expected["width"],"height":expected["height"],"k":[500.,0.,320.,0.,500.,240.,0.,0.,1.],"r":[1.,0.,0.,0.,1.,0.,0.,0.,1.],"p":[500.,0.,320.,0.,0.,500.,240.,0.,0.,0.,1.,0.],"d":[0.,0.,0.,0.,0.],"distortion_model":"plumb_bob"});
+        }
+        info["depth_to_color"] = json!({"source_frame":camera["streams"]["depth"]["frame_id"],"target_frame":camera["streams"]["color"]["frame_id"],"translation_unit":"m","rotation_representation":"quaternion_xyzw","translation":[0.02,0.,0.],"rotation":[0.,0.,0.,1.]});
+        cameras[text(&camera["name"])] = info;
+    }
+    json!({"source":"offline-evidence","request_sha256":crate::calibration::digest(request),"cameras":cameras})
+}
+#[test]
+fn calibration_export_binds_private_request_to_all_cameras_and_always_cleans_remote_evidence() {
+    let f = Fixture::new(false, 2);
+    let result = crate::calibration::export(&f.ctl).unwrap();
+    assert_eq!(result["camera_count"], 2);
+    assert_eq!(result["physical_accuracy_verified"], false);
+    let file = f
+        .ctl
+        .root
+        .join("state/calibration")
+        .join(format!("{}.json", text(&result["snapshot_sha256"])));
+    let record = read_json(&file).unwrap();
+    assert_eq!(record["generation"], f.generation["generation"]);
+    assert_eq!(record["cameras"].as_array().unwrap().len(), 2);
+    let d = f.docker.lock().unwrap();
+    let request = d.calibration_request.as_ref().unwrap();
+    assert_eq!(
+        record["request_sha256"],
+        crate::calibration::digest(request)
+    );
+    let collect = d
+        .calls
+        .iter()
+        .find(|a| a.iter().any(|a| a == "/app/calibration_export.py"))
+        .unwrap();
+    let cleanup = d
+        .calls
+        .iter()
+        .find(|a| a.get(3).is_some_and(|a| a == "rm"))
+        .unwrap();
+    assert_eq!(collect.last(), cleanup.last());
+}
+#[test]
+fn calibration_collection_read_binding_and_identity_failures_never_publish_a_snapshot() {
+    for fault in [
+        "collect",
+        "read",
+        "malformed",
+        "binding",
+        "identity",
+        "group",
+    ] {
+        let f = Fixture::new(false, 2);
+        f.edit(|d| d.calibration_fault = Some(fault));
+        assert!(crate::calibration::export(&f.ctl).is_err(), "{fault}");
+        assert!(!f.ctl.root.join("state/calibration").exists());
+        assert!(
+            f.docker
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .any(|a| a.get(3).is_some_and(|a| a == "rm")),
+            "cleanup missing after {fault}"
+        );
+    }
+}
+#[test]
+fn calibration_requires_complete_group_before_collecting_any_evidence() {
+    let f = Fixture::new(false, 2);
+    f.edit(|d| d.cameras[0].container["State"]["Running"] = json!(false));
+    error(crate::calibration::export(&f.ctl), "GROUP_INCOMPLETE");
+    assert!(f.docker.lock().unwrap().calibration_request.is_none());
+}
+#[test]
+fn calibration_rejects_cropped_unrectified_and_invalid_distortion_models() {
+    let f = Fixture::new(false, 1);
+    let request =
+        crate::calibration::request(&f.inventory, text(&f.generation["generation"])).unwrap();
+    for (key, value) in [
+        ("binning_x", json!(2)),
+        ("roi", json!({"x_offset":1})),
+        ("r", json!([1., 0., 0., 0., -1., 0., 0., 0., 1.])),
+        ("k", json!([0., 0., 0., 0., 0., 0., 0., 0., 1.])),
+        ("distortion_model", json!("unsupported")),
+        ("d", json!([0.])),
+    ] {
+        let mut observed = calibration_observations(&request);
+        observed["cameras"]["camera_a"]["color"][key] = value;
+        assert!(
+            crate::calibration::snapshot(
+                &f.inventory,
+                text(&f.generation["generation"]),
+                &observed
+            )
+            .is_err(),
+            "{key}"
+        );
+    }
+}
+
+#[test]
+fn native_image_contract_and_service_configuration_bind_the_usb_recovery_artifact() {
+    let mut f = Fixture::new(false, 1);
+    let runtime = f.install_rust_runtime();
+    f.ctl.image_contract(&f.inventory).unwrap();
+    let camera = config::resolved(&f.inventory, &f.inventory["cameras"][0]);
+    let service = crate::capture_backend::service_config(
+        &f.inventory,
+        &camera,
+        text(&f.generation["generation"]),
+        &runtime,
+    );
+    assert_eq!(service["usb_recovery"], runtime["manifest"]["usb_recovery"]);
+    assert_eq!(
+        service["runtime_contract"]["sdk_sha256"],
+        runtime["manifest"]["sdk_sha256"]
+    );
+}
+#[cfg(target_os = "linux")]
+#[test]
+fn native_preflight_requires_the_frozen_runtime_instead_of_mutable_image_labels() {
+    let mut f = Fixture::new(false, 1);
+    f.prepare_host();
+    f.install_rust_runtime();
+    f.ctl.preflight(&f.inventory).unwrap();
+    f.generation["capture_runtime"]["image_id"] = json!(format!("sha256:{}", "0".repeat(64)));
+    let path = f
+        .ctl
+        .root
+        .join("state/generations")
+        .join(text(&f.generation["generation"]))
+        .join("manifest.json");
+    atomic_json(&path, &f.generation).unwrap();
+    atomic_json(&f.ctl.root.join("state/current-generation.json"),&json!({"generation":f.generation["generation"],"manifest_sha256":file_hash(&path).unwrap()})).unwrap();
+    error(f.ctl.preflight(&f.inventory), "RUST_RUNTIME_DRIFT");
+}
+
+#[test]
+fn ensure_started_persists_preparation_failure_before_attempting_start() {
+    let f = Fixture::new(true, 1);
+    let pointer = f.ctl.root.join("state/current-generation.json");
+    let original = fs::read(&pointer).unwrap();
+    fs::remove_file(&pointer).unwrap();
+    let error = f.ctl.ensure_started(&f.inventory).unwrap_err().to_string();
+    let result = read_json(&f.ctl.root.join("state/lifecycle.json")).unwrap();
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["error"], error.split(':').next().unwrap());
+    atomic(&pointer, &original).unwrap();
 }

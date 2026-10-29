@@ -2678,4 +2678,85 @@ mod tests {
         assert!(child.try_wait().unwrap().is_some());
         assert!(start.elapsed() < Duration::from_secs(2));
     }
+    #[test]
+    fn quality_adapter_rejects_rebinding_and_tracks_invalid_unbound_receipts() {
+        let dir =
+            std::env::temp_dir().join(format!("quality-boundaries-{}", random_session().unwrap()));
+        let session = "a".repeat(32);
+        let instance = "b".repeat(64);
+        let mut q = ServiceQuality::new(
+            runtime_policy(),
+            &session,
+            &instance,
+            Instant::now(),
+            &dir.join("status.json"),
+        )
+        .unwrap();
+        q.receipt("depth", None, Instant::now(), None, false)
+            .unwrap();
+        let m = orbbec_safe::FrameMetadata {
+            format: orbbec_safe::Format::Depth16,
+            width: 2,
+            height: 1,
+            index: 1,
+            timestamp_us: 10,
+            system_timestamp_us: 1_000_000,
+            data_size: 4,
+            depth_scale_mm: Some(1.),
+        };
+        q.receipt(
+            "depth",
+            Some(&m),
+            Instant::now(),
+            Some(1_000_000_000),
+            false,
+        )
+        .unwrap();
+        assert_eq!(q.receipts["depth"], 2);
+        assert_eq!(q.engine.snapshot().streams["depth"].frame_count, 0);
+        let mut snapshot = quality_snapshot(&session, &instance);
+        q.bind(&snapshot).unwrap();
+        snapshot.content.calibration.observed_unix_ns = Some(2);
+        snapshot.content.binding.calibration_id = snapshot.content.calibration.id().unwrap();
+        let changed = snapshot.content.seal().unwrap();
+        assert!(q.bind(&changed).is_err());
+        let mut wrong = quality_snapshot(&"c".repeat(32), &instance);
+        assert!(q.bind(&wrong).is_err());
+        wrong = quality_snapshot(&session, &instance);
+        wrong.content.quality_policy.max_pair_delta_us += 1;
+        assert!(q.bind(&wrong).is_err());
+        q.finalize().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn pair_rejections_preserve_stable_quality_classifications() {
+        use frame_core::PairError::*;
+        for error in [
+            PairSequenceNotAdvancing,
+            ColorSequenceNotAdvancing,
+            DepthSequenceNotAdvancing,
+            ColorTimestampNotAdvancing,
+            DepthTimestampNotAdvancing,
+        ] {
+            assert_eq!(
+                pair_rejection(&error),
+                (
+                    "SOURCE_NOT_ADVANCING",
+                    quality_core::FrameViolation::TimestampRegression
+                )
+            );
+        }
+        assert_eq!(
+            pair_rejection(&SkewExceeded).1,
+            quality_core::FrameViolation::PairSkewExceeded
+        );
+        assert_eq!(
+            pair_rejection(&InvalidPolicy).0,
+            "PAIR_BINDING_OR_POLICY_INVALID"
+        );
+        assert_eq!(
+            pair_rejection(&MissingColor).0,
+            "PAIR_FRAME_CONTRACT_INVALID"
+        );
+    }
 }

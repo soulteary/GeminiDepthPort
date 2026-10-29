@@ -491,4 +491,149 @@ elif a and a[0] in ('exec','stop'):
         self.assertEqual(saved['status'],'failed')
         self.assertFalse(json.loads(self.request('/api/state'))['generated_current'])
 
+    def live_fixture(self):
+        """Real bootstrap/snapshot IDs, with Docker as a local process double."""
+        import time
+        oracle=json.loads((BASE/'tests/rust/contracts.json').read_text())
+        data=copy.deepcopy(next(c['data'] for c in oracle['cases'] if c['name']=='three confirmed'))
+        (self.root/'inventory.json').write_text(json.dumps(data))
+        self.cli('render')
+        pointer=json.loads((self.root/'state/current-generation.json').read_text())
+        generation=pointer['generation'];folder=self.root/'state/generations'/generation
+        live={'cameras':[]}
+        for i,camera in enumerate(data['cameras']):
+            name=camera['name'];policy=folder/'config'/name/'observer-policy.json'
+            p=json.loads(policy.read_text());req=p['request'];observed={}
+            for c in req['cameras']:
+                streams={}
+                for stream,expected in c['streams'].items():
+                    streams[stream]=dict(frame_id=expected['frame_id'],width=expected['width'],height=expected['height'],k=[500.,0.,320.,0.,500.,240.,0.,0.,1.],r=[1.,0.,0.,0.,1.,0.,0.,0.,1.],p=[500.,0.,320.,0.,0.,500.,240.,0.,0.,0.,1.,0.],d=[0.,0.,0.,0.,0.],distortion_model='plumb_bob')
+                streams['depth_to_color']=dict(source_frame=c['streams']['depth']['frame_id'],target_frame=c['streams']['color']['frame_id'],translation_unit='m',rotation_representation='quaternion_xyzw',translation=[.02,0.,0.],rotation=[0.,0.,0.,1.])
+                observed[c['name']]=streams
+            observations={'source':'ros-camera-info-tf','request_sha256':hashlib.sha256(json.dumps(req,sort_keys=True,separators=(',',':')).encode()).hexdigest(),'cameras':observed}
+            observation=self.root/f'observed-{i}.json';observation.write_text(json.dumps(observations))
+            cid=f'{i+10:064x}';sid=f'{i+1:032x}'
+            result=subprocess.run([str(BINARY.with_name('observer-bootstrap')),str(policy),str(observation),cid,sid,'1'],capture_output=True,text=True,check=True)
+            snapshot=json.loads(result.stdout)['snapshot'];snapshot_id=snapshot['snapshot_id']
+            status=dict(version=1,kind='official-observer-status',instance_id=cid,session_id=sid,generation=generation,config_sha256=hashlib.sha256(policy.read_bytes()).hexdigest(),snapshot_id=snapshot_id,snapshot_path=f'/tmp/capture-observer/snapshots/{snapshot_id}.json',pid=42+i,driver_pid=100+i,ready=True,state='ready',updated_unix_ms=time.time()*1000,session_kind='observer',native_session_verified=False,received_counts={'color':5,'depth':5})
+            quality=dict(version=1,session_id=sid,origin_session_id=sid,at={'session_id':sid,'offset_ns':10},active_episodes=[],finalized_sessions=[],current_session_finalized=False,latest_event_sequence=1)
+            bundle={'status':status,'processes_alive':True,'current':dict(version=1,instance_id=cid,session_id=sid,snapshot_id=snapshot_id,quality=quality),'events':dict(version=1,origin_session_id=sid,latest_sequence=1,gap=None,events=[dict(version=1,sequence=1,scope={'kind':'recorder'},fact='synthetic')],has_more=False,next_cursor=dict(origin_session_id=sid,after_sequence=1)),'summary':None}
+            container={'Id':cid,'Config':{'Labels':{'com.docker.compose.project':'orbbec-multicam','com.docker.compose.oneoff':'False','orbbec.role':'camera','orbbec.generation':generation,'orbbec.camera':name}},'State':{'Running':True,'Status':'running','Health':{'Status':'healthy'}}}
+            live['cameras'].append(dict(name=name,container=container,bundle=bundle,snapshot=snapshot))
+        (self.root/'live.json').write_text(json.dumps(live))
+        script=self.root/'bin/docker';source=script.read_text()
+        marker="if a[:2]==['ps','-aq']"
+        block='''if (root/'live.json').exists():
+    import time
+    live=json.loads((root/'live.json').read_text());cameras=live['cameras']
+    def save(): (root/'live.json').write_text(json.dumps(live))
+    if a[0]=='ps':
+        if not any('orbbec.web.preview' in x or 'orbbec.role=management' in x for x in a):
+            for c in cameras:print(c['container']['Id'])
+        sys.exit(0)
+    if a[0]=='inspect':print(json.dumps([c['container'] for c in cameras if c['container']['Id'] in a[1:]]));sys.exit(0)
+    if a[0]=='compose':
+        if 'ps' in a and a[-1].startswith('camera_'):
+            name=a[-1].removeprefix('camera_');print(next(c['container']['Id'] for c in cameras if c['name']==name))
+        elif 'logs' in a:print('synthetic lifecycle log')
+        sys.exit(0)
+    if a[0]=='exec':
+        c=next(c for c in cameras if c['container']['Id']==a[1]);b=c['bundle'];b['status']['updated_unix_ms']=time.time()*1000
+        if 'backend=sys.argv[1]' in ' '.join(a):print(json.dumps(b))
+        elif a[-1] in ('0','1'):print(json.dumps(b['status']))
+        else:print(json.dumps(c['snapshot']))
+        sys.exit(0)
+    if a[0]=='stop':
+        for c in cameras:
+            if c['container']['Id']==a[-1]:c['container']['State']['Running']=False
+        save();sys.exit(0)
+    if a[0]=='rm':live['cameras']=[c for c in cameras if c['container']['Id']!=a[-1]];save();sys.exit(0)
+    if a[0]=='logs':print('synthetic lifecycle log');sys.exit(0)
+'''
+        self.assertIn(marker,source);script.write_text(source.replace(marker,block+marker,1))
+        return live
+
+    def test_live_cli_quality_queries_preserve_expected_binding_and_bounded_windows(self):
+        live=self.live_fixture();camera=live['cameras'][0];current=json.loads(self.cli('quality-current',camera['name']).stdout)
+        self.assertTrue(current['worker_ready']);self.assertEqual(current['session_kind'],'observer')
+        cursor=dict(origin_session_id=current['session_id'],after_sequence=0)
+        events=json.loads(self.cli('quality-events',camera['name'],'--cursor',json.dumps(cursor),'--limit','1').stdout)
+        self.assertEqual(len(events['result']['page']['events']),1)
+        self.assertFalse(json.loads(self.cli('quality-session-summary',camera['name']).stdout)['result']['available'])
+        expected={k:current[k] for k in ('generation_id','instance_id','session_id','snapshot_id')}
+        batch=self.root/'batch.json';batch.write_text(json.dumps(dict(version=1,cameras=[dict(camera=camera['name'],expected=expected,limit=1)])))
+        response=json.loads(self.cli('quality-batch','--request',str(batch)).stdout);self.assertFalse(response['atomic_group_snapshot'])
+        batch.write_text(json.dumps(dict(version=1,camera=camera['name'],expected=expected,from_cursor=cursor,to_sequence=1,limit=1)))
+        self.cli('quality-window','--request',str(batch))
+        batch.write_text('x'*65537);self.assertIn('QUALITY_REQUEST_SIZE',self.cli('quality-batch','--request',str(batch),ok=False).stderr)
+
+    def test_live_cli_snapshot_context_and_legacy_guard_do_not_claim_native_protection(self):
+        live=self.live_fixture();snapshot=json.loads(self.cli('capture-snapshot').stdout)
+        self.assertEqual(len(snapshot['snapshots']),3)
+        for camera in live['cameras']:
+            self.assertTrue((self.root/'state/capture-snapshots'/f"{camera['snapshot']['snapshot_id']}.json").is_file())
+        context=json.loads(self.cli('recording-context').stdout);self.assertFalse(context['protection']['strong_guarantee_available'])
+        self.assertIn('RECORDING_STRONG_GUARANTEE_UNSUPPORTED',self.cli('recording-context','--require-strong',ok=False).stderr)
+        self.assertIn('RECORDING_STRONG_GUARANTEE_UNSUPPORTED',self.cli('protect','--require-strong',ok=False).stderr)
+        token=json.loads(self.cli('protect').stdout)['token'];guard=json.loads(self.cli('recording-status').stdout);self.assertTrue(guard['blocked']);self.assertNotIn(token,json.dumps(guard))
+        self.cli('release-protection',ok=False,stdin='wrong');self.cli('release-protection',stdin=token)
+        self.assertFalse(json.loads(self.cli('recording-status').stdout)['blocked'])
+
+    def test_cli_confirmed_boot_persists_preflight_failure_and_independent_shutdown_remains_available(self):
+        self.live_fixture()
+        self.cli('boot',ok=False);job=json.loads((self.root/'state/latest-job.json').read_text());self.assertEqual(job['status'],'failed')
+        self.assertFalse(json.loads((self.root/'state/lifecycle.json').read_text())['ready'])
+        self.assertIn('synthetic lifecycle log',self.cli('logs').stdout)
+        self.cli('status');self.cli('usbfs-status');self.cli('stack-stop','--remove')
+        self.assertEqual(json.loads((self.root/'live.json').read_text())['cameras'],[])
+
+    def test_cli_migration_file_validation_negotiation_and_argument_boundaries(self):
+        request={'protocols':{'snapshot':1}};self.assertEqual(json.loads(self.cli('capabilities','--require',json.dumps(request)).stdout)['negotiated'],request)
+        self.cli('capabilities','--require','{"protocols":{"unknown":1}}',ok=False)
+        candidate=self.root/'candidate.json';candidate.write_text(json.dumps(self.data));self.assertTrue(json.loads(self.cli('validate','--file',str(candidate),'--draft').stdout)['valid'])
+        original=(BASE/'tests/fixtures/inventory.v1.json').read_bytes();(self.root/'inventory.json').write_bytes(original)
+        binding=self.root/'bindings.json';binding.write_text('{}');plan=json.loads(self.cli('migrate','--bindings',str(binding)).stdout)
+        self.cli('migrate','--apply','--expected-plan','wrong',ok=False)
+        self.assertTrue(json.loads(self.cli('migrate','--apply','--expected-plan',plan['plan_digest']).stdout)['applied'])
+        for args in [('quality-events','camera_a','--limit'),('quality-events','camera_a','--limit','1','--limit','2'),('quality-current',),('recording-context','--require-strong','--require-strong'),('serve','--port'),('migrate','--bindings')]:self.assertIn('ARGUMENT',self.cli(*args,ok=False).stderr)
+        self.assertIn('Commands:',self.cli('quality-events','--help').stdout)
+
+    def test_server_bind_and_container_public_origin_contracts(self):
+        base=[str(BINARY),'--root',str(self.root),'serve']
+        for args,env in [(['--host','::1'],self.env),(['--host','0.0.0.0'],self.env),(['--host','127.0.0.1'],dict(self.env,ORBBEC_CONTAINERIZED='1',ORBBEC_DEPLOY_DIR=str(self.root/'missing')))]:
+            result=subprocess.run(base+args,capture_output=True,text=True,env=env,timeout=5);self.assertNotEqual(result.returncode,0);self.assertIn('SERVER_BIND',result.stderr)
+        self.env.update(ORBBEC_CONTAINERIZED='1',ORBBEC_DEPLOY_DIR=str(self.root),ORBBEC_PUBLIC_PORT='18888')
+        self.start()
+        self.assertEqual(json.loads(self.request('/healthz',headers={'Host':'localhost:18888','Origin':'http://localhost:18888'})),{'status':'ok'})
+        self.error(403,'/healthz',headers={'Host':'localhost:18888','Origin':'http://localhost:19999'})
+
+
+    def test_discovery_image_identity_and_failed_health_are_real_cli_paths(self):
+        if sys.platform=='linux':self.assertIsInstance(json.loads(self.cli('scan').stdout),list)
+        else:self.assertIn('PLATFORM_UNSUPPORTED',self.cli('scan',ok=False).stderr)
+        self.assertEqual(self.cli('image-ref').stdout.strip(),self.data['image'])
+        self.cli('preflight',ok=False)
+        import socket,threading
+        listener=socket.socket();listener.bind(('127.0.0.1',0));listener.listen(1)
+        def respond():
+            connection,_=listener.accept()
+            with connection:
+                connection.recv(4096);connection.sendall(b'HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n')
+        worker=threading.Thread(target=respond);worker.start()
+        try:self.assertIn('HEALTH_FAILED',self.cli('http-health','--port',str(listener.getsockname()[1]),ok=False).stderr)
+        finally:worker.join(timeout=5);listener.close()
+
+    def test_successful_background_build_persists_completion_and_bounded_log(self):
+        import time
+        self.start();job=json.loads(self.request('/api/job',{'action':'build'}))
+        deadline=time.monotonic()+10
+        while time.monotonic()<deadline:
+            state=json.loads(self.request('/api/state'))
+            if state['job'] and state['job']['status']!='running':break
+            time.sleep(.05)
+        self.assertEqual(state['job']['id'],job['job_id'])
+        self.assertEqual(state['job']['status'],'passed',state['job'])
+        saved=json.loads((self.root/'state/latest-job.json').read_text())
+        self.assertEqual(saved['status'],'passed');self.assertIn('finished_at',saved)
+
 if __name__=='__main__':unittest.main(verbosity=2)

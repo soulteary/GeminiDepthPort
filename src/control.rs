@@ -28,7 +28,7 @@ pub struct Controller {
 }
 #[cfg(test)]
 pub(crate) type TestCommandRunner =
-    std::sync::Arc<dyn Fn(&[String]) -> Result<String> + Send + Sync>;
+    std::sync::Arc<dyn Fn(&[String], Option<&[u8]>) -> Result<String> + Send + Sync>;
 pub struct ControlLock(File);
 impl Drop for ControlLock {
     fn drop(&mut self) {
@@ -107,7 +107,7 @@ impl Controller {
     pub fn run(&self, a: &[&str]) -> Result<String> {
         #[cfg(test)]
         if let Some(run) = &self.command_runner {
-            return run(&args(a));
+            return run(&args(a), None);
         }
         command(
             &self.root,
@@ -123,9 +123,16 @@ impl Controller {
     pub fn run_vec(&self, a: &[String], timeout: u64) -> Result<String> {
         #[cfg(test)]
         if let Some(run) = &self.command_runner {
-            return run(a);
+            return run(a, None);
         }
         command(&self.root, a, timeout, None)
+    }
+    pub fn run_with_input(&self, a: &[String], timeout: u64, input: &[u8]) -> Result<String> {
+        #[cfg(test)]
+        if let Some(run) = &self.command_runner {
+            return run(a, Some(input));
+        }
+        command(&self.root, a, timeout, Some(input))
     }
     pub fn compose(&self, a: &[&str]) -> Result<String> {
         let current = generation::load(self)?;

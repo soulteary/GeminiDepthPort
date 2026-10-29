@@ -319,3 +319,100 @@ fn cache_lru_reuses_storage_and_obeys_entry_and_payload_bounds() {
         Err(GeometryError::InvalidMemoryLimits)
     ));
 }
+
+#[test]
+fn ray_cache_refuses_oversized_tables_without_evicting_a_valid_entry() {
+    let model = camera(DistortionModel::PinholeZero);
+    let options = InverseOptions::default();
+    let id = CalibrationId([7; 32]);
+    let mut cache = RayTableCache::new(RayTableCacheLimits {
+        max_entries: 2,
+        max_bytes: 12 * std::mem::size_of::<Ray>(),
+        max_table_pixels: 12,
+    })
+    .unwrap();
+    assert!(cache.is_empty());
+    let table = cache.get_or_build(&model, id, options).unwrap();
+    assert_eq!(table.key().calibration_id(), id);
+    assert_eq!(table.dimensions(), (4, 3));
+    assert_eq!(table.stats().valid, 12);
+    let larger = CameraModel::new(intrinsics(5, 3), DistortionModel::PinholeZero).unwrap();
+    assert!(matches!(
+        cache.get_or_build(&larger, id, options),
+        Err(GeometryError::PixelLimit)
+    ));
+    assert_eq!((cache.len(), cache.builds()), (1, 1));
+    cache.get_or_build(&model, id, options).unwrap();
+    assert_eq!(cache.hits(), 1);
+    let mut memory_limited = RayTableCache::new(RayTableCacheLimits {
+        max_entries: 1,
+        max_bytes: std::mem::size_of::<Ray>(),
+        max_table_pixels: 12,
+    })
+    .unwrap();
+    assert!(matches!(
+        memory_limited.get_or_build(&model, id, options),
+        Err(GeometryError::MemoryLimit)
+    ));
+    assert!(memory_limited.is_empty());
+    for limits in [
+        RayTableLimits {
+            max_pixels: 0,
+            max_bytes: 1000,
+        },
+        RayTableLimits {
+            max_pixels: 12,
+            max_bytes: 0,
+        },
+    ] {
+        assert!(matches!(
+            RayTable::build(&model, id, options, limits),
+            Err(GeometryError::InvalidMemoryLimits)
+        ));
+    }
+    assert!(matches!(
+        RayTable::build(
+            &model,
+            id,
+            options,
+            RayTableLimits {
+                max_pixels: 11,
+                max_bytes: 1000
+            }
+        ),
+        Err(GeometryError::PixelLimit)
+    ));
+}
+
+#[test]
+fn extreme_finite_coordinates_fail_closed_instead_of_emitting_nonfinite_rays() {
+    let pinhole = camera(DistortionModel::PinholeZero);
+    assert_eq!(pinhole.distortion(), DistortionModel::PinholeZero);
+    assert_eq!(
+        pinhole.project_normalized([f64::MAX, 0.]),
+        Err(ProjectionError::NonFinite)
+    );
+    let brown = camera(DistortionModel::BrownConrady5([1., 0., 0., 0., 0.]));
+    assert_eq!(
+        brown.distort_normalized([1e100, 0.]),
+        Err(ProjectionError::NonFinite)
+    );
+    assert_eq!(
+        brown.unproject_pixel([1e100, 0.], InverseOptions::default()),
+        Err(RayFailure::NonFinite)
+    );
+    // A tiny focal length makes finite sensor coordinates unrepresentable in normalized space.
+    let mut k = intrinsics(1, 1);
+    k.fx = f64::MIN_POSITIVE;
+    k.cx = f64::MAX;
+    let model = CameraModel::new(k, DistortionModel::PinholeZero).unwrap();
+    let table = RayTable::build(
+        &model,
+        CalibrationId([0; 32]),
+        InverseOptions::default(),
+        RayTableLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(table.stats().nonfinite, 1);
+    assert_eq!(table.rays(), &[Ray::Invalid(RayFailure::NonFinite)]);
+}
