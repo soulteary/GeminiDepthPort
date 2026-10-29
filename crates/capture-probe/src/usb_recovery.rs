@@ -143,11 +143,11 @@ mod tests {
         let path = root.join("helper");
         fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
-        let sha = digest::digest(&digest::SHA256, &fs::read(&path).unwrap())
-            .as_ref()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
+        let mut sha = String::with_capacity(64);
+        for byte in digest::digest(&digest::SHA256, &fs::read(&path).unwrap()).as_ref() {
+            use std::fmt::Write as _;
+            write!(&mut sha, "{byte:02x}").unwrap();
+        }
         let policy = Recovery::parse(&json!({"helper":path,"sha256":sha})).unwrap();
         (Helper(root), policy)
     }
