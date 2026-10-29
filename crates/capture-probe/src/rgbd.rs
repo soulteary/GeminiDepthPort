@@ -230,6 +230,7 @@ pub(crate) struct Metrics {
     pub(crate) processed: u64,
     pub(crate) published_pairs: u64,
     pub(crate) publish_calls: u64,
+    pub(crate) unpaired_images_published: u64,
     pub(crate) publish_failures: u64,
     pub(crate) stamp_failures: u64,
     pub(crate) timeouts: u64,
@@ -460,6 +461,40 @@ pub(crate) fn stamp_ns(
         .context("stamp overflow")?;
     Ok((stamp, ns))
 }
+/// Publish an available stream without manufacturing RGB-D pair evidence.
+/// The caller must drain older pairs first to preserve per-stream stamp order.
+pub(crate) fn publish_unpaired(
+    frame: Frame,
+    config: &StreamConfig,
+    depth: bool,
+    normalize: bool,
+    received: Instant,
+    ros: &mut Option<Ros>,
+    metrics: &mut Metrics,
+) -> Result<()> {
+    let packet = packet(frame, config, depth, normalize, received, metrics)?;
+    let bytes = packet.payload.data()?;
+    packet.metadata.validate(bytes.len())?;
+    if let Some(ros) = ros {
+        let (publisher, guard) = if depth {
+            (&mut ros.depth, &mut ros.depth_guard)
+        } else {
+            (&mut ros.color, &mut ros.color_guard)
+        };
+        let (stamp, ns) = stamp_ns(&packet.metadata, guard).inspect_err(|_| {
+            metrics.stamp_failures += 1;
+        })?;
+        publisher
+            .publish(&packet.metadata, bytes, ns)
+            .inspect_err(|_| {
+                metrics.publish_failures += 1;
+            })?;
+        guard.accept(stamp)?;
+        metrics.publish_calls += 1;
+        metrics.unpaired_images_published += 1;
+    }
+    Ok(())
+}
 pub(crate) fn drain(
     queue: &mut LatestQueue<QueuedPair>,
     ros: &mut Option<Ros>,
@@ -568,14 +603,37 @@ fn run(config: Config) -> Result<Value> {
             let color = set.color()?;
             let depth = set.depth()?;
             if color.is_none() || depth.is_none() {
+                let missing_color = color.is_none();
+                let missing_depth = depth.is_none();
+                if !startup {
+                    if config.ros.is_some() && ros.is_none() {
+                        ros = setup_ros(&config, &pipeline.calibration()?)?;
+                    }
+                    drain(&mut queue, &mut ros, metrics)?;
+                    for (frame, stream, is_depth) in
+                        [(color, &config.color, false), (depth, &config.depth, true)]
+                    {
+                        if let Some(frame) = frame {
+                            publish_unpaired(
+                                frame,
+                                stream,
+                                is_depth,
+                                is_depth && config.normalize,
+                                Instant::now(),
+                                &mut ros,
+                                metrics,
+                            )?;
+                        }
+                    }
+                }
                 metrics.missing += 1;
-                if color.is_none() {
+                if missing_color {
                     metrics.missing_color += 1;
                 }
-                if depth.is_none() {
+                if missing_depth {
                     metrics.missing_depth += 1;
                 }
-                metrics.reject(match (color.is_none(), depth.is_none()) {
+                metrics.reject(match (missing_color, missing_depth) {
                     (true, true) => "MISSING_BOTH",
                     (true, false) => "MISSING_COLOR",
                     _ => "MISSING_DEPTH",
@@ -700,7 +758,7 @@ fn run(config: Config) -> Result<Value> {
         "pairing":{"clock":match config.policy.clock {PairClock::Device=>"device",PairClock::System=>"system"},"max_delta_us":config.policy.max_delta_us,"source":"single-sdk-pipeline-single-frameset","hardware_sync_verified":false,"independent_stream_indices_allowed":true},
         "queue":{"capacity":queue.stats().capacity,"high_water":queue.stats().high_water,"pairs_dropped_oldest":queue.stats().dropped,"policy":"whole-pair-drop-oldest","wait_p99_ns":p99},
         "normalization":{"enabled":config.normalize,"frames":metrics.normalization_frames,"pixels":metrics.normalization_pixels,"invalid_zero_samples":metrics.zero_samples,"nonzero_clamped_to_one_mm":metrics.clamped_samples,"conversion_wall_ns":metrics.normalization_ns,"owned_copy_including_unit_scale":config.normalize},
-        "ros":{"enabled":config.ros.is_some(),"pairs_publish_calls_succeeded":metrics.published_pairs,"individual_publish_calls_succeeded":metrics.publish_calls,"publish_failures":metrics.publish_failures,"stamp_failures":metrics.stamp_failures,"publish_wall_ns":metrics.publish_ns,"delivery_verified":false,"cross_topic_atomicity":false,"calibration_source":if config.ros.is_some() {Some("active-sdk-stream-profiles")} else {None},"tf_direction":if config.ros.is_some() {Some("p_color=R_depth_to_color*p_depth+t_m;parent_color_child_depth")} else {None}},
+        "ros":{"enabled":config.ros.is_some(),"pairs_publish_calls_succeeded":metrics.published_pairs,"individual_publish_calls_succeeded":metrics.publish_calls,"unpaired_images_published":metrics.unpaired_images_published,"publish_failures":metrics.publish_failures,"stamp_failures":metrics.stamp_failures,"publish_wall_ns":metrics.publish_ns,"delivery_verified":false,"cross_topic_atomicity":false,"calibration_source":if config.ros.is_some() {Some("active-sdk-stream-profiles")} else {None},"tf_direction":if config.ros.is_some() {Some("p_color=R_depth_to_color*p_depth+t_m;parent_color_child_depth")} else {None}},
         "elapsed_seconds":started.elapsed().as_secs_f64(),"startup_discovery_seconds":config.startup_discovery_seconds,"physical_calibration_accuracy_verified":false,"rgbd_exposure_sync_verified":false}),
     )
 }

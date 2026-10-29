@@ -144,3 +144,28 @@ an unlimited list; session counters remain independent of window eviction.
 
 No hardware, scale, long-duration or performance validation is implied by the
 synthetic measurement/phase/diagnostic tests.
+
+## Available images in incomplete framesets
+
+After startup discovery, `capture-service` and `rgbd-probe` publish an available
+color or depth image even when the other SDK frameset route is missing. Payload,
+profile, depth unit conversion and ROS stamp validation still apply. Older queued
+pairs are drained first; successful single-image publication advances only that
+stream's stamp guard. SDK settings, source indices, original timestamps and pair
+clock/tolerance are unchanged.
+
+`unpaired_images_published` counts successful image publication calls from these
+incomplete framesets. It contributes to `individual_publish_calls` (the finite
+probe calls this `individual_publish_calls_succeeded`), but never to
+`pairs_published`, pair evidence or bound evidence. It does not prove downstream
+receipt. Missing-pair diagnostics, degraded state, startup readiness and pair idle
+timeouts remain based on complete accepted pairs. Startup discovery frames remain
+excluded. Complete but skew-rejected framesets retain the existing pair policy.
+
+This preserves available images for independent ROS consumers/recorders without
+inventing a color/depth association. The optional native whole-pair recorder
+retains its strict terminal failure on a missing route; an incomplete native
+recording is never presented as complete. That recorder is not an independent
+stream archive. Hardware exposure synchronization and elimination of SDK pairing
+slips require separate hardware validation; a shared device clock alone does not
+establish exposure synchronization.

@@ -240,6 +240,24 @@ elif a and a[0] in ('exec','stop'):
             self.cli('render','--draft')
             self.assertNotEqual(json.loads(pointer_path.read_text())['generation'],old['generation'])
             self.cli('status')
+    def test_unknown_commands_and_cameras_preserve_inventory(self):
+        before=(self.root/'inventory.json').read_bytes()
+        self.assertIn('Unknown command',self.cli('unsupported-command',ok=False).stderr)
+        self.assertIn('Unknown camera',self.cli('bind','missing_camera','SYNTHETIC',ok=False).stderr)
+        self.assertEqual((self.root/'inventory.json').read_bytes(),before)
+        self.assertFalse((self.root/'docker-calls.jsonl').exists())
+
+    def test_configured_boot_failure_persists_a_failed_job(self):
+        oracle=json.loads((BASE/'tests/rust/contracts.json').read_text())
+        data=copy.deepcopy(next(c['data'] for c in oracle['cases'] if c['name']=='three confirmed'))
+        (self.root/'inventory.json').write_text(json.dumps(data))
+        result=self.cli('boot',ok=False)
+        self.assertTrue(result.stderr)
+        jobs=list((self.root/'state/jobs').glob('*.json'))
+        failed=[json.loads(p.read_text()) for p in jobs]
+        self.assertTrue(any(job.get('action')=='boot' and job.get('status')=='failed' and job.get('finished_at') for job in failed),failed)
+        self.assertFalse(json.loads((self.root/'state/lifecycle.json').read_text()).get('ready',False))
+
     def test_unconfigured_boot_and_cross_process_stop_ownership(self):
         self.assertIn('Management is available',self.cli('boot').stdout)
         calls=self.root/'docker-calls.jsonl';self.assertFalse(calls.exists())

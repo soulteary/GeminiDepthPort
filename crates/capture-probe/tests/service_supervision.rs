@@ -251,6 +251,11 @@ fn fixture() -> Fixture {
         "if(!handle||!gdp_ros::pair_valid(pair))return 1;",
         "if(!handle||!gdp_ros::pair_valid(pair))return 1;\n  if(std::getenv(\"GDP_MOCK_PAIR_PUBLISH_ERROR\"))return 2;",
     );
+    replace(
+        &mut bridge_source,
+        "p.calls++; event(\"publish-copied\");",
+        "p.calls++; event(\"publish-copied\"); char record[160]; std::snprintf(record,sizeof(record),\"image:%s:%llu\",p.frame_id.c_str(),static_cast<unsigned long long>(frame->sequence)); event(record);",
+    );
     let bridge_cpp = root.join("mock-bridge.cpp");
     fs::write(&bridge_cpp, bridge_source).unwrap();
     compile(
@@ -1453,7 +1458,7 @@ fn missing_color_with_invalid_depth_is_a_quality_diagnostic_not_a_pixel_measurem
 }
 
 #[test]
-fn strict_pair_mode_excludes_an_unpaired_depth_even_when_its_source_index_is_continuous() {
+fn continuous_source_depth_is_published_even_when_sdk_color_pairing_slips() {
     let f = fixture();
     quality_only(&f);
     let mut value: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
@@ -1473,6 +1478,12 @@ fn strict_pair_mode_excludes_an_unpaired_depth_even_when_its_source_index_is_con
         v["framesets_observed"].as_u64().unwrap_or(0) >= 30
     });
     assert_eq!(sampled["missing_pairs"], 1);
+    assert_eq!(sampled["unpaired_images_published"], 1);
+    assert_eq!(sampled["publish_failures"], 0);
+    assert_eq!(
+        sampled["individual_publish_calls"].as_u64().unwrap(),
+        sampled["pairs_published"].as_u64().unwrap() * 4 + 1
+    );
     assert!(sampled["pairs_published"].as_u64().unwrap() > 0);
     let current: Value = serde_json::from_slice(
         &fs::read(sampled["quality"]["current_path"].as_str().unwrap()).unwrap(),
@@ -1487,6 +1498,19 @@ fn strict_pair_mode_excludes_an_unpaired_depth_even_when_its_source_index_is_con
                 .unwrap()
     );
     stop(&mut child);
+    let events = fs::read_to_string(&f.events).unwrap();
+    let depth: Vec<u64> = events
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("image:depth_optical:")
+                .map(|n| n.parse().unwrap())
+        })
+        .collect();
+    assert!(depth.len() >= 30);
+    assert!(
+        depth.windows(2).all(|pair| pair[1] == pair[0] + 1),
+        "{depth:?}"
+    );
 }
 
 #[path = "../../../tests/support/io_faults.rs"]
@@ -1696,4 +1720,127 @@ fn interrupted_worker_exit_checks_do_not_turn_a_healthy_worker_into_a_failure() 
     io_faults::assert_injected(&marker, "waitid");
     assert_eq!(ready["restart_attempt"], 0);
     stop(&mut child);
+}
+
+#[test]
+fn finite_rgbd_preserves_each_available_stream_without_claiming_pairs() {
+    let f = fixture();
+    let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    config.as_object_mut().unwrap().remove("service");
+    config["seconds"] = json!(0.12);
+    fs::write(&f.config, config.to_string()).unwrap();
+    for missing in ["GDP_MOCK_MISSING_COLOR", "GDP_MOCK_MISSING_DEPTH"] {
+        for fault in [
+            "NONE",
+            "GDP_MOCK_ZERO_SYSTEM",
+            "GDP_MOCK_DEPTH_PUBLISH_ERROR",
+            "GDP_MOCK_BAD_PAYLOAD",
+        ] {
+            let _ = fs::remove_file(&f.events);
+            let output = Command::new(env!("CARGO_BIN_EXE_rgbd-probe"))
+                .args(["--config", f.config.to_str().unwrap()])
+                .env(missing, "1")
+                .env(fault, "1")
+                .env("GDP_ROS_MOCK_EVENTS", &f.events)
+                .output()
+                .unwrap();
+            let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(value["ros"]["pairs_publish_calls_succeeded"], 0);
+            let events = fs::read_to_string(&f.events).unwrap_or_default();
+            assert!(!events.lines().any(|line| line == "aux-publish"));
+            let succeeds = fault == "NONE"
+                || (fault == "GDP_MOCK_DEPTH_PUBLISH_ERROR" && missing == "GDP_MOCK_MISSING_DEPTH");
+            if succeeds {
+                assert!(
+                    value["ros"]["unpaired_images_published"].as_u64().unwrap() > 0,
+                    "{value}"
+                );
+                assert!(events.lines().any(|line| line.starts_with("image:")));
+            } else {
+                assert_eq!(value["ros"]["unpaired_images_published"], 0, "{value}");
+                assert!(!events.lines().any(|line| line.starts_with("image:")));
+                assert!(value["error"].is_string());
+            }
+        }
+    }
+}
+
+#[test]
+fn initially_incomplete_streams_publish_images_but_never_claim_pair_readiness() {
+    for missing in ["GDP_MOCK_MISSING_COLOR", "GDP_MOCK_MISSING_DEPTH"] {
+        let f = fixture();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_capture-service"))
+            .args(["--config", f.config.to_str().unwrap()])
+            .env(missing, "1")
+            .env("GDP_ROS_MOCK_EVENTS", &f.events)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let status = wait_status(&f, &mut child, |v| {
+            v["unpaired_images_published"].as_u64().unwrap_or(0) >= 3
+        });
+        assert_eq!(status["ready"], false);
+        assert_eq!(status["state"], "degraded");
+        assert_eq!(status["pairs_published"], 0);
+        assert_eq!(status["pairs_accepted"], 0);
+        stop(&mut child);
+        let events = fs::read_to_string(&f.events).unwrap();
+        assert!(!events.lines().any(|line| line == "aux-publish"));
+        assert_eq!(
+            events
+                .lines()
+                .filter(|line| *line == "session-bound")
+                .count(),
+            2
+        );
+        let expected = if missing == "GDP_MOCK_MISSING_COLOR" {
+            "image:depth_optical:"
+        } else {
+            "image:color_optical:"
+        };
+        assert!(
+            events
+                .lines()
+                .filter(|line| line.starts_with(expected))
+                .count()
+                >= 3
+        );
+    }
+}
+
+#[test]
+fn unpaired_depth_still_requires_explicit_millimeter_units() {
+    let f = fixture();
+    let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    config.as_object_mut().unwrap().remove("service");
+    config["seconds"] = json!(0.1);
+    config["depth"]["unit_policy"] = json!("require-mm");
+    fs::write(&f.config, config.to_string()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_rgbd-probe"))
+        .args(["--config", f.config.to_str().unwrap()])
+        .env("GDP_MOCK_MISSING_COLOR", "1")
+        .output()
+        .unwrap();
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["error"], "SDK_OR_OUTPUT_FAILED");
+    assert_eq!(value["normalization"]["enabled"], false);
+    assert_eq!(value["ros"]["unpaired_images_published"], 0);
+}
+
+#[test]
+fn raw_byte_limit_after_successful_appends_never_commits_a_partial_target() {
+    let f = fixture();
+    configure_runtime_quality(&f, 100, 20_000);
+    let mut supervisor = launch(&f);
+    let failed = wait_status(&f, &mut supervisor, |v| {
+        v["raw_recording"]["state"] == "failed"
+    });
+    assert_eq!(failed["raw_recording"]["reason"], "RAW_BYTE_LIMIT");
+    assert!(
+        failed["raw_recording"]["written_pairs"].as_u64().unwrap() > 0,
+        "{failed}"
+    );
+    assert!(!Path::new(failed["raw_recording"]["job_path"].as_str().unwrap()).exists());
+    stop(&mut supervisor);
 }

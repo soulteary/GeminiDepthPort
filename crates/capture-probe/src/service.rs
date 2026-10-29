@@ -807,7 +807,7 @@ impl Status<'_> {
         }
         atomic_status(
             &self.config.settings.status_path,
-            &json!({"version":1,"kind":"capture-service-status","state":state,"ready":state=="ready","reason":reason,"last_failure_reason":self.last_failure,"session_id":self.session,"instance_id":self.instance,"snapshot_id":self.snapshot.as_ref().map(|s|&s.0),"snapshot_path":self.snapshot.as_ref().map(|s|&s.1),"quality":self.quality.as_ref().map(ServiceQuality::references),"usb_recovery":self.usb_recovery,"raw_recording":self.raw.as_ref().map(crate::raw_recording::RawRecorder::status),"generation":self.config.settings.generation,"config_sha256":self.config.hash,"pid":std::process::id(),"heartbeat_sequence":self.heartbeat,"updated_unix_ms":unix_ms(),"uptime_ms":self.started.elapsed().as_millis(),"restart_attempt":self.restarts,"last_pair_age_ms":last_pair.map(|v|v.elapsed().as_millis()),"pairs_accepted":metrics.accepted,"pairs_rejected":metrics.rejected,"pairs_published":metrics.published_pairs,"individual_publish_calls":metrics.publish_calls,"publish_failures":metrics.publish_failures,"stamp_failures":metrics.stamp_failures,"framesets_observed":metrics.framesets,"missing_pairs":metrics.missing,"skew_rejections":metrics.skew,"monotonic_rejections":metrics.monotonic,"poll_timeouts":metrics.timeouts,"physical_sync_verified":false,"delivery_verified":false}),
+            &json!({"version":1,"kind":"capture-service-status","state":state,"ready":state=="ready","reason":reason,"last_failure_reason":self.last_failure,"session_id":self.session,"instance_id":self.instance,"snapshot_id":self.snapshot.as_ref().map(|s|&s.0),"snapshot_path":self.snapshot.as_ref().map(|s|&s.1),"quality":self.quality.as_ref().map(ServiceQuality::references),"usb_recovery":self.usb_recovery,"raw_recording":self.raw.as_ref().map(crate::raw_recording::RawRecorder::status),"generation":self.config.settings.generation,"config_sha256":self.config.hash,"pid":std::process::id(),"heartbeat_sequence":self.heartbeat,"updated_unix_ms":unix_ms(),"uptime_ms":self.started.elapsed().as_millis(),"restart_attempt":self.restarts,"last_pair_age_ms":last_pair.map(|v|v.elapsed().as_millis()),"pairs_accepted":metrics.accepted,"pairs_rejected":metrics.rejected,"pairs_published":metrics.published_pairs,"individual_publish_calls":metrics.publish_calls,"unpaired_images_published":metrics.unpaired_images_published,"publish_failures":metrics.publish_failures,"stamp_failures":metrics.stamp_failures,"framesets_observed":metrics.framesets,"missing_pairs":metrics.missing,"skew_rejections":metrics.skew,"monotonic_rejections":metrics.monotonic,"poll_timeouts":metrics.timeouts,"physical_sync_verified":false,"delivery_verified":false}),
         )
     }
 }
@@ -1106,6 +1106,33 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                             quality_core::FrameViolation::FrameContractInvalid,
                             quality_core::Condition::Violated,
                         )?;
+                    }
+                    if !startup {
+                        if config.capture.ros.is_some() && ros.is_none() {
+                            ros = rgbd::setup_ros(&config.capture, &pipeline.calibration()?)?;
+                            if let Some(output) = &mut ros {
+                                output.color.set_session_id(&status.session)?;
+                                output.depth.set_session_id(&status.session)?;
+                                output.aux.set_session_id(&status.session)?;
+                            }
+                        }
+                        rgbd::drain(&mut queue, &mut ros, &mut metrics)?;
+                        for (frame, stream, is_depth) in [
+                            (color, &config.capture.color, false),
+                            (depth, &config.capture.depth, true),
+                        ] {
+                            if let Some(frame) = frame {
+                                rgbd::publish_unpaired(
+                                    frame,
+                                    stream,
+                                    is_depth,
+                                    is_depth && config.capture.normalize,
+                                    received,
+                                    &mut ros,
+                                    &mut metrics,
+                                )?;
+                            }
+                        }
                     }
                     consecutive = 0;
                     if !startup {
