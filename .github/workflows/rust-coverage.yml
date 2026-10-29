@@ -1,0 +1,38 @@
+name: Rust coverage
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_TERM_COLOR: never
+      GDP_COVERAGE_REAL_COMPOSE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned coverage toolchain and test dependencies
+        run: |
+          rustup toolchain install 1.90.0 --profile minimal --component llvm-tools-preview
+          cargo +1.90.0 install cargo-llvm-cov --version 0.9.1 --locked
+          python -m pip install -r requirements-test.txt -r requirements-coverage.txt
+      - name: Verify production coverage filtering and required test inputs
+        run: python -m unittest discover -s scripts/testing -p 'test_*.py' -v
+      - name: Measure workspace unit coverage
+        run: bash scripts/testing/rust_coverage.sh unit
+      - name: Measure workspace and external Rust test coverage
+        run: bash scripts/testing/rust_coverage.sh combined
+      - name: Upload production reports and raw LLVM evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-coverage-${{ github.sha }}
+          path: target/coverage-reports/
+          if-no-files-found: error
+          retention-days: 14

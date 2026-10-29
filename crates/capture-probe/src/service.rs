@@ -201,7 +201,10 @@ impl ServiceConfig {
                 && status_path.file_name().is_some()
                 && status_path
                     .parent()
-                    .is_some_and(|p| p != Path::new("/") && p != Path::new("/tmp")),
+                    .is_some_and(|p| p != Path::new("/") && p != Path::new("/tmp"))
+                && !status_path
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir)),
             "private absolute status directory required"
         );
         let generation = service["generation"]
@@ -2275,6 +2278,249 @@ mod tests {
         value = config();
         value["service"]["heartbeat_timeout_ms"] = json!(500);
         assert!(ServiceConfig::parse(&value.to_string()).is_err());
+    }
+    #[test]
+    fn service_policy_numeric_limits_include_endpoints_and_reject_neighbors() {
+        for (field, minimum, maximum) in [
+            ("idle_timeout_ms", 100_u64, 60_000_u64),
+            ("startup_timeout_ms", 1_000, 120_000),
+            ("heartbeat_ms", 50, 5_000),
+            ("heartbeat_timeout_ms", 500, 120_000),
+            ("max_restarts", 0, 20),
+            ("restart_backoff_ms", 100, 30_000),
+            ("shutdown_timeout_ms", 100, 30_000),
+            ("ready_min_pairs", 1, 10_000),
+        ] {
+            // Keep related limits valid so each rejected value exercises its own bound.
+            let mut value = config();
+            value["service"]["idle_timeout_ms"] = json!(100);
+            value["service"]["startup_timeout_ms"] = json!(120_000);
+            value["service"]["heartbeat_ms"] = json!(50);
+            value["service"]["heartbeat_timeout_ms"] = json!(120_000);
+            for valid in [minimum, maximum] {
+                value["service"][field] = json!(valid);
+                let result = ServiceConfig::parse(&value.to_string());
+                assert!(result.is_ok(), "{field}={valid}: {:?}", result.err());
+            }
+            for invalid in minimum.checked_sub(1).into_iter().chain([maximum + 1]) {
+                value["service"][field] = json!(invalid);
+                let error = ServiceConfig::parse(&value.to_string())
+                    .err()
+                    .unwrap_or_else(|| panic!("accepted {field}={invalid}"));
+                assert_eq!(
+                    error.to_string(),
+                    "service policy bounds",
+                    "{field}={invalid}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn service_policy_limits_require_unsigned_integers() {
+        for field in [
+            "idle_timeout_ms",
+            "startup_timeout_ms",
+            "heartbeat_ms",
+            "heartbeat_timeout_ms",
+            "max_restarts",
+            "restart_backoff_ms",
+            "shutdown_timeout_ms",
+            "ready_min_pairs",
+        ] {
+            for invalid in [
+                json!(-1),
+                json!(1.5),
+                json!("1000"),
+                json!(true),
+                Value::Null,
+            ] {
+                let mut value = config();
+                value["service"][field] = invalid.clone();
+                let error = ServiceConfig::parse(&value.to_string())
+                    .err()
+                    .unwrap_or_else(|| panic!("accepted {field}={invalid}"));
+                assert_eq!(error.to_string(), "unsigned service limit required");
+            }
+        }
+    }
+    #[test]
+    fn service_idle_timeout_cannot_precede_poll_interval() {
+        for (idle_ms, valid) in [(499, false), (500, true), (501, true)] {
+            let mut value = config();
+            value["poll_ms"] = json!(500);
+            value["service"]["idle_timeout_ms"] = json!(idle_ms);
+            assert_eq!(
+                ServiceConfig::parse(&value.to_string()).is_ok(),
+                valid,
+                "idle timeout {idle_ms} ms with a 500 ms poll"
+            );
+        }
+    }
+    #[test]
+    fn service_startup_deadline_must_follow_idle_timeout() {
+        for (startup_ms, valid) in [(1_999, false), (2_000, false), (2_001, true)] {
+            let mut value = config();
+            value["service"]["startup_timeout_ms"] = json!(startup_ms);
+            assert_eq!(
+                ServiceConfig::parse(&value.to_string()).is_ok(),
+                valid,
+                "startup deadline {startup_ms} ms with a 2000 ms idle timeout"
+            );
+        }
+    }
+    #[test]
+    fn service_heartbeat_deadline_allows_exactly_three_intervals() {
+        for (timeout_ms, valid) in [(1_499, false), (1_500, true), (1_501, true)] {
+            let mut value = config();
+            value["service"]["heartbeat_timeout_ms"] = json!(timeout_ms);
+            assert_eq!(
+                ServiceConfig::parse(&value.to_string()).is_ok(),
+                valid,
+                "heartbeat timeout {timeout_ms} ms with a 500 ms interval"
+            );
+        }
+    }
+    #[test]
+    fn service_startup_discovery_must_finish_before_deadline() {
+        for (seconds, valid) in [(9.999, true), (10.0, false), (10.001, false)] {
+            let mut value = config();
+            value["service"]["startup_timeout_ms"] = json!(10_000);
+            value["startup_discovery_seconds"] = json!(seconds);
+            let result = ServiceConfig::parse(&value.to_string());
+            assert_eq!(result.is_ok(), valid, "discovery allowance {seconds} s");
+            if !valid {
+                assert_eq!(
+                    result.err().unwrap().to_string(),
+                    "startup allowance exceeds deadline"
+                );
+            }
+        }
+    }
+    #[test]
+    fn service_status_path_requires_private_absolute_parent() {
+        // Parsing must remain independent of whether these directories exist.
+        for (path, valid) in [
+            ("/tmp/private-capture/status.json", true),
+            ("/var/lib/gdp/status.json", true),
+            ("/private/gdp/status.json", true),
+            ("", false),
+            ("status.json", false),
+            ("relative/status.json", false),
+            ("/", false),
+            ("/status.json", false),
+            ("/tmp/status.json", false),
+        ] {
+            let mut value = config();
+            value["service"]["status_path"] = json!(path);
+            assert_eq!(
+                ServiceConfig::parse(&value.to_string()).is_ok(),
+                valid,
+                "{path}"
+            );
+        }
+    }
+    #[test]
+    fn service_status_path_rejects_parent_traversal_before_io() {
+        for path in [
+            "/tmp/private-capture/../status.json",
+            "/var/private-capture/../../status.json",
+            "/tmp/../private-capture/status.json",
+        ] {
+            let mut value = config();
+            value["service"]["status_path"] = json!(path);
+            // Never invoke atomic_status: these inputs could chmod a shared ancestor.
+            let error = ServiceConfig::parse(&value.to_string())
+                .err()
+                .unwrap_or_else(|| panic!("accepted status path {path}"));
+            assert_eq!(
+                error.to_string(),
+                "private absolute status directory required"
+            );
+        }
+    }
+    #[test]
+    fn service_policy_requires_exact_fields_and_an_object() {
+        let baseline = config();
+        for field in baseline["service"].as_object().unwrap().keys() {
+            let mut value = baseline.clone();
+            value["service"].as_object_mut().unwrap().remove(field);
+            let error = ServiceConfig::parse(&value.to_string())
+                .err()
+                .unwrap_or_else(|| panic!("accepted missing service field {field}"));
+            assert_eq!(error.to_string(), "service fields required");
+        }
+        let mut value = baseline.clone();
+        value["service"]["unexpected"] = json!(true);
+        assert_eq!(
+            ServiceConfig::parse(&value.to_string())
+                .err()
+                .unwrap()
+                .to_string(),
+            "service fields required"
+        );
+        for invalid in [Value::Null, json!([]), json!("policy"), json!(1)] {
+            let mut value = baseline.clone();
+            value["service"] = invalid;
+            assert_eq!(
+                ServiceConfig::parse(&value.to_string())
+                    .err()
+                    .unwrap()
+                    .to_string(),
+                "service object required"
+            );
+        }
+    }
+    #[test]
+    fn service_generation_requires_bounded_ascii_token() {
+        for generation in ["generation_01-abc".to_owned(), "a".repeat(128)] {
+            let mut value = config();
+            value["service"]["generation"] = json!(generation);
+            let parsed = ServiceConfig::parse(&value.to_string()).unwrap();
+            assert_eq!(parsed.settings.generation, generation);
+        }
+        for generation in [
+            String::new(),
+            "a".repeat(129),
+            "generation/name".into(),
+            "generation name".into(),
+            "generation\nname".into(),
+            "generation\0name".into(),
+            "生成标识".into(),
+        ] {
+            let mut value = config();
+            value["service"]["generation"] = json!(generation);
+            assert_eq!(
+                ServiceConfig::parse(&value.to_string())
+                    .err()
+                    .unwrap()
+                    .to_string(),
+                "opaque generation required"
+            );
+        }
+    }
+    #[test]
+    fn service_configuration_size_limit_includes_exact_boundary() {
+        let mut raw = config().to_string();
+        raw.push_str(&" ".repeat(64 * 1024 - raw.len()));
+        assert_eq!(raw.len(), 64 * 1024);
+        assert!(ServiceConfig::parse(&raw).is_ok());
+        raw.push(' ');
+        assert_eq!(
+            ServiceConfig::parse(&raw).err().unwrap().to_string(),
+            "config too large"
+        );
+    }
+    #[test]
+    fn service_configuration_requires_ros_output() {
+        let mut value = config();
+        value.as_object_mut().unwrap().remove("ros");
+        assert_eq!(
+            ServiceConfig::parse(&value.to_string())
+                .err()
+                .unwrap()
+                .to_string(),
+            "resident service requires real ROS output"
+        );
     }
     #[test]
     fn usb_recovery_configuration_is_preserved_and_rejects_invalid_identity() {
