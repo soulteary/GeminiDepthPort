@@ -375,6 +375,221 @@ impl Drop for RosAuxPublisher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn close(actual: f64, expected: f64) {
+        assert!(
+            actual.is_finite() && (actual - expected).abs() < 1e-12,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    fn quaternion_matrix([x, y, z, w]: [f64; 4]) -> [f64; 9] {
+        [
+            1. - 2. * (y * y + z * z),
+            2. * (x * y - z * w),
+            2. * (x * z + y * w),
+            2. * (x * y + z * w),
+            1. - 2. * (x * x + z * z),
+            2. * (y * z - x * w),
+            2. * (x * z - y * w),
+            2. * (y * z + x * w),
+            1. - 2. * (x * x + y * y),
+        ]
+    }
+
+    fn checked_transform(e: &Extrinsics, expected: [f64; 4]) -> StaticTransform {
+        let t = StaticTransform::from_depth_to_color(e, "color_optical", "depth_optical").unwrap();
+        assert_eq!(t.parent_frame, "color_optical");
+        assert_eq!(t.child_frame, "depth_optical");
+        assert_eq!(t.rotation_row_major, e.rotation_row_major);
+        assert_eq!(t.translation_m, e.translation_m);
+        close(t.quaternion_xyzw.iter().map(|v| v * v).sum(), 1.);
+        // q and -q represent the same rotation; do not impose an arbitrary sign.
+        let dot = t
+            .quaternion_xyzw
+            .iter()
+            .zip(expected)
+            .map(|(actual, wanted)| actual * wanted)
+            .sum::<f64>();
+        let sign = if dot < 0. { -1. } else { 1. };
+        for (actual, wanted) in t.quaternion_xyzw.into_iter().zip(expected) {
+            close(actual * sign, wanted);
+        }
+        for (actual, wanted) in quaternion_matrix(t.quaternion_xyzw)
+            .into_iter()
+            .zip(e.rotation_row_major)
+        {
+            close(actual, wanted);
+        }
+        t
+    }
+
+    fn axis_angle(axis: [f64; 3], angle: f64) -> (Extrinsics, [f64; 4]) {
+        let norm = axis.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let [x, y, z] = axis.map(|v| v / norm);
+        let (s, c) = angle.sin_cos();
+        let k = 1. - c;
+        // Rodrigues' formula constructs a proper rotation independently of the
+        // matrix-to-quaternion conversion under test.
+        let e = Extrinsics {
+            rotation_row_major: [
+                c + x * x * k,
+                x * y * k - z * s,
+                x * z * k + y * s,
+                x * y * k + z * s,
+                c + y * y * k,
+                y * z * k - x * s,
+                x * z * k - y * s,
+                y * z * k + x * s,
+                c + z * z * k,
+            ],
+            translation_m: [0.125, -0.25, 0.375],
+        };
+        let (half_sin, half_cos) = (angle / 2.).sin_cos();
+        (e, [x * half_sin, y * half_sin, z * half_sin, half_cos])
+    }
+
+    fn transformed_point(t: &StaticTransform, point: [f64; 3]) -> [f64; 3] {
+        let r = quaternion_matrix(t.quaternion_xyzw);
+        std::array::from_fn(|row| {
+            (0..3).map(|col| r[row * 3 + col] * point[col]).sum::<f64>() + t.translation_m[row]
+        })
+    }
+
+    #[test]
+    fn identity_quaternion_preserves_child_to_parent_translation() {
+        let e = Extrinsics {
+            rotation_row_major: [1., 0., 0., 0., 1., 0., 0., 0., 1.],
+            translation_m: [0.25, -0.5, 0.75],
+        };
+        let t = checked_transform(&e, [0., 0., 0., 1.]);
+        assert_eq!(transformed_point(&t, [1., 2., 3.]), [1.25, 1.5, 3.75]);
+    }
+
+    #[test]
+    fn static_transform_requires_distinct_valid_optical_frames() {
+        let (e, _) = axis_angle([1., 0., 0.], 0.);
+        for (color, depth) in [
+            ("", "depth_optical"),
+            ("color_optical", ""),
+            ("same_optical", "same_optical"),
+            ("color_optical", "invalid/frame"),
+        ] {
+            let error = StaticTransform::from_depth_to_color(&e, color, depth).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "distinct explicit optical frames required"
+            );
+        }
+    }
+
+    #[test]
+    fn half_turns_about_each_axis_preserve_units_and_known_points() {
+        for (rotation, quaternion, expected_point) in [
+            (
+                [1., 0., 0., 0., -1., 0., 0., 0., -1.],
+                [1., 0., 0., 0.],
+                [1.25, -2.5, -2.25],
+            ),
+            (
+                [-1., 0., 0., 0., 1., 0., 0., 0., -1.],
+                [0., 1., 0., 0.],
+                [-0.75, 1.5, -2.25],
+            ),
+            (
+                [-1., 0., 0., 0., -1., 0., 0., 0., 1.],
+                [0., 0., 1., 0.],
+                [-0.75, -2.5, 3.75],
+            ),
+        ] {
+            let e = Extrinsics::from_sdk(rotation, [250., -500., 750.]).unwrap();
+            let t = checked_transform(&e, quaternion);
+            assert_eq!(t.translation_m, [0.25, -0.5, 0.75]);
+            for (actual, expected) in transformed_point(&t, [1., 2., 3.])
+                .into_iter()
+                .zip(expected_point)
+            {
+                close(actual, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn rotations_on_both_sides_of_zero_trace_keep_the_same_axis_angle() {
+        let boundary = 2. * std::f64::consts::PI / 3.;
+        for axis in [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]] {
+            for delta in [-1e-8, 1e-8] {
+                for direction in [-1., 1.] {
+                    let (e, expected) = axis_angle(axis, direction * (boundary + delta));
+                    let r = e.rotation_row_major;
+                    assert_eq!(r[0] + r[4] + r[8] > 0., delta < 0.);
+                    checked_transform(&e, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tied_diagonals_preserve_half_turn_axes_and_zero_trace_direction() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        for (rotation, quaternion) in [
+            ([0., 1., 0., 1., 0., 0., 0., 0., -1.], [s, s, 0., 0.]),
+            ([0., 0., 1., 0., -1., 0., 1., 0., 0.], [s, 0., s, 0.]),
+            ([-1., 0., 0., 0., 0., 1., 0., 1., 0.], [0., s, s, 0.]),
+            ([0., 0., 1., 1., 0., 0., 0., 1., 0.], [0.5; 4]),
+            (
+                [0., 1., 0., 0., 0., 1., 1., 0., 0.],
+                [-0.5, -0.5, -0.5, 0.5],
+            ),
+        ] {
+            let e = Extrinsics {
+                rotation_row_major: rotation,
+                translation_m: [0.25, -0.5, 0.75],
+            };
+            let t = checked_transform(&e, quaternion);
+            let point = [1., 2., 3.];
+            for (actual, expected) in transformed_point(&t, point)
+                .into_iter()
+                .zip(e.transform_depth_to_color(point))
+            {
+                close(actual, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn near_tied_diagonals_roundtrip_without_axis_discontinuities() {
+        for delta in [-1e-8, 1e-8] {
+            for axis in [
+                [1. + delta, 1., 0.],
+                [1. + delta, 0., 1.],
+                [0., 1. + delta, 1.],
+            ] {
+                let (e, expected) = axis_angle(axis, std::f64::consts::PI);
+                checked_transform(&e, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn non_axis_aligned_rotations_preserve_all_quaternion_components() {
+        // Each dominant diagonal is exercised with nonzero cross terms and w.
+        for axis in [[3., -1., 2.], [1., 3., -2.], [2., -1., -3.]] {
+            for angle in [-2.5, 2.5] {
+                let (e, expected) = axis_angle(axis, angle);
+                let t = checked_transform(&e, expected);
+                for point in [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.], [1., 2., 3.]] {
+                    for (actual, wanted) in transformed_point(&t, point)
+                        .into_iter()
+                        .zip(e.transform_depth_to_color(point))
+                    {
+                        close(actual, wanted);
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn tf_direction_quaternion_and_units_match_known_point() {
         let e = Extrinsics::from_sdk([0., -1., 0., 1., 0., 0., 0., 0., 1.], [100., 200., 300.])

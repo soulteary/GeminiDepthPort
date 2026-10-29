@@ -28,6 +28,39 @@ Node.js 只用于前端开发检查，不是 Web 运行依赖。`tests/legacy_re
 回归的行为参考，不进入管理镜像。Linux 隔离管理测试见[测试参考](docs/development/linux-management-fixture.md)，
 ROS bridge 检查见 [ros/README.md](ros/README.md)，CI 是容器构建检查的执行依据。
 
+## Rust 覆盖率
+
+覆盖率检查独立使用 Rust 1.90.0 和 cargo-llvm-cov 0.9.1；原有 Rust 1.85 数据面检查继续保留。
+Linux 主机需要 C/C++ 编译器。先安装工具，再运行：
+
+```sh
+rustup toolchain install 1.90.0 --profile minimal --component llvm-tools-preview
+cargo +1.90.0 install cargo-llvm-cov --version 0.9.1 --locked
+python3 -m pip install -r requirements-test.txt -r requirements-coverage.txt
+python3 -m unittest discover -s scripts/testing -p 'test_*.py' -v
+bash scripts/testing/rust_coverage.sh all
+```
+
+`unit` 仅运行整个 workspace 的 Rust library/binary 单元测试；`combined` 运行 workspace 测试，
+并在同一插桩环境构建 bins/examples，追加 Python 管理、native gate、SDK grid 和 recording 测试。
+所需二进制缺失、外部 Python 套件跳过测试，或任一外部套件未产生或更新 Rust profile 都会失败。
+所有这些检查使用合成数据，
+不打开设备。CI 还设置 `GDP_COVERAGE_REAL_COMPOSE=1`，使用 Docker Compose CLI 校验生成配置，
+无需 Docker daemon。原有容器和真实设备验证仍有独立的验收边界。
+
+两个范围分别输出到 `target/coverage-reports/unit/` 和 `target/coverage-reports/combined/`。
+`production.lcov`、`summary.json`、`summary.md` 和 `index.html` 只统计生产 Rust 的可执行行：
+使用固定版本的 Rust AST 解析器排除精确 `#[cfg(test)]` 项和内建 `#[test]` 函数，
+生产/测试混合行与未知 cfg 表达式保留；解析失败会阻止报告生成。不会排除生产适配器、CLI、
+unsafe 代码或错误分支，也不会改写源文件。原始 `raw.lcov`、`raw.json` 保留供复核，
+函数、region 和 branch 数字仅存在于原始报告中，不冒充过滤后的生产指标。
+报告阶段同样显式选择整个 workspace，并保存 `cargo metadata` 的 package 清单；
+转换器按清单校验每个 workspace package 均出现在生产报告中，漏报 package 会失败。
+
+覆盖率报告不表示硬件、ROS 传输或物理精度已通过验收。强制终止的子进程可能来不及写出 profile；
+相关生命周期断言仍须完整通过。当前先记录可复现基线，不预设未经测量的百分比门槛；后续调整门槛
+应同时审查按 package 的分母及未覆盖行，不能通过放宽测试或排除生产代码来提高数字。
+
 ## 文档与验证
 
 文档按读者任务组织，每项行为只设一个完整定义位置：
