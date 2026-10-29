@@ -43,7 +43,8 @@ bash scripts/testing/rust_coverage.sh all
 
 `unit` 仅运行整个 workspace 的 Rust library/binary 单元测试；`combined` 运行 workspace 测试，
 并在同一插桩环境构建 bins/examples，追加 Python 管理、native gate、SDK grid 和 recording 测试。
-所需二进制缺失、测试被跳过或外部测试未产生 Rust profile 都会失败。所有这些检查使用合成数据，
+所需二进制缺失、外部 Python 套件跳过测试，或任一外部套件未产生或更新 Rust profile 都会失败。
+所有这些检查使用合成数据，
 不打开设备。CI 还设置 `GDP_COVERAGE_REAL_COMPOSE=1`，使用 Docker Compose CLI 校验生成配置，
 无需 Docker daemon。原有容器和真实设备验证仍有独立的验收边界。
 
