@@ -46,7 +46,7 @@ fn main() {
             let mut source =
                 recording::RecordingDirectorySource::open_recovered(Path::new(&args[1]))?;
             let mut pairs = 0u64;
-            while source.next_frame()?.is_some() {
+            while source.validate_next()? {
                 pairs += 1;
             }
             Ok(

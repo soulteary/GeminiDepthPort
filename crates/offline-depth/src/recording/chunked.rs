@@ -62,6 +62,24 @@ pub(super) fn read_range(
     max: usize,
     cache: &Mutex<Option<CachedChunk>>,
 ) -> Result<Vec<u8>> {
+    with_range(root, file, range, max, cache, |input, length| {
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(length as usize)
+            .map_err(|_| OfflineError::Invalid("ALLOCATION_FAILED"))?;
+        bytes.resize(length as usize, 0);
+        input.read_exact(&mut bytes)?;
+        Ok(bytes)
+    })
+}
+pub(super) fn with_range<T>(
+    root: &Path,
+    file: &FileRef,
+    range: &FileRange,
+    max: usize,
+    cache: &Mutex<Option<CachedChunk>>,
+    read: impl FnOnce(&mut fs::File, u64) -> Result<T>,
+) -> Result<T> {
     chunk_number(&file.path)?;
     require(
         range.length > 0 && range.length <= max as u64,
@@ -90,13 +108,7 @@ pub(super) fn read_range(
     let input = cache.as_mut().unwrap();
     require(end <= input.length, "RECORDING_RANGE_BOUNDS")?;
     input.file.seek(SeekFrom::Start(range.offset))?;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(range.length as usize)
-        .map_err(|_| OfflineError::Invalid("ALLOCATION_FAILED"))?;
-    bytes.resize(range.length as usize, 0);
-    input.file.read_exact(&mut bytes)?;
-    Ok(bytes)
+    read(&mut input.file, range.length)
 }
 impl RecordingDirectorySource {
     /// Read-only recovery of the last durable prefix. No source file is changed,
@@ -358,7 +370,8 @@ impl RawRecordingWriter {
                     source.previous = prefix.previous.clone();
                     source.chunk_position = prefix.position;
                 }
-                while source.next_frame()?.is_some() {}
+                while source.validate_next()? {}
+                self.diagnostics.verified(&source);
                 Ok(VerifiedPrefix {
                     count: source.seen,
                     index_bytes: checkpoint.index_bytes,

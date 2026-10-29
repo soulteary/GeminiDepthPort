@@ -122,11 +122,37 @@ struct Progress {
     color_sequence: Option<u64>,
     depth_sequence: Option<u64>,
 }
+const VALIDATION_BUFFER_BYTES: usize = 64 * 1024;
+#[derive(Default)]
+struct ValidationScratch {
+    buffer: Vec<u8>,
+    image_bytes: u64,
+}
+/// Hash exactly the declared extent using a fixed, reusable scratch buffer.
+fn hash_extent(input: &mut impl Read, length: u64, buffer: &mut Vec<u8>) -> Result<String> {
+    if buffer.is_empty() {
+        buffer
+            .try_reserve_exact(VALIDATION_BUFFER_BYTES)
+            .map_err(|_| OfflineError::Invalid("ALLOCATION_FAILED"))?;
+        buffer.resize(VALIDATION_BUFFER_BYTES, 0);
+    }
+    let mut hash = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut remaining = length;
+    while remaining > 0 {
+        let n = remaining.min(buffer.len() as u64) as usize;
+        input.read_exact(&mut buffer[..n])?;
+        hash.update(&buffer[..n]);
+        remaining -= n as u64;
+    }
+    Ok(lower_hex(hash.finish().as_ref()))
+}
 pub struct RecordingDirectorySource {
     root: PathBuf,
     manifest: RecordingManifest,
     snapshot: SnapshotEnvelope,
     reader: BufReader<std::io::Take<fs::File>>,
+    line: Vec<u8>,
+    validation: Mutex<ValidationScratch>,
     recovered: bool,
     recovered_chunks: Option<u64>,
     chunk_position: Option<(u64, u64)>,
@@ -194,6 +220,8 @@ impl RecordingDirectorySource {
             manifest,
             snapshot,
             reader: BufReader::new(file.take(index_limit)),
+            line: Vec::new(),
+            validation: Mutex::default(),
             recovered,
             recovered_chunks: None,
             chunk_position: None,
@@ -230,7 +258,48 @@ impl RecordingDirectorySource {
         require(sha256(&bytes) == file.sha256, "RECORDING_DIGEST")?;
         Ok(bytes)
     }
-    fn image(&self, image: &StoredImage, stream: &str, observed: bool) -> Result<Vec<u8>> {
+    fn verify_image_file(
+        &self,
+        file: &FileRef,
+        max: usize,
+        scratch: &mut ValidationScratch,
+    ) -> Result<u64> {
+        require(digest_valid(&file.sha256), "RECORDING_DIGEST_FORMAT")?;
+        let (length, hash) = if let Some(range) = &file.range {
+            require(self.manifest.version == 3, "RECORDING_RANGE_VERSION")?;
+            let hash = chunked::with_range(
+                &self.root,
+                file,
+                range,
+                max,
+                &self.chunk_reader,
+                |input, length| hash_extent(input, length, &mut scratch.buffer),
+            )?;
+            (range.length, hash)
+        } else {
+            let path = member(&self.root, &file.path)?;
+            require(fs::metadata(&path)?.is_file(), "SOURCE_NOT_FILE")?;
+            let mut input = fs::File::open(path)?;
+            let metadata = input.metadata()?;
+            require(metadata.is_file(), "SOURCE_NOT_FILE")?;
+            require(metadata.len() <= max as u64, "SOURCE_SIZE_LIMIT")?;
+            let length = metadata.len();
+            let hash = hash_extent(&mut input, length, &mut scratch.buffer)?;
+            let mut extra = [0u8; 1];
+            require(input.read(&mut extra)? == 0, "SOURCE_CHANGED_DURING_READ")?;
+            (length, hash)
+        };
+        require(hash == file.sha256, "RECORDING_DIGEST")?;
+        scratch.image_bytes = scratch.image_bytes.saturating_add(length);
+        Ok(length)
+    }
+    fn image(
+        &self,
+        image: &StoredImage,
+        stream: &str,
+        observed: bool,
+        materialize: bool,
+    ) -> Result<Vec<u8>> {
         let model = self
             .snapshot
             .content
@@ -262,8 +331,16 @@ impl RecordingDirectorySource {
             .checked_mul(image.height as usize)
             .ok_or(OfflineError::Invalid("RECORDING_LAYOUT"))?;
         require(length <= 64 * 1024 * 1024, "RECORDING_PAYLOAD_LIMIT")?;
-        let bytes = self.file(&image.file, 64 * 1024 * 1024)?;
-        require(bytes.len() == length, "RECORDING_PAYLOAD_LENGTH")?;
+        let bytes = if materialize {
+            let bytes = self.file(&image.file, 64 * 1024 * 1024)?;
+            require(bytes.len() == length, "RECORDING_PAYLOAD_LENGTH")?;
+            bytes
+        } else {
+            let mut scratch = self.validation.lock().unwrap_or_else(|e| e.into_inner());
+            let read = self.verify_image_file(&image.file, 64 * 1024 * 1024, &mut scratch)?;
+            require(read == length as u64, "RECORDING_PAYLOAD_LENGTH")?;
+            Vec::new()
+        };
         if observed {
             require(
                 image
@@ -312,15 +389,25 @@ impl RecordingDirectorySource {
         Ok(bytes)
     }
     pub fn next_frame(&mut self) -> Result<Option<RecordedFrame>> {
+        self.read_next(true)
+    }
+    /// Validate one record with bounded image scratch storage, without returning
+    /// image buffers. EOF still verifies the complete index and chunk lengths.
+    pub fn validate_next(&mut self) -> Result<bool> {
+        let before = self.seen;
+        self.read_next(false)?;
+        Ok(self.seen > before)
+    }
+    fn read_next(&mut self, materialize: bool) -> Result<Option<RecordedFrame>> {
         if self.finished {
             return Ok(None);
         }
-        let mut line = Vec::new();
+        self.line.clear();
         let n = self
             .reader
             .by_ref()
             .take(65537)
-            .read_until(b'\n', &mut line)?;
+            .read_until(b'\n', &mut self.line)?;
         require(n <= 65536, "RECORDING_INDEX_LINE_LIMIT")?;
         if n == 0 {
             self.finish_chunk()?;
@@ -338,12 +425,12 @@ impl RecordingDirectorySource {
             self.finished = true;
             return Ok(None);
         }
-        self.digest.update(&line);
+        self.digest.update(&self.line);
         require(
             self.seen < self.manifest.record_count,
             "RECORDING_INDEX_COUNT",
         )?;
-        let record: RecordingRecord = parse(&line)?;
+        let record: RecordingRecord = parse(&self.line)?;
         self.check_ranges(&record)?;
         record.storage_representation.validate()?;
         let evidence_json = self.file(&record.evidence, 4 * 1024 * 1024)?;
@@ -558,8 +645,8 @@ impl RecordingDirectorySource {
             )?;
         }
         let observed = matches!(evidence, TaggedEvidence::ObservedAssociation { .. });
-        let _color = self.image(&record.color, "color", observed)?;
-        let depth_bytes = self.image(&record.depth, "depth", observed)?;
+        let _color = self.image(&record.color, "color", observed, materialize)?;
+        let depth_bytes = self.image(&record.depth, "depth", observed, materialize)?;
         self.previous = Some(Progress {
             sequence: record.sequence,
             color: color_time,
@@ -571,12 +658,16 @@ impl RecordingDirectorySource {
             depth_sequence: depth.sequence,
         });
         self.seen += 1;
-        Ok(Some(RecordedFrame {
-            record,
-            evidence,
-            evidence_json,
-            depth: depth_bytes,
-        }))
+        if materialize {
+            Ok(Some(RecordedFrame {
+                record,
+                evidence,
+                evidence_json,
+                depth: depth_bytes,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 }
 /// Blocking, one-record-at-a-time conversion. EOF verifies the complete index
@@ -721,6 +812,8 @@ struct RawIoStats {
     verification: StageStats,
     append: StageStats,
     finish: StageStats,
+    validation_image_bytes: u64,
+    validation_buffer_peak_bytes: usize,
     durable_pairs: u64,
     checkpoints: u64,
     payload_files: u64,
@@ -750,12 +843,23 @@ impl RawRecordingDiagnostics {
         }
         result
     }
+    fn verified(&self, source: &RecordingDirectorySource) {
+        let scratch = source.validation.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stats = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        stats.validation_image_bytes = stats
+            .validation_image_bytes
+            .saturating_add(scratch.image_bytes);
+        stats.validation_buffer_peak_bytes = stats
+            .validation_buffer_peak_bytes
+            .max(scratch.buffer.capacity());
+    }
     pub fn report(&self) -> serde_json::Value {
         let stats = self.0.lock().unwrap_or_else(|e| e.into_inner());
         serde_json::json!({"clock":"monotonic-duration","scope":"native-writer-only; write-success-is-not-durability",
             "write":stats.write.report(),"fsync":stats.fsync.report(),"rename":stats.rename.report(),
             "verification":stats.verification.report(),"append":stats.append.report(),"finish_total":stats.finish.report(),
-            "failed_calls":stats.failures,"durable_pairs":stats.durable_pairs,"checkpoints":stats.checkpoints,"payload_files":stats.payload_files})
+            "failed_calls":stats.failures,"durable_pairs":stats.durable_pairs,"checkpoints":stats.checkpoints,"payload_files":stats.payload_files,"validation_image_bytes":stats.validation_image_bytes,
+            "validation_buffer_peak_bytes":stats.validation_buffer_peak_bytes})
     }
 }
 
@@ -1030,7 +1134,8 @@ impl RawRecordingWriter {
         self.write_budgeted("manifest.json", &serde_json::to_vec(&manifest)?)?;
         self.diagnostics.measure("verification", || -> Result<()> {
             let mut verify = RecordingDirectorySource::open(&self.stage)?;
-            while verify.next_frame()?.is_some() {}
+            while verify.validate_next()? {}
+            self.diagnostics.verified(&verify);
             Ok(())
         })?;
         let _commit_guard = acquire()?;
@@ -1117,4 +1222,25 @@ fn write_private_observed(
         Ok(file)
     })?;
     diagnostics.measure("fsync", || file.sync_all())
+}
+
+#[cfg(test)]
+mod streaming_hash_tests {
+    use super::*;
+    #[test]
+    fn streaming_hash_matches_whole_extent_hash_at_buffer_boundaries() {
+        let data: Vec<u8> = (0..131089).map(|n| (n % 251) as u8).collect();
+        let mut buffer = Vec::new();
+        for length in [0, 1, 65535, 65536, 65537, 131089] {
+            let mut input = std::io::Cursor::new(&data);
+            assert_eq!(
+                hash_extent(&mut input, length as u64, &mut buffer).unwrap(),
+                sha256(&data[..length])
+            );
+            assert_eq!(input.position(), length as u64);
+            assert!(buffer.capacity() <= VALIDATION_BUFFER_BYTES);
+        }
+        let mut truncated = std::io::Cursor::new(&data[..100]);
+        assert!(hash_extent(&mut truncated, 101, &mut buffer).is_err());
+    }
 }

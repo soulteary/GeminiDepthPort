@@ -1113,3 +1113,78 @@ fn valid_evidence_with_excessive_skew_or_unsupported_storage_mapping_is_refused(
         assert!(source.next_frame().is_err(), "mode {mode}");
     }
 }
+
+#[test]
+fn streaming_and_materialized_v2_validation_agree_for_sdk_and_observed_inputs() {
+    use std::io::Write;
+    for observed in [false, true] {
+        for fault in [
+            "none",
+            "color-digest",
+            "depth-digest",
+            "depth-short",
+            "layout",
+            "sequence",
+            "index",
+            "info",
+        ] {
+            let input = tempfile::tempdir().unwrap();
+            let mut record = fixture_v2(input.path(), observed, false);
+            match fault {
+                "color-digest" => {
+                    fs::write(input.path().join(&record.color.file.path), b"bad!").unwrap();
+                }
+                "depth-digest" => {
+                    fs::write(input.path().join(&record.depth.file.path), b"bad!").unwrap();
+                }
+                "depth-short" => {
+                    fs::write(input.path().join(&record.depth.file.path), [0u8]).unwrap();
+                }
+                "layout" => {
+                    record.depth.stride += 2;
+                    index(input.path(), &record);
+                }
+                "sequence" => {
+                    record.sequence += 1;
+                    index(input.path(), &record);
+                }
+                "index" => {
+                    fs::OpenOptions::new()
+                        .append(true)
+                        .open(input.path().join("records.jsonl"))
+                        .unwrap()
+                        .write_all(b" ")
+                        .unwrap();
+                }
+                "info" if observed => {
+                    fs::write(
+                        input
+                            .path()
+                            .join(&record.depth.camera_info.as_ref().unwrap().path),
+                        b"{}",
+                    )
+                    .unwrap();
+                }
+                _ => {}
+            }
+            let validate = |materialize: bool| -> offline_depth::Result<usize> {
+                let mut source = RecordingDirectorySource::open(input.path())?;
+                let mut count = 0;
+                if materialize {
+                    while source.next_frame()?.is_some() {
+                        count += 1;
+                    }
+                } else {
+                    while source.validate_next()? {
+                        count += 1;
+                    }
+                    assert!(!source.validate_next()?);
+                }
+                Ok(count)
+            };
+            let expected = validate(true).map_err(|e| e.code());
+            let actual = validate(false).map_err(|e| e.code());
+            assert_eq!(actual, expected, "observed={observed}, fault={fault}");
+        }
+    }
+}

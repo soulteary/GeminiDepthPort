@@ -63,6 +63,16 @@ fn chunked_frames_round_trip_cross_chunk_boundaries_and_keep_original_evidence()
     assert_eq!(diagnostics.report()["durable_pairs"], 64);
     let path = writer.finish().unwrap();
     assert_eq!(diagnostics.report()["durable_pairs"], 65);
+    assert_eq!(
+        diagnostics.report()["validation_image_bytes"],
+        65 * (4 + pixels.len()) * 2
+    );
+    assert!(
+        diagnostics.report()["validation_buffer_peak_bytes"]
+            .as_u64()
+            .unwrap()
+            <= 65536
+    );
     assert_eq!(diagnostics.report()["payload_files"], 3);
     assert!(RecordingDirectorySource::open_recovered(&path).is_err());
     let frames = read_all(&path, false);
@@ -252,12 +262,19 @@ fn corrupt_payload_checkpoint_index_ranges_and_chunk_tails_fail_closed() {
                 fs::write(stage.join("checkpoint.json"), checkpoint.to_string()).unwrap();
             }
         }
-        let result = (|| -> offline_depth::Result<()> {
+        let run = |materialize: bool| -> offline_depth::Result<()> {
             let mut source = RecordingDirectorySource::open_recovered(&stage)?;
-            while source.next_frame()?.is_some() {}
+            if materialize {
+                while source.next_frame()?.is_some() {}
+            } else {
+                while source.validate_next()? {}
+            }
             Ok(())
-        })();
-        assert!(result.is_err(), "{fault}");
+        };
+        let expected = run(true).map_err(|e| e.code());
+        let actual = run(false).map_err(|e| e.code());
+        assert!(actual.is_err(), "{fault}");
+        assert_eq!(actual, expected, "{fault}");
         assert!(!stage.join("COMPLETE").exists());
     }
 }
@@ -726,5 +743,55 @@ fn cached_chunk_reads_still_reject_truncation_or_growth_during_validation() {
             Ok(())
         })();
         assert!(result.is_err());
+    }
+}
+
+#[test]
+fn streaming_and_materialized_calls_share_progress_without_skipping_records() {
+    let (snapshot, pair, pixels) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let mut writer =
+        RawRecordingWriter::begin_chunked(dir.path(), "capture", snapshot, 1_000_000).unwrap();
+    for n in 1..=3 {
+        append(&mut writer, &pair, &pixels, n);
+    }
+    let path = writer.finish().unwrap();
+    let mut source = RecordingDirectorySource::open(&path).unwrap();
+    assert!(source.validate_next().unwrap());
+    let frame = source.next_frame().unwrap().unwrap();
+    assert_eq!(frame.record.sequence, 2);
+    assert_eq!(frame.depth, pixels);
+    assert!(source.validate_next().unwrap());
+    assert!(!source.validate_next().unwrap());
+    assert!(source.next_frame().unwrap().is_none());
+    assert!(!source.validate_next().unwrap());
+}
+#[test]
+fn checkpoint_and_final_streaming_verification_both_read_actual_payload_bytes() {
+    for checkpointed in [false, true] {
+        let (snapshot, pair, pixels) = fixture();
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer =
+            RawRecordingWriter::begin_chunked(dir.path(), "capture", snapshot, 1_000_000).unwrap();
+        append(&mut writer, &pair, &pixels, 1);
+        if checkpointed {
+            writer.checkpoint().unwrap();
+        }
+        let path = dir
+            .path()
+            .join("capture.partial/payload-00000000000000000001.bin");
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[0] ^= 1;
+        fs::write(path, bytes).unwrap();
+        if checkpointed {
+            append(&mut writer, &pair, &pixels, 2);
+            assert_eq!(writer.finish().unwrap_err().code(), "RECORDING_DIGEST");
+        } else {
+            assert_eq!(writer.checkpoint().unwrap_err().code(), "RECORDING_DIGEST");
+            assert_eq!(writer.diagnostics().report()["durable_pairs"], 0);
+            drop(writer);
+            assert!(!dir.path().join("capture.partial/checkpoint.json").exists());
+        }
+        assert!(!dir.path().join("capture/COMPLETE").exists());
     }
 }

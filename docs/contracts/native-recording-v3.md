@@ -112,3 +112,20 @@ corruption, byte-budget failure, cross-chunk source regressions, missing COMPLET
 valid exports, and I/O faults at payload write/sync, index sync, directory sync,
 checkpoint sync/rename and final commit. These are fault-injection tests, not a
 claim of a physical power-cut test or measured hardware crash survival.
+
+## Bounded validation-only reader
+
+`RecordingDirectorySource::validate_next()` advances one record and returns a
+boolean, without returning image buffers. It shares the existing validator with
+`next_frame()`, which remains available for consumers/exports. Both APIs check
+EOF/index hashes and original bounds/bindings. The image scratch buffer is at
+most 64 KiB; metadata parsing retains its existing bounds. This is storage/evidence
+validation, not physical certification or a substitute for numerical conversion.
+
+The checkpoint and final whole-job readback both use this path, as does read-only
+prefix recovery. `validation_image_bytes` counts image bytes from completed
+successful validation passes; a complete V3 job has twice its image payload.
+`validation_buffer_peak_bytes` reports peak image scratch capacity only. These
+are runtime diagnostics, not recording content or durability acknowledgements.
+See [release comparison](../validation/reports/streaming-verification-ab-20261029.md)
+for throughput, append P99, verification time, peak RSS and reproduction details.
