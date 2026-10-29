@@ -203,6 +203,14 @@ mod tests {
             runtime_sha: "verified_runtime_hash",
             runtime_contract: None,
         };
+        for scale in [0., -1., f32::NAN, f32::INFINITY] {
+            assert!(
+                build(&cfg, &calibration(), binding(), scale)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("invalid source depth scale")
+            );
+        }
         let s = build(&cfg, &calibration(), binding(), 0.1).unwrap();
         s.require_runtime().unwrap();
         assert_eq!(

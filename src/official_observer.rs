@@ -357,4 +357,34 @@ mod tests {
                 .starts_with("CAMERA_COUNT")
         );
     }
+    #[test]
+    fn bootstrap_requires_observed_schema_and_native_color_format() {
+        let (p, o) = fixture();
+        let mut invalid = p.clone();
+        invalid["version"] = json!(2);
+        assert!(
+            bootstrap(&invalid, &o, &"a".repeat(64), &"b".repeat(32), 1)
+                .unwrap_err()
+                .to_string()
+                .starts_with("OBSERVER_BOOTSTRAP_SCHEMA")
+        );
+        let mut inventory = p["inventory"].clone();
+        inventory["cameras"][0]["parameters"]["enable_depth"] = json!(false);
+        assert!(
+            policy(&inventory, &inventory["cameras"][0], &"d".repeat(32))
+                .unwrap_err()
+                .to_string()
+                .starts_with("OFFICIAL_OBSERVER_RGBD_REQUIRED")
+        );
+        for format in ["RGB", "MJPG"] {
+            let mut candidate = p.clone();
+            candidate["inventory"]["cameras"][0]["parameters"]["color_format"] = json!(format);
+            assert!(
+                bootstrap(&candidate, &o, &"a".repeat(64), &"b".repeat(32), 1)
+                    .unwrap_err()
+                    .to_string()
+                    .starts_with("COLOR_FORMAT")
+            );
+        }
+    }
 }

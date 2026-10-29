@@ -80,3 +80,30 @@ impl<T> RollingWindow<T> {
         self.entries.is_empty()
     }
 }
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+    #[test]
+    fn invalid_bounds_and_expired_receipts_cannot_be_updated() {
+        let session = SessionId::parse("a".repeat(32)).unwrap();
+        for (capacity, horizon) in [(0, 1), (100_001, 1), (1, 0)] {
+            assert_eq!(
+                RollingWindow::<u8>::new(session.clone(), capacity, horizon).unwrap_err(),
+                "WINDOW_POLICY_INVALID"
+            );
+        }
+        let mut window = RollingWindow::new(session.clone(), 1, 10).unwrap();
+        assert_eq!(window.latest_mut(0).unwrap_err(), "RECEIPT_NOT_RETAINED");
+        let at = |offset_ns| MonoTime {
+            session_id: session.clone(),
+            offset_ns,
+        };
+        window.push(&at(1), 7).unwrap();
+        window.push(&at(2), 8).unwrap();
+        assert_eq!(window.latest_mut(1).unwrap_err(), "RECEIPT_NOT_RETAINED");
+        window.tick(&at(13)).unwrap();
+        assert_eq!(window.latest_mut(2).unwrap_err(), "RECEIPT_NOT_RETAINED");
+        assert!(window.is_empty());
+    }
+}

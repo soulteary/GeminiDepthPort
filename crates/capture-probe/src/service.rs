@@ -2877,4 +2877,51 @@ mod tests {
         assert!(q.finalized);
         fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn rebinding_an_active_quality_session_is_reported_before_it_can_change_identity() {
+        let dir = std::env::temp_dir().join(format!("gdp-rebinding-{}", random_session().unwrap()));
+        let mut q = ServiceQuality::new(
+            runtime_policy(),
+            &"a".repeat(32),
+            &"b".repeat(64),
+            Instant::now(),
+            &dir.join("status.json"),
+        )
+        .unwrap();
+        let first = quality_snapshot(&"a".repeat(32), &"b".repeat(64));
+        q.bind(&first).unwrap();
+        let mut changed = first.content.clone();
+        changed.calibration.observed_unix_ns = Some(2);
+        changed.binding.calibration_id = changed.calibration.id().unwrap();
+        assert!(
+            q.bind(&changed.seal().unwrap())
+                .unwrap_err()
+                .to_string()
+                .contains("quality snapshot changed")
+        );
+        assert_eq!(q.snapshot.as_ref().unwrap().snapshot_id, first.snapshot_id);
+        assert!(
+            q.engine
+                .events(None, 8)
+                .unwrap()
+                .events
+                .iter()
+                .any(|e| e.violation == quality_core::FrameViolation::FrameContractInvalid)
+        );
+        q.finalize().unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn already_reaped_worker_returns_a_real_child_ownership_error() {
+        use std::os::unix::process::CommandExt;
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", ":"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+        assert!(reap_worker_exit(&mut child, Duration::from_millis(100)).is_err());
+    }
 }

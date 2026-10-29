@@ -888,7 +888,7 @@ mod diagnostics_tests {
         values.insert("--ros-bridge".into(), "/private/bridge.so".into());
         assert!(ros_options(&values, false).is_err());
         for (key, value) in [
-            ("--ros-namespace", "/test_camera"),
+            ("--ros-namespace", "/test_camera1"),
             ("--ros-frame-id", "test_depth_optical_frame"),
             ("--ros-calibration", "/private/calibration.json"),
             ("--ros-stamp-source", "sdk-system-unix"),
@@ -985,5 +985,15 @@ mod diagnostics_tests {
             report["depth_semantics"]["verified_from_sdk_metadata"],
             false
         );
+    }
+    #[test]
+    fn normalization_rejects_color_layouts_without_converting_their_pixels() {
+        let mut o = options();
+        o.stream = "color".into();
+        o.width = 2;
+        o.height = 1;
+        let bytes = [16, 128, 32, 128];
+        assert!(normalize_payload(&o, &bytes, 1.).is_err());
+        assert_eq!(bytes, [16, 128, 32, 128]);
     }
 }

@@ -996,3 +996,118 @@ fn malformed_snapshot_links_camera_info_and_extra_index_records_are_rejected() {
         assert!(source.next_frame().is_err());
     }
 }
+
+#[test]
+fn recording_cli_selection_output_conflicts_and_relative_output_are_rejected() {
+    let input = tempfile::tempdir().unwrap();
+    fixture_v2(input.path(), false, false);
+    for (args, code) in [
+        (
+            vec!["--recording-v2", "--validate-only", "--pair", "1"],
+            "V2_PAIR_SELECTION_UNSUPPORTED",
+        ),
+        (
+            vec!["--recording-v2", "--validate-only", "--job", "unexpected"],
+            "VALIDATE_OUTPUT_ARGUMENT",
+        ),
+        (
+            vec!["--recording-v2", "--output", "relative", "--job", "export"],
+            "ABSOLUTE_OUTPUT_REQUIRED",
+        ),
+    ] {
+        let result = cli(input.path(), &args);
+        assert!(!result.status.success());
+        assert!(
+            String::from_utf8_lossy(&result.stdout).contains(code),
+            "{}",
+            String::from_utf8_lossy(&result.stdout)
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[path = "../../../tests/support/io_faults.rs"]
+mod io_faults;
+#[cfg(target_os = "linux")]
+#[test]
+fn recording_reads_and_export_sidecar_failures_preserve_incomplete_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let library = io_faults::compile(temp.path());
+    for (i, (op, suffix, observed)) in [
+        ("read", "/manifest.json", false),
+        ("mkdir", "/source-blobs", false),
+        ("read", "/color-info.json", true),
+        (
+            "write",
+            "/recording-record-00000000000000000001.json",
+            false,
+        ),
+        ("write", "/pair-evidence-00000000000000000001.json", false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let input = tempfile::tempdir().unwrap();
+        let record = fixture_v2(input.path(), observed, false);
+        let output = temp.path().join(format!("export-{i}"));
+        fs::create_dir(&output).unwrap();
+        let marker = temp.path().join(format!("injected-{i}"));
+        let suffix = if observed {
+            record.color.camera_info.as_ref().unwrap().path.as_str()
+        } else {
+            suffix
+        };
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_offline-depth"));
+        command
+            .arg("--input")
+            .arg(input.path())
+            .args(["--recording-v2", "--output"])
+            .arg(&output)
+            .args(["--job", "failed", "--mode", "png"]);
+        io_faults::inject(&mut command, &library, op, suffix, &marker);
+        let result = command.output().unwrap();
+        assert!(
+            !result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stdout)
+        );
+        io_faults::assert_injected(&marker, op);
+        assert!(!output.join("failed/COMPLETE").exists());
+    }
+}
+
+#[test]
+fn valid_evidence_with_excessive_skew_or_unsupported_storage_mapping_is_refused() {
+    for mode in 0..4 {
+        let input = tempfile::tempdir().unwrap();
+        let observed = mode >= 2;
+        let mut record = fixture_v2(input.path(), observed, mode == 1);
+        let mut evidence = tagged(input.path(), &record);
+        match &mut evidence {
+            TaggedEvidence::SdkBoundPair { pair, .. } if mode == 0 => {
+                pair.depth_stamp_us += 30_000;
+                pair.depth.context.device_timestamp_us = Some(pair.depth_stamp_us);
+                pair.delta_us = pair.color_stamp_us.abs_diff(pair.depth_stamp_us);
+            }
+            TaggedEvidence::SdkBoundPair { pair, .. } => {
+                pair.depth.output_depth_scale_mm = Some(1.);
+                pair.depth.source_depth_scale_mm = Some(1.);
+                pair.depth.normalized = false;
+                record.storage_representation = DepthRepresentation::Millimetres {
+                    quantization:
+                        QuantizationPolicy::NearestHalfUpPreserveZeroClampPositiveRejectOverflow,
+                };
+            }
+            TaggedEvidence::ObservedAssociation { header_mapping, .. } => {
+                *header_mapping = if mode == 2 {
+                    quality_core::ClockMapper::Unknown
+                } else {
+                    quality_core::ClockMapper::MeasuredObservedHeaderOffset { offset_ns: 100 }
+                };
+            }
+        }
+        store_tagged(input.path(), &mut record, &evidence);
+        let mut source = RecordingDirectorySource::open(input.path()).unwrap();
+        assert!(source.next_frame().is_err(), "mode {mode}");
+    }
+}

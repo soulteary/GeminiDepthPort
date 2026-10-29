@@ -392,3 +392,55 @@ fn recording_gate_rejects_version_mismatch_in_both_transport_parse_and_digest() 
         "RECORDING_GATE_VERSION"
     );
 }
+
+#[test]
+fn legacy_import_rejects_schema_ambiguous_units_and_nonunit_rotations() {
+    let m = &live().calibration.models["depth"];
+    let base = json!({"kind":"geminidepthport-calibration-v1","structural_validation":true,"physical_accuracy_verified":false,"cameras":[{"name":"synthetic","intrinsics":{"depth":{"frame_id":m.frame_id,"width":m.width,"height":m.height,"k":m.k,"distortion_model":"plumb_bob","d":[0.,0.,0.,0.,0.]}},"depth_to_color":{"source_frame":"depth","target_frame":"color","translation_unit":"m","rotation_representation":"quaternion_xyzw","translation":[0.,0.,0.],"rotation":[0.,0.,0.,1.]}}]});
+    for (pointer, value, code) in [
+        ("/kind", json!("unknown"), "LEGACY_CALIBRATION_SCHEMA"),
+        (
+            "/cameras/0/depth_to_color/translation_unit",
+            json!("mm"),
+            "LEGACY_TRANSFORM_UNIT",
+        ),
+        (
+            "/cameras/0/depth_to_color/rotation",
+            json!([0., 0., 0., 2.]),
+            "LEGACY_ROTATION_INVALID",
+        ),
+    ] {
+        let mut value_copy = base.clone();
+        *value_copy.pointer_mut(pointer).unwrap() = value;
+        let digest = ring::digest::digest(
+            &ring::digest::SHA256,
+            &serde_json::to_vec(&value_copy).unwrap(),
+        );
+        use std::fmt::Write;
+        let mut hash = String::new();
+        for b in digest.as_ref() {
+            write!(&mut hash, "{b:02x}").unwrap();
+        }
+        value_copy["snapshot_sha256"] = json!(hash);
+        assert_eq!(
+            import_legacy(&serde_json::to_vec(&value_copy).unwrap(), "synthetic")
+                .unwrap_err()
+                .code,
+            code
+        );
+    }
+    let mut context: FrameContext = serde_json::from_value(json!({"version":2,"session_id":"a".repeat(32),"generation_id":"b".repeat(32),"configuration_id":"c".repeat(64),"calibration_id":"d".repeat(64),"snapshot_id":"e".repeat(64),"stream_id":"depth","sequence":null,"device_timestamp_us":null,"system_timestamp_us":null,"received_mono_offset_ns":0})).unwrap();
+    assert_eq!(
+        context.validate().unwrap_err().code,
+        "FRAME_CONTEXT_VERSION"
+    );
+    context.version = 1;
+    context.validate().unwrap();
+}
+
+#[test]
+fn snapshot_configuration_is_bounded_before_it_can_be_hashed_or_sealed() {
+    let mut snapshot = live();
+    snapshot.configuration = json!({"oversized":"x".repeat(4*1024*1024)});
+    assert_eq!(snapshot.validate().unwrap_err().code, "JSON_SIZE");
+}

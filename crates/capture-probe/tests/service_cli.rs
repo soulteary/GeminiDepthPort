@@ -266,3 +266,113 @@ fn real_failed_service_persists_private_final_quality_without_device_identity() 
     }
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn malformed_invocations_are_redacted_and_cannot_create_status() {
+    let (dir, value) = fixture();
+    let config = dir.join("config.json");
+    fs::write(&config, value.to_string()).unwrap();
+    let path = config.to_str().unwrap();
+    let parent = std::process::id().to_string();
+    let cases: Vec<Vec<&str>> = vec![
+        vec![],
+        vec!["--validate-config"],
+        vec!["--validate-config", "relative.json"],
+        vec!["--worker"],
+        vec!["--wrong", path],
+        vec!["--config", "relative.json"],
+        vec!["--config", path, "unexpected"],
+        vec![
+            "--worker",
+            "--wrong",
+            path,
+            "--expected-config-sha",
+            "bad",
+            "--restart-attempt",
+            "0",
+            "--supervisor-pid",
+            &parent,
+        ],
+        vec![
+            "--worker",
+            "--config",
+            path,
+            "--expected-config-sha",
+            "bad",
+            "--restart-attempt",
+            "0",
+            "--supervisor-pid",
+            &parent,
+        ],
+    ];
+    for args in cases {
+        let out = Command::new(env!("CARGO_BIN_EXE_capture-service"))
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{args:?}");
+        assert!(out.stdout.is_empty());
+        let error: Value = serde_json::from_slice(&out.stderr).unwrap();
+        assert_eq!(error["error"], "CAPTURE_SERVICE_FAILED");
+        assert!(!dir.join("status.json").exists());
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn symlink_status_parent_is_refused_without_publishing_status() {
+    use std::os::unix::fs::symlink;
+    let (dir, mut value) = fixture();
+    let target = dir.join("target");
+    fs::create_dir(&target).unwrap();
+    symlink(&target, dir.join("link")).unwrap();
+    value["service"]["status_path"] = json!(dir.join("link/status.json"));
+    let path = dir.join("config.json");
+    fs::write(&path, value.to_string()).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_capture-service"))
+        .arg("--config")
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(!target.join("status.json").exists());
+    assert!(
+        fs::read_dir(&target).unwrap().all(|e| !e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".tmp"))
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[path = "../../../tests/support/io_faults.rs"]
+mod io_faults;
+#[cfg(target_os = "linux")]
+#[test]
+fn signal_setup_and_atomic_status_io_failures_are_redacted_and_never_report_ready() {
+    for (op, suffix) in [
+        ("sigaction", "SIGTERM"),
+        ("fsync", ".tmp"),
+        ("waitid", "worker"),
+    ] {
+        let (dir, value) = fixture();
+        let lib = io_faults::compile(&dir);
+        let path = dir.join("config.json");
+        fs::write(&path, value.to_string()).unwrap();
+        let marker = dir.join("injected");
+        let mut command = Command::new(env!("CARGO_BIN_EXE_capture-service"));
+        command.arg("--config").arg(&path);
+        io_faults::inject(&mut command, &lib, op, suffix, &marker);
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        io_faults::assert_injected(&marker, op);
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("private-device"));
+        if let Ok(raw) = fs::read(dir.join("status.json")) {
+            let status: Value = serde_json::from_slice(&raw).unwrap();
+            assert_ne!(status["ready"], true);
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+}

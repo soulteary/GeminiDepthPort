@@ -590,3 +590,67 @@ fn default_ray_cache_and_extreme_solver_inputs_keep_the_finite_output_contract()
         }
     }
 }
+
+#[test]
+fn geometry_resource_failures_have_stable_public_diagnostics() {
+    assert_eq!(
+        GeometryError::ArithmeticOverflow.to_string(),
+        "geometry size arithmetic overflow"
+    );
+    assert_eq!(
+        GeometryError::AllocationFailed.to_string(),
+        "geometry allocation failed"
+    );
+    let singular = CameraModel::new(
+        CameraIntrinsics {
+            width: 1,
+            height: 1,
+            fx: 1.,
+            fy: 1.,
+            cx: -1.,
+            cy: 0.,
+            skew: 0.,
+        },
+        DistortionModel::BrownConrady5([-1. / 3., 0., 0., 0., 0.]),
+    )
+    .unwrap();
+    let table = RayTable::build(
+        &singular,
+        CalibrationId([0; 32]),
+        InverseOptions::default(),
+        RayTableLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(table.stats().singular_jacobian, 1);
+    assert_eq!(table.stats().valid, 0);
+}
+
+#[test]
+fn inverse_accepts_last_iteration_convergence_and_rejects_overflowing_jacobians() {
+    let model = camera(DistortionModel::BrownConrady5([0.1, 0., 0., 0., 0.]));
+    let target = [0.02, 0.];
+    let pixel = model.project_normalized(target).unwrap();
+    let actual = model
+        .unproject_pixel(pixel, InverseOptions::new(1, 1e-12).unwrap())
+        .unwrap();
+    close(actual[0], target[0], 1e-12);
+    let model = camera(DistortionModel::BrownConrady5([0., 0., 0., 4e307, 0.]));
+    assert!(model.distort_normalized([1., 0.]).is_err());
+    for coefficient in [-100., -10., -1., -0.1, 0.1, 1., 10., 100.] {
+        let model = camera(DistortionModel::BrownConrady5([
+            coefficient,
+            0.,
+            0.01,
+            -0.01,
+            0.,
+        ]));
+        for x in [-2., -1., -0.1, 0.1, 1., 2.] {
+            let pixel = [200. * x + 1., 0.];
+            if let Ok(ray) = model.unproject_pixel(pixel, InverseOptions::default()) {
+                let reprojected = model.project_normalized(ray).unwrap();
+                close(reprojected[0], pixel[0], 1e-6);
+                close(reprojected[1], pixel[1], 1e-6);
+            }
+        }
+    }
+}

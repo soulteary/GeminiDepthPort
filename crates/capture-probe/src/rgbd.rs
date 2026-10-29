@@ -916,4 +916,117 @@ mod tests {
                 .contains("quality and pairing skew policies differ")
         );
     }
+    #[test]
+    fn integer_overflow_and_unrecognized_stream_fields_are_rejected_before_sdk_access() {
+        for mode in 0..2 {
+            let mut value = config();
+            if mode == 0 {
+                value["color"]["width"] = json!(u64::MAX);
+            } else {
+                value["depth"]["extra"] = json!(true);
+            }
+            assert!(Config::parse(&value.to_string()).is_err());
+        }
+    }
+    #[test]
+    fn ros_setup_rejects_profile_calibration_transform_and_auxiliary_failures() {
+        use std::{fs, path::PathBuf, process::Command};
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let dir = std::env::temp_dir().join(format!(
+            "gdp-setup-ros-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let normal = fs::read_to_string(root.join("../ros-output/tests/mock_bridge.cpp")).unwrap();
+        for missing_aux in [false, true] {
+            let lib = dir.join(if missing_aux {
+                "missing.so"
+            } else {
+                "normal.so"
+            });
+            let source = dir.join("mock.cpp");
+            fs::write(
+                &source,
+                if missing_aux {
+                    normal.replace("gdp_ros_aux_create(", "removed_aux_create(")
+                } else {
+                    normal.clone()
+                },
+            )
+            .unwrap();
+            let output = Command::new("c++")
+                .args(if cfg!(target_os = "macos") {
+                    vec!["-dynamiclib"]
+                } else {
+                    vec!["-shared", "-fPIC"]
+                })
+                .args(["-std=c++17", "-Wall", "-Wextra", "-Werror", "-I"])
+                .arg(root.join("../../ros/include"))
+                .arg(&source)
+                .arg("-o")
+                .arg(&lib)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            for mode in 0..6 {
+                let mut c = Config::parse(&config().to_string()).unwrap();
+                let make = |format| orbbec_safe::StreamCalibration {
+                    profile: c.color.profile,
+                    format,
+                    fx: 1.,
+                    fy: 1.,
+                    cx: 0.,
+                    cy: 0.,
+                    distortion_model: "plumb_bob".into(),
+                    distortion: vec![0.; 5],
+                };
+                let mut calibration = orbbec_safe::SessionCalibration {
+                    color: Some(make(Format::Yuyv)),
+                    depth: Some(make(Format::Depth16)),
+                    depth_to_color: Some(orbbec_safe::Extrinsics {
+                        rotation_row_major: [1., 0., 0., 0., 1., 0., 0., 0., 1.],
+                        translation_m: [0.1, 0.2, 0.3],
+                    }),
+                };
+                assert!(setup_ros(&c, &calibration).unwrap().is_none());
+                c.ros = Some(RosConfig {
+                    bridge: lib.to_string_lossy().into(),
+                    namespace: "/test".into(),
+                });
+                match mode {
+                    0 => {
+                        calibration.color.as_mut().unwrap().profile.width = 1;
+                    }
+                    1 => {
+                        calibration.depth.as_mut().unwrap().profile.height = 1;
+                    }
+                    2 => {
+                        calibration.color.as_mut().unwrap().fx = 0.;
+                    }
+                    3 => {
+                        calibration.depth.as_mut().unwrap().fx = 0.;
+                    }
+                    4 => {
+                        calibration.depth_to_color.as_mut().unwrap().translation_m[0] = f64::NAN;
+                    }
+                    _ => {}
+                }
+                let result = setup_ros(&c, &calibration);
+                assert_eq!(
+                    result.is_ok(),
+                    mode == 5 && !missing_aux,
+                    "mode {mode}, auxiliary {missing_aux}"
+                );
+            }
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

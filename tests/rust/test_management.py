@@ -657,5 +657,29 @@ elif a and a[0] in ('exec','stop'):
             time.sleep(.05)
         self.assertEqual(state['job']['status'],'passed',state['job']);self.assertEqual(len(state['job']['log']),1200);self.assertTrue(any('synthetic-build-line-1299' in line for line in state['job']['log']))
 
+    def test_quality_cursor_and_historical_arguments_fail_before_live_access(self):
+        for args in [('quality-events','camera_a','--cursor','{bad'),('quality-session-summary',),('unknown-command',)]:
+            result=self.cli(*args,ok=False)
+            self.assertNotIn('panicked',result.stderr)
+        data=copy.deepcopy(self.data);data['capture_backend']='rust'
+        data['rust_capture']={'depth_unit_policy':'normalize-mm','pairing':{'clock':'device','max_delta_us':20000},'poll_ms':100,'capacity':4,'startup_discovery_seconds':2,'service':{'idle_timeout_ms':2000,'startup_timeout_ms':15000,'heartbeat_ms':500,'heartbeat_timeout_ms':10000,'max_restarts':3,'restart_backoff_ms':1000,'shutdown_timeout_ms':5000,'ready_min_pairs':5}}
+        (self.root/'inventory.json').write_text(json.dumps(data))
+        self.assertIn('RUST_DEVICES_UNSUPPORTED',self.cli('devices',ok=False).stderr)
+
+    def test_shutdown_waits_for_active_job_and_cancels_its_resistant_child(self):
+        import time
+        docker=self.root/'bin/docker'
+        docker.write_text(docker.read_text().replace("    import time\n    print('build-started',flush=True)","    import time,signal\n    signal.signal(signal.SIGTERM,signal.SIG_IGN)\n    print('build-started',flush=True)"))
+        (self.root/'slow-build').touch();self.start();self.request('/api/job',{'action':'build'})
+        deadline=time.monotonic()+10
+        while time.monotonic()<deadline:
+            state=json.loads(self.request('/api/state'))
+            if state['job'] and any('build-started' in line for line in state['job']['log']):break
+            time.sleep(.05)
+        else:self.fail('background build did not reach the controlled wait')
+        self.process.terminate();self.process.wait(timeout=10)
+        self.assertEqual(self.process.returncode,0)
+        saved=json.loads((self.root/'state/latest-job.json').read_text());self.assertEqual(saved['status'],'failed')
+
 
 if __name__=='__main__':unittest.main(verbosity=2)

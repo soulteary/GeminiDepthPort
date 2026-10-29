@@ -139,6 +139,8 @@ pub(crate) struct RawRecorder {
     #[cfg(test)]
     test_commit_gate: Option<Arc<TestGate>>,
     #[cfg(test)]
+    test_after_send_gate: Option<Arc<TestGate>>,
+    #[cfg(test)]
     test_panic_worker: bool,
 }
 #[cfg(test)]
@@ -173,6 +175,8 @@ impl RawRecorder {
             test_gate: None,
             #[cfg(test)]
             test_commit_gate: None,
+            #[cfg(test)]
+            test_after_send_gate: None,
             #[cfg(test)]
             test_panic_worker: false,
         }
@@ -412,6 +416,11 @@ impl RawRecorder {
             .try_send(message);
         match result {
             Ok(()) => {
+                #[cfg(test)]
+                if let Some(gate) = &self.test_after_send_gate {
+                    gate.started.wait();
+                    gate.resume.wait();
+                }
                 let target = self.settings.max_pairs;
                 let mut s = self.lock();
                 s.submitted += 1;
@@ -942,5 +951,60 @@ mod tests {
             assert!(!dir.join(&sink.name).exists());
             std::fs::remove_dir_all(dir).unwrap();
         }
+    }
+    #[test]
+    fn writer_failure_between_enqueue_and_accounting_is_not_overwritten_by_the_producer() {
+        let dir = directory();
+        let ros = snapshot();
+        let mut sink = RawRecorder::new(
+            settings(&dir, 2, 1_000_000),
+            ros.content.binding.session_id.as_str(),
+        );
+        let worker = Arc::new(TestGate {
+            started: std::sync::Barrier::new(2),
+            resume: std::sync::Barrier::new(2),
+        });
+        let sent = Arc::new(TestGate {
+            started: std::sync::Barrier::new(2),
+            resume: std::sync::Barrier::new(2),
+        });
+        sink.test_gate = Some(worker.clone());
+        sink.test_after_send_gate = Some(sent.clone());
+        sink.initialize(&ros, Instant::now(), 0.1).unwrap();
+        worker.started.wait();
+        std::fs::create_dir(dir.join(format!("{}.partial/ros-snapshot.json", sink.name))).unwrap();
+        let shared = sink.shared.clone();
+        let producer = std::thread::spawn(move || {
+            let received = Instant::now();
+            let result = sink.submit_owned(
+                packet(false, 1, received),
+                packet(true, 1, received),
+                1,
+                PairPolicy {
+                    clock: frame_core::PairClock::Device,
+                    max_delta_us: 20_000,
+                },
+            );
+            (sink, result)
+        });
+        sent.started.wait();
+        worker.resume.wait();
+        let start = Instant::now();
+        while shared.lock().unwrap().state != State::Failed {
+            assert!(start.elapsed() < std::time::Duration::from_secs(2));
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        sent.resume.wait();
+        let (mut sink, result) = producer.join().unwrap();
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("raw writer failed while submitting")
+        );
+        sink.finish_session(false).unwrap();
+        assert_eq!(sink.status()["state"], "failed");
+        assert!(!dir.join(&sink.name).exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

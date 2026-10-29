@@ -632,4 +632,44 @@ mod tests {
             assert!(Directory::root(tmp.path()).is_err());
         }
     }
+    #[test]
+    fn absent_observer_current_and_valid_but_foreign_snapshot_remain_explicitly_unavailable() {
+        let (_temp, ctl, gid) = fixture(false);
+        let sid = "a".repeat(32);
+        let dir = session(&ctl, &gid, &sid, false, true);
+        fs::remove_file(dir.join("current.json")).unwrap();
+        let result = read_inner(&ctl, "cam_a", &gid, &sid).unwrap();
+        assert_eq!(result["reason"], "CURRENT_UNAVAILABLE");
+        assert_eq!(result["complete"], false);
+        let (_temp, ctl, gid) = fixture(true);
+        let dir = session(&ctl, &gid, &sid, true, true);
+        let current_path = dir.join("current.json");
+        let mut current = read_json(&current_path).unwrap();
+        let snapshots = dir.parent().unwrap().parent().unwrap().join("snapshots");
+        let old = snapshots.join(format!("{}.json", text(&current["snapshot_id"])));
+        let mut snapshot: snapshot::SnapshotEnvelope =
+            serde_json::from_value(read_json(&old).unwrap()).unwrap();
+        snapshot.content.configuration["runtime_config_sha256"] = json!("f".repeat(64));
+        snapshot.content.binding.configuration_id = ConfigurationId::parse(
+            content_digest(
+                ContentKind::Configuration,
+                &serde_json::to_vec(&snapshot.content.configuration).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let new = snapshot.content.seal().unwrap();
+        current["snapshot_id"] = json!(new.snapshot_id);
+        save(
+            &snapshots.join(format!("{}.json", new.snapshot_id)),
+            &serde_json::to_value(new).unwrap(),
+        );
+        save(&current_path, &current);
+        assert!(
+            read_inner(&ctl, "cam_a", &gid, &sid)
+                .unwrap_err()
+                .to_string()
+                .starts_with("QUALITY_HISTORY_SNAPSHOT")
+        );
+    }
 }

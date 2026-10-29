@@ -483,6 +483,14 @@ fn system_clock_pair_evidence_is_bound_to_images_session_and_clock_before_native
         same_frameset: true,
         hardware_sync_verified: false,
     };
+    let mut bad_delta = pair;
+    bad_delta.delta_us = 11;
+    assert!(
+        aux.publish_pair(&bad_delta, 1_000_000_000, 1_000_010_000)
+            .unwrap_err()
+            .to_string()
+            .contains("pair delta mismatch")
+    );
     let context = |stream: &str, sequence: u64, time: u64| serde_json::json!({"version":1,"session_id":"a".repeat(32),"generation_id":"b".repeat(32),"configuration_id":"c".repeat(64),"calibration_id":"d".repeat(64),"snapshot_id":"e".repeat(64),"stream_id":stream,"sequence":sequence,"device_timestamp_us":time,"system_timestamp_us":time,"received_mono_offset_ns":1});
     let evidence:frame_core::BoundPairEvidence=serde_json::from_value(serde_json::json!({"version":1,"pair_sequence":1,"color":{"context":context("color",10,1_000_000),"encoding":"yuyv","width":2,"height":2,"stride":4,"source_depth_scale_mm":null,"output_depth_scale_mm":null,"normalized":false},"depth":{"context":context("depth",20,1_000_010),"encoding":"depth16","width":2,"height":2,"stride":4,"source_depth_scale_mm":1.0,"output_depth_scale_mm":1.0,"normalized":false},"color_stamp_us":1_000_000,"depth_stamp_us":1_000_010,"clock_source":"sdk_system_us","delta_us":10,"association":"sdk_frameset","hardware_sync_verified":false})).unwrap();
     aux.publish_pair(&pair, 1_000_000_000, 1_000_010_000)
@@ -534,6 +542,24 @@ fn publisher_rejections_do_not_commit_sequence_or_timestamp_and_calibration_is_b
     root_binding.namespace = "/".into();
     root_binding.validate().unwrap();
     let mut p = Publisher::load(&library, root_binding, calibration()).unwrap();
+    let bytes = vec![0; 512 * 1024 * 1024 + 2];
+    let mut oversized = packet();
+    oversized.layout = FrameLayout {
+        width: 1,
+        height: 1,
+        stride: bytes.len(),
+        format: PixelFormat::Depth16,
+    };
+    oversized.encoding = FrameEncoding::Depth16;
+    oversized.source_depth_scale_mm = Some(1.);
+    oversized.output_depth_scale_mm = Some(1.);
+    assert!(
+        p.publish(&oversized, &bytes, 1)
+            .unwrap_err()
+            .to_string()
+            .contains("ROS image exceeds payload limit")
+    );
+    drop(bytes);
     let mut m = packet();
     m.layout.height = 1;
     assert!(

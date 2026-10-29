@@ -1647,8 +1647,14 @@ fn quality_batch_and_window_refuse_bad_limits_cursor_origins_and_missing_page_co
         .is_err()
     );
     let base = json!({"version":1,"camera":"camera_a","expected":expected,"from_cursor":{"origin_session_id":current["session_id"],"after_sequence":0},"to_sequence":1,"limit":1});
-    for mode in 0..3 {
+    for mode in 0..5 {
         let mut value = base.clone();
+        if mode == 3 {
+            value["camera"] = json!("../escape");
+        }
+        if mode == 4 {
+            value["unexpected"] = json!(true);
+        }
         if mode == 0 {
             value["camera"] = json!(3);
         }
@@ -1747,4 +1753,503 @@ fn discovery_rejects_invalid_container_references_and_incomplete_inspection() {
                 .starts_with("INSTANCE_DISCOVERY")
         );
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn lifecycle_external_failures_never_claim_success_or_recording_protection() {
+    for action in ["start-health", "protect-health", "stop", "remove"] {
+        let mut f = Fixture::new(true, 1);
+        f.prepare_host();
+        let previous = f.ctl.command_runner.clone().unwrap();
+        f.ctl.command_runner = Some(Arc::new(move |args, input| {
+            let fail = match action {
+                "start-health" | "protect-health" => {
+                    args.get(1).is_some_and(|a| a == "compose") && args.iter().any(|a| a == "ps")
+                }
+                "stop" => args.get(1).is_some_and(|a| a == "stop"),
+                "remove" => args.get(1).is_some_and(|a| a == "rm"),
+                _ => unreachable!(),
+            };
+            if fail {
+                bail!("synthetic Docker boundary failure");
+            }
+            previous(args, input)
+        }));
+        let result = match action {
+            "start-health" => f.ctl.start(&f.inventory),
+            "protect-health" => f.ctl.protect(),
+            _ => f.ctl.stop("camera", true),
+        };
+        assert!(result.is_err(), "{action}: {result:?}");
+        assert!(!f.ctl.root.join("state/recording-guard.json").exists());
+    }
+    let mut f = Fixture::new(true, 1);
+    f.prepare_host();
+    f.edit(|d| d.cameras[0].container["State"]["Health"]["Status"] = json!("unhealthy"));
+    error(f.ctl.start(&f.inventory), "CAMERA_HEALTH_FAILED");
+}
+
+#[test]
+fn official_probe_requires_ready_fresh_observer_and_a_private_protection_guard() {
+    let f = Fixture::new(true, 1);
+    f.edit(|d| d.cameras[0].bundle["status"]["ready"] = json!(false));
+    assert!(f.ctl.probe("camera_camera_a").is_err());
+    let f = Fixture::new(true, 1);
+    fs::create_dir(f.ctl.root.join("state/recording-guard.json")).unwrap();
+    assert!(f.ctl.protect().is_err());
+    assert!(f.ctl.root.join("state/recording-guard.json").is_dir());
+}
+
+#[test]
+fn calibration_collection_rechecks_inventory_and_does_not_commit_to_an_invalid_store() {
+    for drift in [false, true] {
+        let mut f = Fixture::new(false, 1);
+        if !drift {
+            atomic(&f.ctl.root.join("state/calibration"), b"obstacle").unwrap();
+        }
+        let root = f.ctl.root.clone();
+        let old = f.ctl.command_runner.clone().unwrap();
+        f.ctl.command_runner = Some(Arc::new(move |args, input| {
+            let result = old(args, input)?;
+            if drift && args.get(3).is_some_and(|s| s == "cat") {
+                let mut data = read_json(&root.join("inventory.json"))?;
+                data["cameras"][0]["verification"] = Value::Null;
+                data["cameras"][0]["profiles_verified"] = json!(false);
+                atomic_json(&root.join("inventory.json"), &data)?;
+            }
+            Ok(result)
+        }));
+        assert!(crate::calibration::export(&f.ctl).is_err());
+        assert!(
+            f.docker
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .any(|a| a.get(3).is_some_and(|s| s == "rm"))
+        );
+    }
+}
+
+#[test]
+fn failed_generation_validation_does_not_activate_partial_or_unchecked_output() {
+    for mode in 0..3 {
+        let mut f = Fixture::new(true, 1);
+        f.ctl.stop("camera", true).unwrap();
+        let pointer = f.ctl.root.join("state/current-generation.json");
+        let manifest = f
+            .ctl
+            .root
+            .join("state/generations")
+            .join(text(&f.generation["generation"]))
+            .join("manifest.json");
+        let mut old_generation = f.generation.clone();
+        old_generation["draft"] = json!(true);
+        atomic_json(&manifest, &old_generation).unwrap();
+        atomic_json(&pointer,&json!({"generation":old_generation["generation"],"manifest_sha256":file_hash(&manifest).unwrap()})).unwrap();
+        let original = fs::read(&pointer).unwrap();
+        let old = f.ctl.command_runner.clone().unwrap();
+        let root = f.ctl.root.clone();
+        if mode == 2 {
+            fs::remove_file(&pointer).unwrap();
+            fs::create_dir(&pointer).unwrap();
+        }
+        f.ctl.command_runner = Some(Arc::new(move |args, input| {
+            if args.get(1).is_some_and(|s| s == "compose") && args.iter().any(|s| s == "--quiet") {
+                if mode == 0 {
+                    bail!("compose rejected candidate");
+                }
+                if mode == 1 {
+                    atomic(&root.join("inventory.json"), b"{}")?;
+                }
+            }
+            old(args, input)
+        }));
+        assert!(
+            (if mode == 0 {
+                f.ctl.ensure_started(&f.inventory)
+            } else {
+                generation::create(&f.ctl, &f.inventory, false)
+            })
+            .is_err(),
+            "{mode}"
+        );
+        if mode != 2 {
+            assert_eq!(fs::read(&pointer).unwrap(), original);
+        }
+    }
+}
+
+#[test]
+fn credentialed_release_handles_absent_receipts_and_surfaces_receipt_io_failure() {
+    for obstacle in [false, true] {
+        let f = Fixture::new(false, 1);
+        let _responder = Responder::start(&f, AckMode::All);
+        let result = recording::protect(&f.ctl, &f.inventory, &f.generation).unwrap();
+        let receipt = f.ctl.root.join("state/recording-recovery-credential");
+        // The active guard remains the source of authorization.
+        if receipt.exists() {
+            fs::remove_file(&receipt).unwrap();
+        }
+        if obstacle {
+            fs::create_dir(&receipt).unwrap();
+        }
+        let guard = read_json(&f.ctl.root.join("state/recording-guard.json")).unwrap();
+        let released = recording::release(&f.ctl, text(&result["token"]), guard);
+        if obstacle {
+            assert!(released.is_err());
+        } else {
+            released.unwrap();
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[path = "../tests/support/io_faults.rs"]
+mod io_faults;
+#[cfg(target_os = "linux")]
+#[test]
+fn management_storage_faults_are_scoped_to_one_child_and_never_report_success() {
+    let temp = tempfile::tempdir().unwrap();
+    let lib = io_faults::compile(temp.path());
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    for (i, (scenario, op, contains, suffix, nth)) in [
+        ("history-growth", "read", "/sessions/", "/current.json", 1),
+        (
+            "ack-corrupt-json",
+            "read",
+            "/recording-gates/",
+            "/ack.json",
+            1,
+        ),
+        (
+            "ack-corrupt-shape",
+            "read",
+            "/recording-gates/",
+            "/ack.json",
+            1,
+        ),
+        ("command-cancel", "none", "", "", 1),
+        ("docker-help", "none", "", "", 1),
+        ("generation-manifest", "write", "", "/manifest.json", 1),
+        ("generation-pointer", "fsync", "", "/state", 1),
+        ("calibration", "write", "/state/calibration/", "", 1),
+        ("official-protection", "write", "/state/", "", 1),
+        ("native-control", "write", "/state/recording-gates/", "", 1),
+        (
+            "preview-revision",
+            "write",
+            "/web-preview/camera_a/config/",
+            "",
+            4,
+        ),
+        (
+            "preview-capture",
+            "write",
+            "/web-preview/camera_a/config/",
+            "",
+            6,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let arm = temp.path().join(format!("arm-{i}"));
+        let marker = temp.path().join(format!("injected-{i}"));
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "management_session_tests::atomic_io_fault_child",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("GDP_ROOT_IO_SCENARIO", scenario)
+            .env("GDP_IO_ARMED", &arm)
+            .env("GDP_IO_FAIL_CONTAINS", contains)
+            .env("GDP_IO_FAIL_NTH", nth.to_string());
+        command.env("GDP_FAKE_DOCKER_DIR", &bin).env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        );
+        if scenario == "history-growth" {
+            command.env("GDP_IO_GROW_BYTES", (4 * 1024 * 1024 + 1).to_string());
+        }
+        if scenario.starts_with("ack-corrupt") {
+            command.env(
+                "GDP_IO_FAKE_READ",
+                if scenario.ends_with("json") {
+                    "{"
+                } else {
+                    "{}"
+                },
+            );
+        }
+        io_faults::inject(&mut command, &lib, op, suffix, &marker);
+        let out = command.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{scenario}: {} {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        if op != "none" {
+            assert!(marker.exists(), "{scenario}: fault was not reached");
+            io_faults::assert_injected(&marker, op);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "isolated subprocess fixture for per-process IO failures"]
+fn atomic_io_fault_child() {
+    let scenario = std::env::var("GDP_ROOT_IO_SCENARIO").unwrap();
+    let native = scenario == "native-control"
+        || scenario == "preview-capture"
+        || scenario.starts_with("ack-corrupt");
+    let mut f = Fixture::new(!native, 1);
+    f.prepare_host();
+    if native && scenario == "preview-capture" {
+        f.install_rust_runtime();
+    }
+    if scenario.starts_with("generation") {
+        f.ctl.stop("camera", true).unwrap();
+        let manifest = f
+            .ctl
+            .root
+            .join("state/generations")
+            .join(text(&f.generation["generation"]))
+            .join("manifest.json");
+        let mut old = f.generation.clone();
+        old["draft"] = json!(true);
+        atomic_json(&manifest, &old).unwrap();
+        atomic_json(&f.ctl.root.join("state/current-generation.json"),&json!({"generation":old["generation"],"manifest_sha256":file_hash(&manifest).unwrap()})).unwrap();
+    }
+    if scenario.starts_with("preview") {
+        f.ctl.stop("camera", true).unwrap();
+    }
+    if scenario == "history-growth" {
+        let sid = "a".repeat(32);
+        let dir = f
+            .ctl
+            .root
+            .join("state/generations")
+            .join(text(&f.generation["generation"]))
+            .join("evidence/camera_a/sessions")
+            .join(&sid);
+        for parent in dir.ancestors().take_while(|p| p.starts_with(&f.ctl.root)) {
+            private_dir(parent).unwrap();
+        }
+        private_dir(&dir).unwrap();
+        atomic_json(&dir.join("current.json"),&json!({"version":1,"kind":"official-observer-quality","instance_id":"b".repeat(64),"session_id":sid,"snapshot_id":null,"quality":null})).unwrap();
+    }
+    if scenario == "docker-help" {
+        use std::os::unix::fs::PermissionsExt;
+        let path = PathBuf::from(std::env::var_os("GDP_FAKE_DOCKER_DIR").unwrap()).join("docker");
+        fs::write(
+            &path,
+            b"#!/bin/sh\n[ \"$1\" = build ] && [ \"$2\" = --help ] && printf controlled-help\n",
+        )
+        .unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        f.ctl.command_runner = None;
+        assert_eq!(
+            f.ctl.run(&["docker", "build", "--help"]).unwrap(),
+            "controlled-help"
+        );
+        return;
+    }
+    let _responder = (scenario == "native-control" || scenario.starts_with("ack-corrupt"))
+        .then(|| Responder::start(&f, AckMode::All));
+    fs::write(std::env::var_os("GDP_IO_ARMED").unwrap(), b"armed").unwrap();
+    let result = match scenario.as_str() {
+        "generation-manifest" | "generation-pointer" => {
+            generation::create(&f.ctl, &f.inventory, false)
+        }
+        "calibration" => crate::calibration::export(&f.ctl),
+        "history-growth" => crate::quality_history::read(
+            &f.ctl,
+            "camera_a",
+            text(&f.generation["generation"]),
+            &"a".repeat(32),
+        ),
+        "command-cancel" => {
+            crate::util::cancel_commands();
+            crate::util::command(&f.ctl.root, &args(&["/bin/sh", "-c", ":"]), 1, None)
+                .map(|_| json!({}))
+        }
+        "official-protection" | "native-control" | "ack-corrupt-json" | "ack-corrupt-shape" => {
+            f.ctl.protect()
+        }
+        "preview-revision" | "preview-capture" => {
+            crate::server::test_start_preview(&f.ctl, "camera_a")
+        }
+        _ => panic!("unknown subprocess scenario"),
+    };
+    if scenario.starts_with("ack-corrupt") {
+        assert!(result.is_ok(), "{scenario}: {result:?}");
+        return;
+    }
+    assert!(result.is_err(), "{scenario}: {result:?}");
+    if scenario.starts_with("preview") {
+        assert!(
+            !f.docker
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .any(|args| args.get(1).is_some_and(|s| s == "run"))
+        );
+    }
+    if scenario == "generation-manifest" {
+        assert!(generation::load(&f.ctl).unwrap().unwrap()["draft"] == true);
+    }
+    if scenario == "generation-pointer" {
+        assert!(generation::load(&f.ctl).unwrap().unwrap()["draft"] == false);
+    }
+}
+
+#[test]
+fn snapshot_parser_rejects_malformed_instance_ids_and_tampered_native_envelopes() {
+    let f = Fixture::new(false, 1);
+    f.edit(|d| d.cameras[0].status["instance_id"] = json!("not-a-digest"));
+    assert!(f.acquire().is_err());
+    let f = Fixture::new(false, 1);
+    f.edit(|d| d.cameras[0].snapshot.content.configuration["tampered"] = json!(true));
+    assert!(f.acquire().is_err());
+}
+
+#[test]
+fn generation_backend_and_absent_observer_contract_are_checked_independently() {
+    for native in [true, false] {
+        let mut f = Fixture::new(!native, 1);
+        if native {
+            f.install_rust_runtime();
+        }
+        let mut manifest = f.generation.clone();
+        manifest.as_object_mut().unwrap().remove("capture_backend");
+        manifest.as_object_mut().unwrap().remove("observer_backend");
+        manifest["files"]
+            .as_object_mut()
+            .unwrap()
+            .retain(|name, _| {
+                name == "compose.yaml"
+                    || name.ends_with("/camera.yaml")
+                    || name.ends_with("/health.json")
+                    || name.ends_with("/binding.json")
+            });
+        let path = f
+            .ctl
+            .root
+            .join("state/generations")
+            .join(text(&manifest["generation"]))
+            .join("manifest.json");
+        atomic_json(&path, &manifest).unwrap();
+        atomic_json(&f.ctl.root.join("state/current-generation.json"),&json!({"generation":manifest["generation"],"manifest_sha256":file_hash(&path).unwrap()})).unwrap();
+        if native {
+            error(f.ctl.check_render(&f.inventory), "GENERATION_BINDING");
+        } else {
+            error(f.query("current"), "OFFICIAL_OBSERVER_UNAVAILABLE");
+        }
+    }
+}
+
+#[test]
+fn calibration_extrinsics_require_matching_direction_and_meter_units() {
+    let f = Fixture::new(false, 1);
+    let request =
+        crate::calibration::request(&f.inventory, text(&f.generation["generation"])).unwrap();
+    for (key, value) in [
+        ("translation_unit", json!("mm")),
+        ("source_frame", json!("unrelated")),
+    ] {
+        let mut observations = calibration_observations(&request);
+        observations["cameras"]["camera_a"]["depth_to_color"][key] = value;
+        error(
+            crate::calibration::snapshot(
+                &f.inventory,
+                text(&f.generation["generation"]),
+                &observations,
+            ),
+            "CALIBRATION_TRANSFORM",
+        );
+    }
+}
+
+#[test]
+fn native_recording_gate_cannot_be_authorized_with_public_directory_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new(false, 1);
+    let gate = f.ctl.root.join("state/recording-gates/camera_a");
+    fs::set_permissions(&gate, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(recording::protect(&f.ctl, &f.inventory, &f.generation).is_err());
+    assert!(!f.ctl.root.join("state/recording-guard.json").exists());
+}
+
+#[test]
+fn stopped_instances_are_not_restarted_or_removed_by_a_nonremoving_stop() {
+    let f = Fixture::new(false, 1);
+    f.edit(|d| d.cameras[0].container["State"]["Running"] = json!(false));
+    assert_eq!(f.ctl.stop("camera", false).unwrap()["status"], "stopped");
+    let d = f.docker.lock().unwrap();
+    assert_eq!(d.cameras.len(), 1);
+    assert!(
+        !d.calls
+            .iter()
+            .any(|a| a.get(1).is_some_and(|s| s == "stop" || s == "rm"))
+    );
+    drop(d);
+    let legacy: Value =
+        serde_json::from_str(include_str!("../tests/fixtures/inventory.v1.json")).unwrap();
+    f.ctl.image_contract(&legacy).unwrap();
+}
+
+#[test]
+fn migration_rechecks_inventory_after_confirming_the_group_is_stopped() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ctl = Controller::new(temp.path()).unwrap();
+    atomic(
+        &ctl.root.join("inventory.json"),
+        include_bytes!("../tests/fixtures/inventory.v1.json"),
+    )
+    .unwrap();
+    let plan = ctl.migrate(&Value::Null, false, "").unwrap();
+    let root = ctl.root.clone();
+    ctl.command_runner = Some(Arc::new(move |args, _| {
+        assert_eq!(args[1], "ps");
+        atomic(&root.join("inventory.json"), b"{}")?;
+        Ok(String::new())
+    }));
+    error(
+        ctl.migrate(&Value::Null, true, text(&plan["plan_digest"])),
+        "MIGRATION_STALE",
+    );
+    assert!(!ctl.root.join("state/migrations").exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn startup_rechecks_group_membership_after_both_successful_probes() {
+    let mut f = Fixture::new(false, 1);
+    f.prepare_host();
+    f.install_rust_runtime();
+    let old = f.ctl.command_runner.clone().unwrap();
+    let docker = f.docker.clone();
+    let count = std::sync::atomic::AtomicUsize::new(0);
+    f.ctl.command_runner = Some(Arc::new(move |args, input| {
+        let result = old(args, input)?;
+        if args.iter().any(|s| s == "/app/health.py") && count.fetch_add(1, Ordering::SeqCst) == 1 {
+            docker.lock().unwrap().cameras.clear();
+        }
+        Ok(result)
+    }));
+    error(f.ctl.start(&f.inventory), "GROUP_INCOMPLETE");
+    assert_eq!(
+        read_json(&f.ctl.root.join("state/lifecycle.json")).unwrap()["ready"],
+        false
+    );
 }

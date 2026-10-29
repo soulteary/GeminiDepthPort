@@ -311,3 +311,34 @@ fn completed_stream_queue_cannot_grow_without_a_matching_stream() {
             .any(|r| r.reason == RejectionReason::QueueOverflow)
     );
 }
+
+#[test]
+fn malformed_header_unknown_wall_clock_and_orphan_info_have_explicit_rejections() {
+    let mut observer = CaptureObserver::new(config()).unwrap();
+    let mut bad = image(StreamRole::Color, BASE);
+    bad.stamp.nanosec = 1_000_000_000;
+    let update = observer
+        .image(StreamRole::Color, at(0), Some(BASE), bad)
+        .unwrap();
+    assert_eq!(
+        update.rejections[0].reason,
+        RejectionReason::HeaderTimestampInvalid
+    );
+    let update = observer.tick(at(1), None).unwrap();
+    assert!(update.pairs.is_empty());
+    observer
+        .camera_info(StreamRole::Depth, at(2), info(StreamRole::Depth, BASE))
+        .unwrap();
+    let update = observer.advance_watermark(at(3), BASE + 2000).unwrap();
+    assert!(
+        update
+            .rejections
+            .iter()
+            .any(|r| r.reason == RejectionReason::UnmatchedComponent)
+    );
+    let regression = observer.advance_watermark(at(4), BASE + 1000).unwrap();
+    assert_eq!(
+        regression.rejections[0].reason,
+        RejectionReason::WatermarkRegression
+    );
+}

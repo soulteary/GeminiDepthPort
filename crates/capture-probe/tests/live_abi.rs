@@ -350,3 +350,25 @@ fn rgbd_ros_publishes_calibration_and_pair_evidence_and_reports_output_failures(
         assert_eq!(value["error"], expected, "{value}");
     }
 }
+
+#[test]
+fn structurally_valid_calibration_for_another_profile_cannot_start_a_ros_publisher() {
+    let f = Fixture::new();
+    let mut command = f.single(true, true, true);
+    let path = f.root.join("calibration.json");
+    let mut calibration: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    calibration["width"] = json!(4);
+    let text = calibration.to_string();
+    ros_output::Calibration::from_json(&text).unwrap();
+    fs::write(path, text).unwrap();
+    let out = command.output().unwrap();
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("test-device"));
+    assert!(
+        !fs::read_to_string(f.root.join("events"))
+            .unwrap_or_default()
+            .lines()
+            .any(|l| l == "create")
+    );
+}

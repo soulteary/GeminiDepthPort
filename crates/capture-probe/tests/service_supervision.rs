@@ -175,6 +175,35 @@ fn fixture() -> Fixture {
         "return 1700000000000000ULL+service_sequence*33333;",
         "return getenv(\"GDP_MOCK_ZERO_SYSTEM\")&&fault_active()?0:1700000000000000ULL+service_sequence*33333;",
     );
+    replace(
+        &mut sdk_source,
+        ":0.1f;",
+        ":(getenv(\"GDP_MOCK_BASE_SCALE\")?strtof(getenv(\"GDP_MOCK_BASE_SCALE\"),NULL):0.1f);",
+    );
+    // Independent source periods reproduce an unpaired depth at a phase slip.
+    // Only the test clock starts near the slip; the service itself is unchanged.
+    sdk_source.insert_str(0, "static unsigned long long drift_index(int stream);\n");
+    sdk_source.push_str("\nstatic unsigned long long drift_index(int stream){unsigned long long n=service_sequence+870;return stream==2?(n*33308+16663)/33327:n;}\n");
+    replace(
+        &mut sdk_source,
+        "if(getenv(\"GDP_MOCK_MISSING_COLOR\")&&fault_active())return NULL;",
+        "if(getenv(\"GDP_MOCK_DRIFT\")&&drift_index(2)==((service_sequence+869)*33308+16663)/33327)return NULL;if(getenv(\"GDP_MOCK_MISSING_COLOR\")&&fault_active())return NULL;",
+    );
+    replace(
+        &mut sdk_source,
+        "return getenv(\"GDP_MOCK_DUPLICATE\")&&service_sequence>2?2:service_sequence;",
+        "if(getenv(\"GDP_MOCK_DRIFT\"))return drift_index(p->stream);return getenv(\"GDP_MOCK_DUPLICATE\")&&service_sequence>2?2:service_sequence;",
+    );
+    replace(
+        &mut sdk_source,
+        "return service_sequence*33333+(getenv(\"GDP_MOCK_SKEW\")&&p->stream==3?30000:0);",
+        "if(getenv(\"GDP_MOCK_DRIFT\"))return drift_index(p->stream)*(p->stream==2?33327:33308);return service_sequence*33333+(getenv(\"GDP_MOCK_SKEW\")&&p->stream==3?30000:0);",
+    );
+    replace(
+        &mut sdk_source,
+        "return bytes;",
+        "static unsigned char zero[sizeof(bytes)];return getenv(\"GDP_MOCK_ZERO_PIXELS\")?zero:bytes;",
+    );
     let sdk_c = root.join("mock-sdk.c");
     fs::write(&sdk_c, sdk_source).unwrap();
     compile("cc", &sdk_c, &sdk, None);
@@ -1158,6 +1187,8 @@ fn finite_single_stream_probe_rejects_invalid_metadata_and_depth_conversion_befo
         ("depth", "GDP_MOCK_BAD_PAYLOAD", "1"),
         ("color", "GDP_MOCK_BAD_WIDTH", "1"),
         ("color", "GDP_MOCK_MUTATE_PAYLOAD", "1"),
+        ("depth", "GDP_MOCK_MUTATE_PAYLOAD", "1"),
+        ("depth", "GDP_MOCK_ZERO_PIXELS", "1"),
         ("color", "GDP_MOCK_MISSING_COLOR", "1"),
     ] {
         let mut command = Command::new(env!("CARGO_BIN_EXE_capture-probe"));
@@ -1188,7 +1219,15 @@ fn finite_single_stream_probe_rejects_invalid_metadata_and_depth_conversion_befo
             .output()
             .unwrap();
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(result["ok"], key == "NONE", "{key}: {result}");
+        assert_eq!(
+            result["ok"],
+            key == "NONE" || key == "GDP_MOCK_ZERO_PIXELS",
+            "{key}: {result}"
+        );
+        if key == "GDP_MOCK_ZERO_PIXELS" {
+            assert_eq!(result["normalization"]["output_min_mm"], 0);
+            assert_eq!(result["normalization"]["output_max_mm"], 0);
+        }
     }
 }
 
@@ -1314,5 +1353,343 @@ fn startup_discovery_frames_are_excluded_from_the_raw_target_before_readiness() 
             > 0
     );
     assert_eq!(ready["raw_recording"]["written_pairs"], 2);
+    stop(&mut child);
+}
+
+#[test]
+fn unbound_worker_disconnects_do_not_need_quality_or_raw_recording() {
+    let f = fixture();
+    for key in ["GDP_MOCK_OPEN_ERROR", "GDP_MOCK_WAIT_ERROR"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_capture-service"))
+            .args([
+                "--worker",
+                "--config",
+                f.config.to_str().unwrap(),
+                "--expected-config-sha",
+                &offline_depth::sha256(&fs::read(&f.config).unwrap()),
+                "--restart-attempt",
+                "0",
+                "--supervisor-pid",
+                &std::process::id().to_string(),
+            ])
+            .env("GDP_CAPTURE_INSTANCE_ID", "a".repeat(64))
+            .env(key, "1")
+            .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        let value = status(&f).unwrap();
+        assert_eq!(value["ready"], false);
+        assert!(value["quality"].is_null());
+        assert!(value["raw_recording"].is_null());
+    }
+}
+
+#[test]
+fn millimeter_service_binds_quality_without_raw_recording_and_rejects_bad_frames() {
+    for fault in [
+        "NONE",
+        "GDP_MOCK_BAD_PAYLOAD",
+        "GDP_MOCK_DUPLICATE",
+        "GDP_MOCK_MISSING_COLOR",
+    ] {
+        let f = fixture();
+        quality_only(&f);
+        let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+        config["depth"]["unit_policy"] = json!("require-mm");
+        config["service"]["heartbeat_timeout_ms"] = json!(3000);
+        fs::write(&f.config, config.to_string()).unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_capture-service"))
+            .args(["--config", f.config.to_str().unwrap()])
+            .env("GDP_MOCK_SCALE", "1")
+            .env("GDP_MOCK_BASE_SCALE", "1")
+            .env(fault, "1")
+            .env("GDP_MOCK_FAULT_AFTER", "30")
+            .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+            .env("GDP_ROS_MOCK_EVENTS", &f.events)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let ready = wait_status(&f, &mut child, |v| v["ready"] == true);
+        assert!(ready["snapshot_id"].is_string());
+        assert!(ready["raw_recording"].is_null());
+        if fault != "NONE" {
+            let bad = wait_status(&f, &mut child, |v| {
+                v["pairs_rejected"].as_u64().unwrap_or(0) > 0
+            });
+            assert_eq!(bad["ready"], false);
+        }
+        stop(&mut child);
+    }
+}
+
+#[test]
+fn missing_color_with_invalid_depth_is_a_quality_diagnostic_not_a_pixel_measurement() {
+    let f = fixture();
+    quality_only(&f);
+    let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    config["service"]["heartbeat_timeout_ms"] = json!(3000);
+    fs::write(&f.config, config.to_string()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_capture-service"))
+        .args(["--config", f.config.to_str().unwrap()])
+        .env("GDP_MOCK_MISSING_COLOR", "1")
+        .env("GDP_MOCK_BAD_FORMAT", "1")
+        .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let bad = wait_status(&f, &mut child, |v| {
+        v["missing_pairs"].as_u64().unwrap_or(0) > 0
+    });
+    assert_eq!(bad["pairs_published"], 0);
+    assert_eq!(bad["ready"], false);
+    stop(&mut child);
+}
+
+#[test]
+fn strict_pair_mode_excludes_an_unpaired_depth_even_when_its_source_index_is_continuous() {
+    let f = fixture();
+    quality_only(&f);
+    let mut value: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    value["service"]["heartbeat_timeout_ms"] = json!(3000);
+    fs::write(&f.config, value.to_string()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_capture-service"))
+        .args(["--config", f.config.to_str().unwrap()])
+        .env("GDP_MOCK_DRIFT", "1")
+        .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+        .env("GDP_ROS_MOCK_EVENTS", &f.events)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_status(&f, &mut child, |v| v["ready"] == true);
+    let sampled = wait_status(&f, &mut child, |v| {
+        v["framesets_observed"].as_u64().unwrap_or(0) >= 30
+    });
+    assert_eq!(sampled["missing_pairs"], 1);
+    assert!(sampled["pairs_published"].as_u64().unwrap() > 0);
+    let current: Value = serde_json::from_slice(
+        &fs::read(sampled["quality"]["current_path"].as_str().unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        current["quality"]["streams"]["depth"]["frame_count"]
+            .as_u64()
+            .unwrap()
+            > current["quality"]["streams"]["color"]["frame_count"]
+                .as_u64()
+                .unwrap()
+    );
+    stop(&mut child);
+}
+
+#[path = "../../../tests/support/io_faults.rs"]
+mod io_faults;
+#[test]
+fn native_recording_reports_thread_exhaustion_queue_backpressure_and_snapshot_link_failure() {
+    for (op, suffix, delay, expected) in [
+        (
+            "pthread_create",
+            "raw-writer",
+            false,
+            "RAW_INITIALIZATION_FAILED",
+        ),
+        ("fsync", "/snapshot.json", true, "RAW_QUEUE_OVERFLOW"),
+        ("linkat", ".json", false, ""),
+    ] {
+        let f = fixture();
+        configure_runtime_quality(&f, 1_000_000, 100_000_000);
+        let mut value: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+        value["service"]["heartbeat_timeout_ms"] = json!(3000);
+        value["service"]["shutdown_timeout_ms"] = json!(3000);
+        fs::write(&f.config, value.to_string()).unwrap();
+        let library = io_faults::compile(&f.root);
+        let marker = f.root.join("injected");
+        let mut command = Command::new(env!("CARGO_BIN_EXE_capture-service"));
+        command
+            .args(["--config", f.config.to_str().unwrap()])
+            .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+            .env("GDP_ROS_MOCK_EVENTS", &f.events)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        io_faults::inject(&mut command, &library, op, suffix, &marker);
+        if delay {
+            command.env("GDP_IO_DELAY_MS", "1500");
+        }
+        let mut child = command.spawn().unwrap();
+        if expected.is_empty() {
+            let started = Instant::now();
+            while child.try_wait().unwrap().is_none() {
+                assert!(started.elapsed() < Duration::from_secs(8));
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(status(&f).unwrap()["ready"], false);
+        } else {
+            let failed = wait_status(&f, &mut child, |v| v["raw_recording"]["state"] == "failed");
+            assert_eq!(failed["raw_recording"]["reason"], expected);
+            assert!(
+                !Path::new(failed["raw_recording"]["job_path"].as_str().unwrap())
+                    .join("COMPLETE")
+                    .exists()
+            );
+            stop(&mut child);
+        }
+        io_faults::assert_injected(&marker, op);
+    }
+}
+
+#[test]
+fn a_normally_exiting_worker_is_distinct_from_a_supervisor_shutdown() {
+    let f = fixture();
+    quality_only(&f);
+    let mut child = launch(&f);
+    let ready = wait_status(&f, &mut child, |v| v["ready"] == true);
+    unsafe {
+        libc::kill(ready["pid"].as_u64().unwrap() as i32, libc::SIGTERM);
+    }
+    let start = Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        assert!(start.elapsed() < Duration::from_secs(5));
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(status(&f).unwrap()["reason"], "WORKER_STOPPED");
+    assert_eq!(status(&f).unwrap()["ready"], false);
+}
+
+#[test]
+fn valid_depth_scale_changes_cannot_silently_rebind_an_existing_capture_snapshot() {
+    let f = fixture();
+    quality_only(&f);
+    let mut cfg: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    cfg["service"]["heartbeat_timeout_ms"] = json!(3000);
+    fs::write(&f.config, cfg.to_string()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_capture-service"))
+        .args(["--config", f.config.to_str().unwrap()])
+        .env("GDP_MOCK_SCALE", "0.2")
+        .env("GDP_MOCK_FAULT_AFTER", "30")
+        .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+        .env("GDP_ROS_MOCK_EVENTS", &f.events)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let ready = wait_status(&f, &mut child, |v| v["ready"] == true);
+    let failed = wait_status(&f, &mut child, |v| {
+        v["last_failure_reason"] == "PAIR_CONTRACT_REJECTED"
+    });
+    assert_eq!(failed["snapshot_id"], ready["snapshot_id"]);
+    assert_eq!(failed["ready"], false);
+    assert!(failed["pairs_rejected"].as_u64().unwrap() > 0);
+    stop(&mut child);
+}
+
+#[test]
+fn duplicate_supervisors_cannot_replace_the_live_worker_or_acknowledge_a_directory() {
+    let f = fixture();
+    quality_only(&f);
+    let control = f.root.join("recording/control.json");
+    fs::create_dir(control.parent().unwrap()).unwrap();
+    let mut cfg: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    cfg["service"]["recording_control_path"] = json!(control);
+    cfg["service"]["heartbeat_timeout_ms"] = json!(3000);
+    fs::write(&f.config, cfg.to_string()).unwrap();
+    let mut child = launch(&f);
+    let ready = wait_status(&f, &mut child, |v| v["ready"] == true);
+    let other = Command::new(env!("CARGO_BIN_EXE_capture-service"))
+        .args(["--config", f.config.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!other.status.success());
+    fs::create_dir(&control).unwrap();
+    let later = wait_status(&f, &mut child, |v| {
+        v["heartbeat_sequence"].as_u64().unwrap_or(0)
+            > ready["heartbeat_sequence"].as_u64().unwrap() + 5
+    });
+    assert_eq!(later["pid"], ready["pid"]);
+    assert!(!f.root.join("recording/ack.json").exists());
+    stop(&mut child);
+}
+
+#[test]
+fn missing_kernel_supervision_guarantees_fail_before_the_sdk_can_start() {
+    for mode in ["pdeath", "subreaper"] {
+        let f = fixture();
+        let binary = f.root.join("deny-prctl");
+        let source =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/support/deny_prctl.c");
+        let out = Command::new("cc")
+            .args(["-std=c11", "-Wall", "-Wextra", "-Werror"])
+            .arg(source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+        config["service"]["max_restarts"] = json!(0);
+        fs::write(&f.config, config.to_string()).unwrap();
+        let marker = f.root.join("installed");
+        let mut child = Command::new(binary)
+            .arg(mode)
+            .arg(env!("CARGO_BIN_EXE_capture-service"))
+            .args(["--config", f.config.to_str().unwrap()])
+            .env("GDP_SECCOMP_MARKER", &marker)
+            .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        let exit = loop {
+            if let Some(exit) = child.try_wait().unwrap() {
+                break exit;
+            }
+            if start.elapsed() > Duration::from_secs(5) {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("supervision syscall failure did not stop setup");
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert!(marker.is_file(), "sandbox setup failed with {exit}");
+        assert!(!exit.success());
+        assert_ne!(exit.code(), Some(127));
+        assert!(
+            !fs::read_to_string(&f.events)
+                .unwrap_or_default()
+                .lines()
+                .any(|line| line == "start")
+        );
+    }
+}
+
+#[test]
+fn interrupted_worker_exit_checks_do_not_turn_a_healthy_worker_into_a_failure() {
+    let f = fixture();
+    quality_only(&f);
+    let mut cfg: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    cfg["service"]["heartbeat_timeout_ms"] = json!(3000);
+    fs::write(&f.config, cfg.to_string()).unwrap();
+    let library = io_faults::compile(&f.root);
+    let marker = f.root.join("injected");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_capture-service"));
+    command
+        .args(["--config", f.config.to_str().unwrap()])
+        .env("GDP_IO_ERRNO", "EINTR")
+        .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+        .env("GDP_ROS_MOCK_EVENTS", &f.events)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    io_faults::inject(&mut command, &library, "waitid", "worker", &marker);
+    let mut child = command.spawn().unwrap();
+    let ready = wait_status(&f, &mut child, |v| v["ready"] == true);
+    io_faults::assert_injected(&marker, "waitid");
+    assert_eq!(ready["restart_attempt"], 0);
     stop(&mut child);
 }

@@ -43,6 +43,13 @@ fn acquisition_does_not_require_optional_calibration_symbols() {
     assert_eq!(frames.color().unwrap().unwrap().data().unwrap().len(), 8);
     drop(frames);
     pipeline.stop().unwrap();
+    assert!(
+        pipeline
+            .calibration()
+            .unwrap_err()
+            .to_string()
+            .contains("active pipeline")
+    );
     drop(pipeline);
     drop(sdk);
     fs::remove_dir_all(dir).unwrap();

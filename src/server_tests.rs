@@ -13,6 +13,7 @@ fn manager(f: &Fixture) -> Arc<Manager> {
         active_job: AtomicBool::new(false),
         last_seen: Mutex::new(Instant::now()),
         job: Mutex::new(Value::Null),
+        state_after_job_read: Mutex::new(None),
     })
 }
 fn request(
@@ -626,4 +627,170 @@ fn foreign_preview_mounts_block_start_save_and_cleanup_without_external_mutation
             .to_string()
             .starts_with("INSTANCE_OWNERSHIP")
     );
+}
+
+#[test]
+fn completed_silent_jobs_and_fallback_output_have_bounded_truthful_logs() {
+    let f = Fixture::new(true, 1);
+    let out = command_logged(&f.ctl.root, &args(&["/bin/sh", "-c", ":"]), 5, None, None).unwrap();
+    let mut job = json!({"status":"running","log":[]});
+    finish_job_result(&mut job, Ok(out));
+    assert_eq!(job["status"], "passed");
+    assert_eq!(job["log"], json!([]));
+    use std::fmt::Write;
+    let mut output = String::new();
+    for i in 0..1300 {
+        writeln!(&mut output, "output {i}").unwrap();
+    }
+    finish_job_result(&mut job, Ok(output));
+    assert_eq!(job["log"].as_array().unwrap().len(), 1200);
+    assert_eq!(job["log"][0], "output 100");
+    assert_eq!(job["log"][1199], "output 1299");
+    finish_job_result(&mut job, Err(anyhow::anyhow!("failed after diagnostics")));
+    assert_eq!(job["status"], "failed");
+    assert_eq!(
+        job["log"].as_array().unwrap().last().unwrap(),
+        "failed after diagnostics"
+    );
+}
+
+#[test]
+fn missing_preview_and_unavailable_binding_never_confirm_or_start_capture() {
+    let mut f = Fixture::new(true, 1);
+    f.prepare_host();
+    f.ctl.stop("camera", true).unwrap();
+    atomic(
+        &f.ctl.root.join("work/web-preview/camera_a/config/revision"),
+        config::camera_digest(&f.inventory, &f.inventory["cameras"][0]).as_bytes(),
+    )
+    .unwrap();
+    assert!(
+        confirm(&f.ctl, "camera_a")
+            .unwrap_err()
+            .to_string()
+            .starts_with("PREVIEW_MISSING")
+    );
+    let serial = f
+        .ctl
+        .host_root
+        .as_ref()
+        .unwrap()
+        .join("sys/bus/usb/devices/1-0/serial");
+    atomic(&serial, b"OTHER_DEVICE").unwrap();
+    assert!(
+        start_preview(&f.ctl, "camera_a")
+            .unwrap_err()
+            .to_string()
+            .starts_with("CAMERA_BINDING")
+    );
+    assert!(
+        get(
+            &manager(&f),
+            &format!("/api/quality/batch?request={}", "x".repeat(65537))
+        )
+        .1["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("QUALITY_REQUEST_SIZE")
+    );
+}
+
+#[test]
+fn abandoned_job_recovery_rechecks_live_state_and_persists_before_reporting_failure() {
+    for mode in 0..3 {
+        let f = Fixture::new(true, 1);
+        let m = manager(&f);
+        let old = json!({"id":"123456789abc","action":"build","status":"running","log":[]});
+        persist_job(&f.ctl, &old).unwrap();
+        if mode == 0 {
+            *m.state_after_job_read.lock().unwrap() = Some(Box::new(move |m| {
+                let mut completed = old.clone();
+                completed["status"] = json!("passed");
+                persist_job(&m.ctl, &completed).unwrap();
+            }));
+            assert_eq!(state(&m).unwrap()["job"]["status"], "passed");
+        } else if mode == 1 {
+            *m.state_after_job_read.lock().unwrap() = Some(Box::new(move |m| {
+                *m.job.lock().unwrap() = json!({"id":"fedcba987654","status":"running"});
+                m.active_job.store(true, Ordering::Release);
+            }));
+            assert_eq!(state(&m).unwrap()["job"]["id"], "fedcba987654");
+            assert_eq!(
+                read_json(&f.ctl.root.join("state/latest-job.json")).unwrap()["status"],
+                "running"
+            );
+        } else {
+            let path = f.ctl.root.join("state/jobs/123456789abc.json");
+            fs::remove_file(&path).unwrap();
+            fs::create_dir(&path).unwrap();
+            assert!(state(&m).is_err());
+            assert_eq!(
+                read_json(&f.ctl.root.join("state/latest-job.json")).unwrap()["status"],
+                "running"
+            );
+        }
+    }
+}
+
+#[test]
+fn historical_summary_http_route_can_report_an_unavailable_session_without_live_docker() {
+    let f = Fixture::new(true, 1);
+    let sid = "a".repeat(32);
+    let gid = "d".repeat(32);
+    let dir = f
+        .ctl
+        .root
+        .join("state/generations")
+        .join(&gid)
+        .join("evidence/camera_a/sessions")
+        .join(&sid);
+    for parent in dir.ancestors().take_while(|p| p.starts_with(&f.ctl.root)) {
+        private_dir(parent).unwrap();
+    }
+    let (status, value) = get(
+        &manager(&f),
+        &format!("/api/quality/session-summary?camera=camera_a&generation={gid}&session={sid}"),
+    );
+    assert_eq!(status, 200, "{value}");
+    assert_eq!(value["complete"], false);
+    assert_eq!(value["reason"], "CURRENT_UNAVAILABLE");
+}
+
+#[test]
+fn legacy_single_stream_preview_confirmation_keeps_legacy_schema_and_checks_only_enabled_streams() {
+    let mut f = Fixture::new(true, 1);
+    let mut inventory: Value =
+        serde_json::from_str(include_str!("../tests/fixtures/inventory.v1.json")).unwrap();
+    inventory["cameras"][0]["parameters"]["enable_color"] = json!(false);
+    atomic_json(&f.ctl.root.join("inventory.json"), &inventory).unwrap();
+    let folder = f.ctl.root.join("work/web-preview/head");
+    atomic(
+        &folder.join("config/revision"),
+        config::camera_digest(&inventory, &inventory["cameras"][0]).as_bytes(),
+    )
+    .unwrap();
+    atomic(&folder.join("config/lease"), b"").unwrap();
+    atomic_json(&folder.join("out/status.json"),&json!({"depth":{"received_at":now(),"frames":5,"width":inventory["cameras"][0]["parameters"]["depth_width"],"height":inventory["cameras"][0]["parameters"]["depth_height"]}})).unwrap();
+    let id = "f".repeat(64);
+    let item = json!({"Id":id,"Name":"/orbbec-web-preview-head","Config":{"Labels":{"orbbec.web.preview":PROJECT}},"State":{"Running":true},"Mounts":[{"Destination":"/config","Source":folder.join("config")}]});
+    let old = f.ctl.command_runner.clone().unwrap();
+    f.ctl.command_runner = Some(Arc::new(move |args, input| {
+        if args.get(1).is_some_and(|s| s == "ps")
+            && args.iter().any(|s| s.contains("orbbec.web.preview"))
+        {
+            return Ok(id.clone());
+        }
+        if args.get(1).is_some_and(|s| s == "inspect") && args.iter().any(|s| s == &id) {
+            return Ok(json!([item]).to_string());
+        }
+        if args.get(1).is_some_and(|s| s == "exec") && args.iter().any(|s| s == "/app/health.py") {
+            return Ok(String::new());
+        }
+        old(args, input)
+    }));
+    confirm(&f.ctl, "head").unwrap();
+    let saved = f.ctl.load().unwrap();
+    assert_eq!(saved["schema_version"], 1);
+    assert_eq!(saved["cameras"][0]["profiles_verified"], true);
+    assert!(saved["cameras"][0].get("verification").is_none());
 }

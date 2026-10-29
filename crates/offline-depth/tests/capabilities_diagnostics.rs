@@ -295,3 +295,24 @@ fn public_error_categories_keep_backward_compatible_codes_and_specific_failure_d
     );
     assert_eq!(OfflineError::Worker.code(), "OUTPUT_WORKER_FAILED");
 }
+
+#[test]
+fn job_control_is_single_use_across_clones_and_failed_runs() {
+    let control = JobControl::default();
+    let alias = control.clone();
+    assert_eq!(control.execute(|| Ok(7)).unwrap(), 7);
+    assert_eq!(
+        alias.execute(|| Ok(8)).unwrap_err().detail_code(),
+        "JOB_CONTROL_ALREADY_USED"
+    );
+    let failed = JobControl::default();
+    assert!(
+        failed
+            .execute(|| Err::<(), _>(offline_depth::OfflineError::Invalid("TEST_FAILURE")))
+            .is_err()
+    );
+    assert_eq!(
+        failed.execute(|| Ok(())).unwrap_err().detail_code(),
+        "JOB_CONTROL_ALREADY_USED"
+    );
+}

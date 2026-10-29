@@ -295,3 +295,18 @@ fn partially_evicted_windows_progress_and_empty_windows_do_not_loop() {
         }
     }
 }
+
+#[test]
+fn unknown_expected_binding_fields_are_not_treated_as_capture_identity() {
+    let mut expected = binding();
+    expected["unexpected"] = json!(true);
+    let request = json!({"version":1,"cameras":[{"camera":"camera_a","expected":expected}]});
+    assert!(
+        execute_with("quality-batch", &request, |_, kind, _, _| Ok(envelope(
+            kind
+        )))
+        .unwrap_err()
+        .to_string()
+        .starts_with("QUALITY_REQUEST_SCHEMA")
+    );
+}

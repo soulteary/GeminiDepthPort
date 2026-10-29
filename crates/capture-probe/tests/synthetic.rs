@@ -200,3 +200,23 @@ fn ros_bindings_reject_relative_paths_and_invalid_names_before_loading_libraries
         assert!(!String::from_utf8_lossy(&out.stderr).contains("private-device"));
     }
 }
+
+#[test]
+fn zero_profile_is_rejected_before_any_synthetic_frame_is_created() {
+    let out = Command::new(env!("CARGO_BIN_EXE_capture-probe"))
+        .args([
+            "--synthetic",
+            "--stream",
+            "depth",
+            "--width",
+            "0",
+            "--height",
+            "1",
+            "--fps",
+            "30",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty());
+}

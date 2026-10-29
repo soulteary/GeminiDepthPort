@@ -28,6 +28,8 @@ static STOP: AtomicBool = AtomicBool::new(false);
 extern "C" fn stop(_: libc::c_int) {
     STOP.store(true, Ordering::Relaxed);
 }
+#[cfg(test)]
+type JobReadHook = Box<dyn FnOnce(&Manager) + Send>;
 struct Manager {
     ctl: Controller,
     token: String,
@@ -35,6 +37,8 @@ struct Manager {
     active_job: AtomicBool,
     last_seen: Mutex<Instant>,
     job: Mutex<Value>,
+    #[cfg(test)]
+    state_after_job_read: Mutex<Option<JobReadHook>>,
 }
 struct Busy<'a>(&'a AtomicBool);
 impl Drop for Busy<'_> {
@@ -238,6 +242,11 @@ fn validate_editable(p: &Value) -> Result<()> {
         )?;
     }
     Ok(())
+}
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+pub(crate) fn test_start_preview(ctl: &Controller, name: &str) -> Result<Value> {
+    start_preview(ctl, name)
 }
 fn start_preview(ctl: &Controller, name: &str) -> Result<Value> {
     let d = ctl.load()?;
@@ -469,6 +478,31 @@ pub fn persist_job(ctl: &Controller, job: &Value) -> Result<()> {
     }
     Ok(())
 }
+fn finish_job_result(job: &mut Value, result: Result<String>) {
+    match result {
+        Ok(out) => {
+            job["status"] = "passed".into();
+            if job["log"].as_array().is_some_and(|v| v.is_empty()) {
+                job["log"] = json!(
+                    out.lines()
+                        .rev()
+                        .take(1200)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+        Err(e) => {
+            job["status"] = "failed".into();
+            job["log"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(e.to_string()));
+        }
+    }
+}
 fn start_job(m: &Arc<Manager>, action: &str) -> Result<Value> {
     require(
         ["build", "render", "preflight", "up", "check", "down"].contains(&action),
@@ -523,29 +557,7 @@ fn start_job(m: &Arc<Manager>, action: &str) -> Result<Value> {
                 )
             });
         job["log"] = m.job.lock().unwrap()["log"].clone();
-        match result {
-            Ok(out) => {
-                job["status"] = "passed".into();
-                if job["log"].as_array().is_some_and(|v| v.is_empty()) {
-                    job["log"] = json!(
-                        out.lines()
-                            .rev()
-                            .take(1200)
-                            .collect::<Vec<_>>()
-                            .into_iter()
-                            .rev()
-                            .collect::<Vec<_>>()
-                    );
-                }
-            }
-            Err(e) => {
-                job["status"] = "failed".into();
-                job["log"]
-                    .as_array_mut()
-                    .unwrap()
-                    .push(json!(e.to_string()));
-            }
-        }
+        finish_job_result(&mut job, result);
         job["finished_at"] = now().into();
         let _ = persist_job(&m.ctl, &job);
         *m.job.lock().unwrap() = job;
@@ -570,6 +582,10 @@ fn state(m: &Manager) -> Result<Value> {
     }
     if !m.active_job.load(Ordering::Acquire) {
         if let Ok(mut job) = read_json(&m.ctl.root.join("state/latest-job.json")) {
+            #[cfg(test)]
+            if let Some(hook) = m.state_after_job_read.lock().unwrap().take() {
+                hook(m);
+            }
             if job["status"] == "running" {
                 if let Ok(_lock) = m.ctl.lock(false) {
                     if !m.active_job.load(Ordering::Acquire) {
@@ -936,6 +952,8 @@ pub fn serve(ctl: Controller, host: &str, port: u16) -> Result<()> {
         busy: AtomicBool::new(false),
         active_job: AtomicBool::new(false),
         last_seen: Mutex::new(Instant::now()),
+        #[cfg(test)]
+        state_after_job_read: Mutex::new(None),
     });
     STOP.store(false, Ordering::Relaxed);
     unsafe {
@@ -990,6 +1008,8 @@ mod tests {
             active_job: AtomicBool::new(false),
             last_seen: Mutex::new(Instant::now() - Duration::from_secs(121)),
             job: Mutex::new(Value::Null),
+            #[cfg(test)]
+            state_after_job_read: Mutex::new(None),
         });
         let request = |token: &str| {
             TestRequest::new()

@@ -71,3 +71,28 @@ fn timeout_kills_a_term_resistant_worker_and_empty_command_is_rejected() {
     assert!(error.to_string().starts_with("COMMAND_TIMEOUT"), "{error}");
     assert!(started.elapsed().as_secs() < 6);
 }
+
+#[test]
+fn observer_bootstrap_rejects_relative_and_incomplete_inputs_with_redacted_error() {
+    for args in [
+        vec![],
+        vec![
+            "relative-policy",
+            "relative-observations",
+            "private-instance",
+            "private-session",
+            "1",
+        ],
+    ] {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_observer-bootstrap"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(out.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(out.stderr).unwrap().trim(),
+            "OBSERVER_BOOTSTRAP_FAILED"
+        );
+    }
+}
