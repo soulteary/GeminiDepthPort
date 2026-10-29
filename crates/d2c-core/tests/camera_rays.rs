@@ -416,3 +416,177 @@ fn extreme_finite_coordinates_fail_closed_instead_of_emitting_nonfinite_rays() {
     assert_eq!(table.stats().nonfinite, 1);
     assert_eq!(table.rays(), &[Ray::Invalid(RayFailure::NonFinite)]);
 }
+
+#[test]
+fn rejected_camera_inputs_provide_actionable_geometry_diagnostics() {
+    for (mode, needle) in [
+        (0, "dimensions"),
+        (1, "pixel count"),
+        (2, "finite"),
+        (3, "positive"),
+        (4, "distortion coefficients"),
+        (5, "unsupported"),
+    ] {
+        let mut k = intrinsics(1, 1);
+        let mut distortion = DistortionModel::PinholeZero;
+        match mode {
+            0 => k.width = 0,
+            1 => {
+                k.width = 16384;
+                k.height = 16384;
+            }
+            2 => k.fx = f64::NAN,
+            3 => k.fx = 0.,
+            4 => distortion = DistortionModel::BrownConrady5([f64::NAN; 5]),
+            _ => distortion = DistortionModel::Equidistant4([0.; 4]),
+        }
+        let err = CameraModel::new(k, distortion).unwrap_err();
+        assert!(err.to_string().contains(needle));
+    }
+    assert!(
+        InverseOptions::new(0, 1e-9)
+            .unwrap_err()
+            .to_string()
+            .contains("policy")
+    );
+    let model = camera(DistortionModel::PinholeZero);
+    for (limits, needle) in [
+        (
+            RayTableLimits {
+                max_pixels: 0,
+                max_bytes: 1000,
+            },
+            "limits",
+        ),
+        (
+            RayTableLimits {
+                max_pixels: 1,
+                max_bytes: 1000,
+            },
+            "pixel count",
+        ),
+        (
+            RayTableLimits {
+                max_pixels: 12,
+                max_bytes: 24,
+            },
+            "memory bound",
+        ),
+    ] {
+        assert!(
+            RayTable::build(
+                &model,
+                CalibrationId([0; 32]),
+                InverseOptions::default(),
+                limits
+            )
+            .unwrap_err()
+            .to_string()
+            .contains(needle)
+        );
+    }
+    for (model, point, needle) in [
+        (
+            camera(DistortionModel::PinholeZero),
+            [f64::INFINITY, 0.],
+            "nonfinite",
+        ),
+        (
+            camera(DistortionModel::RationalPolynomial8([
+                0., 0., 0., 0., 0., -1., 0., 0.,
+            ])),
+            [1., 0.],
+            "denominator",
+        ),
+    ] {
+        assert!(
+            model
+                .project_normalized(point)
+                .unwrap_err()
+                .to_string()
+                .contains(needle)
+        );
+        let pixel = [point[0] * 200. + 1., point[1] * 220. + 1.];
+        assert!(
+            !model
+                .unproject_pixel(pixel, InverseOptions::default())
+                .unwrap_err()
+                .to_string()
+                .is_empty()
+        );
+    }
+    let singular = CameraModel::new(
+        CameraIntrinsics {
+            width: 1,
+            height: 1,
+            fx: 1.,
+            fy: 1.,
+            cx: -1.,
+            cy: 0.,
+            skew: 0.,
+        },
+        DistortionModel::BrownConrady5([-1. / 3., 0., 0., 0., 0.]),
+    )
+    .unwrap();
+    assert!(
+        singular
+            .unproject_pixel([0., 0.], InverseOptions::default())
+            .unwrap_err()
+            .to_string()
+            .contains("Jacobian")
+    );
+    let stubborn = camera(DistortionModel::BrownConrady5([100.; 5]));
+    assert!(
+        stubborn
+            .unproject_pixel([1000., 1000.], InverseOptions::new(1, 1e-15).unwrap())
+            .unwrap_err()
+            .to_string()
+            .contains("converge")
+    );
+}
+
+#[test]
+fn default_ray_cache_and_extreme_solver_inputs_keep_the_finite_output_contract() {
+    let mut cache = RayTableCache::new(RayTableCacheLimits::default()).unwrap();
+    let id = CalibrationId([1; 32]);
+    for model in [
+        camera(DistortionModel::PinholeZero),
+        camera(DistortionModel::BrownConrady5([0.001, 0., 0., 0., 0.])),
+    ] {
+        let table = cache
+            .get_or_build(&model, id, InverseOptions::default())
+            .unwrap();
+        assert_eq!(table.dimensions(), model.dimensions());
+        assert_eq!(table.stats().valid, 12);
+    }
+    let gentle = camera(DistortionModel::BrownConrady5([0.001, 0., 0., 0., 0.]));
+    let point = [0.001, 0.];
+    let pixel = gentle.project_normalized(point).unwrap();
+    let inverse = gentle
+        .unproject_pixel(pixel, InverseOptions::new(1, 1e-12).unwrap())
+        .unwrap();
+    close(inverse[0], point[0], 1e-12);
+    for coefficient in [1e100, 1e200, 1e300, -1e100, -1e200] {
+        let model = camera(DistortionModel::BrownConrady5([
+            coefficient,
+            0.,
+            0.,
+            0.,
+            0.,
+        ]));
+        for point in [[0.1, 0.2], [1., 0.], [1e-100, 1e-100]] {
+            let pixel = [point[0] * 200. + 1., point[1] * 220. + 1.];
+            if let Ok(ray) = model.unproject_pixel(pixel, InverseOptions::default()) {
+                assert!(ray.iter().all(|v| v.is_finite()));
+                assert!(
+                    model
+                        .project_normalized(ray)
+                        .unwrap()
+                        .iter()
+                        .zip(pixel)
+                        .all(|(a, b)| (a - b).abs() < 1e-6)
+                );
+            }
+        }
+    }
+}

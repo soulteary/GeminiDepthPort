@@ -270,3 +270,125 @@ fn legacy_digest_preserves_negative_fractional_and_scientific_parameters() {
             .actual_runtime_observed
     );
 }
+
+#[test]
+fn snapshot_envelope_version_and_geometry_overflow_remain_explicit_contract_failures() {
+    let mut envelope = live().seal().unwrap();
+    envelope.version = 2;
+    assert!(envelope.verify(&envelope.content.binding).is_err());
+    let transform = RigidTransform {
+        source_frame: "depth".into(),
+        target_frame: "color".into(),
+        rotation_row_major: [1., 0., 0., 0., 1., 0., 0., 0., 1.],
+        translation_m: [f64::MAX, 0., 0.],
+    };
+    assert_eq!(
+        transform
+            .transform_point([f64::MAX, 0., 0.])
+            .unwrap_err()
+            .code,
+        "POINT_OVERFLOW"
+    );
+    let parsed: SessionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse().unwrap();
+    assert_eq!(parsed.to_string(), "a".repeat(32));
+    for request in [
+        json!([]),
+        json!({}),
+        json!({"protocols":{}}),
+        json!({"protocols":{"snapshot":true}}),
+        json!({"protocols":{"snapshot":1},"extra":true}),
+    ] {
+        assert_eq!(
+            capabilities::negotiate("test", "1", &request)
+                .unwrap_err()
+                .code,
+            "CAPABILITY_REQUEST_INVALID"
+        );
+    }
+    assert!(content_digest(ContentKind::Snapshot, b"[]").is_err());
+    assert_eq!(
+        parse_strict(b"[-1,null,true,\"text\"]").unwrap(),
+        json!([-1, null, true, "text"])
+    );
+}
+
+#[test]
+fn snapshot_store_rejects_non_private_roots_and_valid_content_under_the_wrong_filename() {
+    assert!(SnapshotStore::open(std::path::Path::new("relative-store")).is_err());
+    let temp = tempfile::tempdir().unwrap();
+    assert!(SnapshotStore::open(&temp.path().join("missing/child")).is_err());
+    let dir = temp.path().join("store");
+    let store = SnapshotStore::open(&dir).unwrap();
+    let first = live().seal().unwrap();
+    let id = store.publish(&first).unwrap();
+    let mut next = live();
+    next.configuration["note"] = json!(true);
+    next.binding.configuration_id = ConfigurationId::parse(
+        content_digest(
+            ContentKind::Configuration,
+            &serde_json::to_vec(&next.configuration).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let next = next.seal().unwrap();
+    fs::write(dir.join(format!("{id}.json")), next.to_bytes().unwrap()).unwrap();
+    assert_eq!(
+        store.read(&id, &next.content.binding).unwrap_err().code,
+        "SNAPSHOT_FILENAME_MISMATCH"
+    );
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(SnapshotStore::open(&dir).is_err());
+}
+#[test]
+fn direct_rust_contract_inputs_reject_nonfinite_geometry_and_unsupported_versions() {
+    let mut model = live().calibration.models["depth"].clone();
+    model.k[0] = f64::NAN;
+    assert_eq!(model.validate().unwrap_err().code, "CAMERA_NONFINITE");
+    let mut transform = RigidTransform {
+        source_frame: "same".into(),
+        target_frame: "same".into(),
+        rotation_row_major: [1., 0., 0., 0., 1., 0., 0., 0., 1.],
+        translation_m: [0.; 3],
+    };
+    assert_eq!(
+        transform.validate().unwrap_err().code,
+        "TRANSFORM_FRAMES_INVALID"
+    );
+    transform.target_frame = "other".into();
+    assert_eq!(
+        transform
+            .transform_point([f64::NAN, 0., 0.])
+            .unwrap_err()
+            .code,
+        "POINT_NONFINITE"
+    );
+    let mut policy = live().quality_policy;
+    policy.version = 2;
+    assert_eq!(
+        policy.validate().unwrap_err().code,
+        "QUALITY_POLICY_VERSION"
+    );
+}
+
+#[test]
+fn recording_gate_rejects_version_mismatch_in_both_transport_parse_and_digest() {
+    use capture_contract::recording::*;
+    let snapshot = live().seal().unwrap();
+    let gate = GateRequest {
+        version: 2,
+        phase: GatePhase::Preparing,
+        request_id: SessionId::parse("e".repeat(32)).unwrap(),
+        binding: snapshot.content.binding,
+        snapshot_id: snapshot.snapshot_id,
+        runtime_config_sha256: ConfigurationId::parse("c".repeat(64)).unwrap(),
+        token_sha256: ConfigurationId::parse("d".repeat(64)).unwrap(),
+    };
+    assert_eq!(gate.digest().unwrap_err().code, "RECORDING_GATE_VERSION");
+    assert_eq!(
+        GateRequest::parse(&serde_json::to_vec(&gate).unwrap())
+            .unwrap_err()
+            .code,
+        "RECORDING_GATE_VERSION"
+    );
+}

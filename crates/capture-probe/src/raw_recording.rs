@@ -136,6 +136,10 @@ pub(crate) struct RawRecorder {
     reported_failure: bool,
     #[cfg(test)]
     test_gate: Option<Arc<TestGate>>,
+    #[cfg(test)]
+    test_commit_gate: Option<Arc<TestGate>>,
+    #[cfg(test)]
+    test_panic_worker: bool,
 }
 #[cfg(test)]
 struct TestGate {
@@ -167,6 +171,10 @@ impl RawRecorder {
             reported_failure: false,
             #[cfg(test)]
             test_gate: None,
+            #[cfg(test)]
+            test_commit_gate: None,
+            #[cfg(test)]
+            test_panic_worker: false,
         }
     }
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
@@ -246,9 +254,17 @@ impl RawRecorder {
         }
         #[cfg(test)]
         let test_gate = self.test_gate.clone();
+        #[cfg(test)]
+        let test_commit_gate = self.test_commit_gate.clone();
+        #[cfg(test)]
+        let test_panic_worker = self.test_panic_worker;
         let worker = thread::Builder::new()
             .name("native-depth-recording".into())
             .spawn(move || {
+                #[cfg(test)]
+                if test_panic_worker {
+                    panic!("injected raw writer panic");
+                }
                 let outcome = (|| -> Result<()> {
                     std::fs::create_dir_all(&settings.directory)?;
                     let mut writer = RawRecordingWriter::begin_with_limit(
@@ -281,6 +297,11 @@ impl RawRecorder {
                         !abort.load(Ordering::Acquire) && written == settings.max_pairs,
                         "raw incomplete"
                     );
+                    #[cfg(test)]
+                    if let Some(gate) = test_commit_gate {
+                        gate.started.wait();
+                        gate.resume.wait();
+                    }
                     writer.finish_guarded(|| {
                         let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
                         if abort.load(Ordering::Acquire) || state.state == State::Failed {
@@ -803,5 +824,123 @@ mod tests {
         let mut v = base;
         v["unexpected"] = json!(true);
         assert!(RawSettings::parse(&v).is_err());
+    }
+    #[test]
+    fn raw_initialization_refuses_wrong_provenance_and_finish_marks_unmet_target() {
+        let dir = directory();
+        let ros = snapshot();
+        let mut sink = RawRecorder::new(
+            settings(&dir, 2, 1_000_000),
+            ros.content.binding.session_id.as_str(),
+        );
+        sink.observe_excluded(false);
+        sink.observe_excluded(true);
+        assert_eq!(sink.status()["waiting_framesets_excluded"], 1);
+        assert!(
+            sink.initialize(&ros, Instant::now(), 1.)
+                .unwrap_err()
+                .to_string()
+                .contains("scale")
+        );
+        let mut counts = ros.content.clone();
+        counts.depth = DepthRepresentation::SdkCounts {
+            scale_mm: f64::from(0.1f32),
+        };
+        assert!(
+            sink.initialize(&counts.seal().unwrap(), Instant::now(), 0.1)
+                .unwrap_err()
+                .to_string()
+                .contains("millimetre")
+        );
+        let mut wrong = RawRecorder::new(settings(&dir, 2, 1_000_000), &"b".repeat(32));
+        assert!(
+            wrong
+                .initialize(&ros, Instant::now(), 0.1)
+                .unwrap_err()
+                .to_string()
+                .contains("session binding")
+        );
+        sink.finish_session(true).unwrap();
+        assert_eq!(sink.status()["state"], "failed");
+        assert_eq!(sink.failure_to_report(), Some("RAW_TARGET_INCOMPLETE"));
+        assert!(sink.initialize(&ros, Instant::now(), 0.1).is_ok());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn draining_is_observable_and_abort_at_the_commit_gate_never_creates_complete() {
+        let dir = directory();
+        let ros = snapshot();
+        let gate = Arc::new(TestGate {
+            started: std::sync::Barrier::new(2),
+            resume: std::sync::Barrier::new(2),
+        });
+        let mut sink = RawRecorder::new(
+            settings(&dir, 1, 1_000_000),
+            ros.content.binding.session_id.as_str(),
+        );
+        sink.test_commit_gate = Some(gate.clone());
+        sink.initialize(&ros, Instant::now(), 0.1).unwrap();
+        sink.submit_owned(
+            packet(false, 1, Instant::now()),
+            packet(true, 1, Instant::now()),
+            1,
+            policy(),
+        )
+        .unwrap();
+        gate.started.wait();
+        assert_eq!(sink.status()["state"], "draining");
+        sink.submit_owned(
+            packet(false, 2, Instant::now()),
+            packet(true, 2, Instant::now()),
+            2,
+            policy(),
+        )
+        .unwrap();
+        assert_eq!(sink.status()["submitted_pairs"], 1);
+        sink.fail("RAW_ABORTED_AT_COMMIT");
+        gate.resume.wait();
+        sink.finish_session(false).unwrap();
+        assert_eq!(sink.status()["reason"], "RAW_ABORTED_AT_COMMIT");
+        assert!(!dir.join(&sink.name).exists());
+        assert!(!dir.join(format!("{}.partial/COMPLETE", sink.name)).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn writer_startup_failures_and_panics_close_the_pair_queue_without_a_complete_job() {
+        for panic in [false, true] {
+            let dir = directory();
+            let ros = snapshot();
+            let mut sink = RawRecorder::new(
+                settings(&dir, 1, 1_000_000),
+                ros.content.binding.session_id.as_str(),
+            );
+            sink.test_panic_worker = panic;
+            if !panic {
+                std::fs::create_dir(dir.join(format!("{}.partial", sink.name))).unwrap();
+            }
+            sink.initialize(&ros, Instant::now(), 0.1).unwrap();
+            let deadline = Instant::now() + std::time::Duration::from_secs(2);
+            while !sink.worker.as_ref().unwrap().is_finished() {
+                assert!(Instant::now() < deadline);
+                thread::yield_now();
+            }
+            if panic {
+                assert!(
+                    sink.submit_owned(
+                        packet(false, 1, Instant::now()),
+                        packet(true, 1, Instant::now()),
+                        1,
+                        policy()
+                    )
+                    .is_err()
+                );
+                assert_eq!(sink.status()["reason"], "RAW_STORAGE_OR_QUEUE_CLOSED");
+            } else {
+                assert_eq!(sink.status()["reason"], "RAW_STORAGE_OR_INCOMPLETE");
+            }
+            sink.finish_session(false).unwrap();
+            assert!(!dir.join(&sink.name).exists());
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 }

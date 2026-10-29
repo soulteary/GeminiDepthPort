@@ -573,6 +573,27 @@ fn observed_publisher_metadata_is_independently_bound_and_never_upgraded_to_sdk(
             ));
             assert!(source.next_frame().unwrap().is_none());
             assert!(source.next_frame().unwrap().is_none());
+            let output = tempfile::tempdir().unwrap();
+            let mut fresh = RecordingDirectorySource::open(dir.path()).unwrap();
+            process(
+                &mut fresh,
+                Some((output.path(), "metadata", depth_output::Mode::Directory)),
+                offline_depth::Operation::Original {
+                    normalize_mm: false,
+                },
+            )
+            .unwrap();
+            let file = record.color.metadata.as_ref().unwrap();
+            assert_eq!(
+                fs::read(
+                    output
+                        .path()
+                        .join("metadata/source-blobs")
+                        .join(&file.sha256)
+                )
+                .unwrap(),
+                fs::read(dir.path().join(&file.path)).unwrap()
+            );
         }
     }
 }
@@ -778,5 +799,200 @@ fn sdk_raw_counts_require_the_snapshot_source_scale_and_export_original_evidence
         } else {
             assert!(String::from_utf8_lossy(&result.stdout).contains("SDK_RAW_SOURCE_BINDING"));
         }
+    }
+}
+
+#[test]
+fn incomplete_recordings_can_be_validated_but_never_exported_as_completed_jobs() {
+    for marker in ["INTERRUPTED.json", "FAILED.json"] {
+        let input = tempfile::tempdir().unwrap();
+        fixture_v2(input.path(), false, false);
+        fs::write(input.path().join(marker), b"{}").unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let result = cli(
+            input.path(),
+            &[
+                "--recording-v2",
+                "--output",
+                output.path().to_str().unwrap(),
+                "--job",
+                "invalid",
+            ],
+        );
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stdout).contains("INCOMPLETE_RECORDING_INPUT"));
+        assert!(!output.path().join("invalid").exists());
+        assert!(
+            cli(input.path(), &["--recording-v2", "--validate-only"])
+                .status
+                .success()
+        );
+    }
+}
+
+#[test]
+fn observed_distortion_models_and_none_alias_keep_exact_camera_info_in_exports() {
+    for (kind, name, count) in [
+        (DistortionModel::None, "none", 0),
+        (DistortionModel::PlumbBob, "plumb_bob", 5),
+        (
+            DistortionModel::RationalPolynomial,
+            "rational_polynomial",
+            8,
+        ),
+        (DistortionModel::Equidistant, "equidistant", 4),
+    ] {
+        let input = tempfile::tempdir().unwrap();
+        let mut record = fixture_v2(input.path(), true, false);
+        let mut evidence = tagged(input.path(), &record);
+        let mut snapshot: snapshot::SnapshotEnvelope =
+            serde_json::from_slice(&fs::read(input.path().join("snapshot.json")).unwrap()).unwrap();
+        for m in snapshot.content.calibration.models.values_mut() {
+            m.distortion_model = kind;
+            m.distortion_coefficients = vec![0.; count];
+        }
+        snapshot.content.binding.calibration_id = snapshot.content.calibration.id().unwrap();
+        let snapshot = snapshot.content.seal().unwrap();
+        fs::write(
+            input.path().join("snapshot.json"),
+            snapshot.to_bytes().unwrap(),
+        )
+        .unwrap();
+        if let TaggedEvidence::ObservedAssociation { association, .. } = &mut evidence {
+            for frame in [&mut association.color, &mut association.depth] {
+                frame.context.calibration_id = snapshot.content.binding.calibration_id.clone();
+                frame.context.snapshot_id = snapshot.snapshot_id.clone();
+            }
+        }
+        for image in [&mut record.color, &mut record.depth] {
+            let mut info: DecodedCameraInfo = serde_json::from_slice(
+                &fs::read(input.path().join(&image.camera_info.as_ref().unwrap().path)).unwrap(),
+            )
+            .unwrap();
+            info.distortion_model = name.into();
+            info.d = vec![0.; count];
+            image.camera_info = Some(reference(
+                input.path(),
+                &format!("{}-model.json", image.frame_id),
+                &serde_json::to_vec(&info).unwrap(),
+            ));
+        }
+        store_tagged(input.path(), &mut record, &evidence);
+        let output = tempfile::tempdir().unwrap();
+        let result = cli(
+            input.path(),
+            &[
+                "--recording-v2",
+                "--output",
+                output.path().to_str().unwrap(),
+                "--job",
+                "models",
+            ],
+        );
+        assert!(result.status.success(), "{result:?}");
+        assert_eq!(
+            decoded(&output.path().join("models/frames/00000000000000000000.png")),
+            [1000, 0]
+        );
+    }
+}
+#[test]
+fn sdk_and_observed_records_reject_independent_sequence_layout_scale_and_provenance_changes() {
+    for mode in 0..5 {
+        let input = tempfile::tempdir().unwrap();
+        let mut record = fixture_v2(input.path(), mode == 4, false);
+        let mut evidence = tagged(input.path(), &record);
+        if let TaggedEvidence::SdkBoundPair { pair, .. } = &mut evidence {
+            match mode {
+                0 => record.sequence = 2,
+                1 => pair.color.width = 1,
+                2 => {
+                    record.storage_representation = DepthRepresentation::SdkCounts { scale_mm: 2. }
+                }
+                _ => {
+                    pair.color.context.snapshot_id = SnapshotId::parse("f".repeat(64)).unwrap();
+                    pair.depth.context.snapshot_id = pair.color.context.snapshot_id.clone();
+                }
+            }
+        }
+        if let TaggedEvidence::ObservedAssociation { association, .. } = &mut evidence {
+            association.version = 2;
+        }
+        store_tagged(input.path(), &mut record, &evidence);
+        let mut source = RecordingDirectorySource::open(input.path()).unwrap();
+        assert!(source.next_frame().is_err(), "{mode}");
+    }
+}
+#[test]
+fn native_writer_rejects_unsafe_names_normalized_pixels_and_unbound_pair_contexts() {
+    let input = tempfile::tempdir().unwrap();
+    fixture_v2(input.path(), false, true);
+    let snapshot: snapshot::SnapshotEnvelope =
+        serde_json::from_slice(&fs::read(input.path().join("snapshot.json")).unwrap()).unwrap();
+    assert!(RawRecordingWriter::begin(input.path(), "../escape", snapshot.clone()).is_err());
+    let record = fixture_v2(input.path(), false, true);
+    let original = tagged(input.path(), &record);
+    let TaggedEvidence::SdkBoundPair { pair, .. } = original else {
+        panic!("SDK fixture")
+    };
+    for mode in 0..2 {
+        let mut pair = pair.clone();
+        if mode == 0 {
+            pair.depth.normalized = true;
+            pair.depth.output_depth_scale_mm = Some(1.);
+        } else {
+            pair.color.context.snapshot_id = SnapshotId::parse("f".repeat(64)).unwrap();
+            pair.depth.context.snapshot_id = pair.color.context.snapshot_id.clone();
+        }
+        let output = tempfile::tempdir().unwrap();
+        let mut writer = RawRecordingWriter::begin(output.path(), "bad", snapshot.clone()).unwrap();
+        assert!(
+            writer
+                .append(&pair, &[0; 4], &[0; 4], StorageEndian::Little)
+                .is_err()
+        );
+        assert!(writer.finish().is_err());
+        assert!(!output.path().join("bad/COMPLETE").exists());
+    }
+}
+
+#[test]
+fn malformed_snapshot_links_camera_info_and_extra_index_records_are_rejected() {
+    for mode in 0..4 {
+        let input = tempfile::tempdir().unwrap();
+        let mut record = fixture_v2(input.path(), mode == 2, false);
+        if mode == 0 {
+            fs::write(input.path().join("snapshot.json"), b"{}").unwrap();
+            assert!(RecordingDirectorySource::open(input.path()).is_err());
+            continue;
+        }
+        if mode == 1 {
+            fs::write(input.path().join("snapshot-association.json"), b"{}").unwrap();
+            assert!(RecordingDirectorySource::open(input.path()).is_err());
+            continue;
+        }
+        if mode == 2 {
+            record.color.camera_info = Some(reference(input.path(), "invalid-info.json", b"{}"));
+            index(input.path(), &record);
+            let mut source = RecordingDirectorySource::open(input.path()).unwrap();
+            assert!(source.next_frame().is_err());
+            continue;
+        }
+        let bytes = serde_json::to_vec(&record).unwrap();
+        let mut twice = bytes.clone();
+        twice.push(b'\n');
+        twice.extend_from_slice(&bytes);
+        fs::write(input.path().join("records.jsonl"), &twice).unwrap();
+        let mut manifest: RecordingManifest =
+            serde_json::from_slice(&fs::read(input.path().join("manifest.json")).unwrap()).unwrap();
+        manifest.records_sha256 = sha256(&twice);
+        fs::write(
+            input.path().join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let mut source = RecordingDirectorySource::open(input.path()).unwrap();
+        source.next_frame().unwrap();
+        assert!(source.next_frame().is_err());
     }
 }

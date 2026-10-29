@@ -158,3 +158,175 @@ fn mock_child() {
     assert_eq!(cloned.data().unwrap(), [16, 128, 32, 128, 64, 90, 80, 240]);
     drop(cloned); // last reference finally deletes pipeline and parent objects
 }
+
+#[test]
+fn malformed_active_profile_abi_is_rejected_without_leaking_owned_handles() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let dir = std::env::temp_dir().join(format!("gdp-calibration-boundary-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let original = fs::read_to_string(root.join("tests/mock_sdk.c")).unwrap();
+    let p = VideoProfile {
+        width: 2,
+        height: 2,
+        fps: 30,
+    };
+    for (i, from, to, needle) in [
+        (
+            0,
+            "return 20903;",
+            "return 10000;",
+            "unsupported SDK version",
+        ),
+        (
+            1,
+            "(void)p;(void)e;return 2;}\nprofile *ob_stream_profile_list_get_profile",
+            "(void)p;(void)e;return 0;}\nprofile *ob_stream_profile_list_get_profile",
+            "profile count",
+        ),
+        (2, "return p->stream;", "return 99;", "stream type"),
+        (
+            3,
+            "return make_profile(index==0?2:3);",
+            "return make_profile(2);",
+            "duplicate color",
+        ),
+        (
+            4,
+            "return make_profile(index==0?2:3);",
+            "return make_profile(3);",
+            "duplicate depth",
+        ),
+        (
+            5,
+            "return(intrinsic){1,2,.5f,.5f,2,2};",
+            "return(intrinsic){0,2,.5f,.5f,2,2};",
+            "intrinsics",
+        ),
+        (6, "return make_profile(0);", "return NULL;", "null profile"),
+        (
+            7,
+            "(void)p;(void)e;return 2;}\nprofile *ob_stream_profile_list_get_profile",
+            "(void)p;(void)e;return 1;}\nprofile *ob_stream_profile_list_get_profile",
+            "profile missing",
+        ),
+        (
+            8,
+            "return p->stream==2?0:8;",
+            "return 17;",
+            "profile differs",
+        ),
+    ] {
+        assert!(original.contains(from), "{i}");
+        let source = dir.join(format!("{i}.c"));
+        fs::write(&source, original.replace(from, to)).unwrap();
+        let lib = dir.join(format!("{i}.so"));
+        let result = Command::new("cc")
+            .args(if cfg!(target_os = "macos") {
+                vec!["-dynamiclib"]
+            } else {
+                vec!["-shared", "-fPIC"]
+            })
+            .arg(&source)
+            .arg("-o")
+            .arg(&lib)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        if i == 0 {
+            assert!(Sdk::load(&lib).err().unwrap().to_string().contains(needle));
+            continue;
+        }
+        let sdk = Sdk::load(&lib).unwrap();
+        let mut pipeline = sdk.open("test-device", Some(p), Some(p)).unwrap();
+        let error = pipeline.calibration().unwrap_err();
+        assert!(error.to_string().contains(needle), "{i}: {error}");
+        pipeline.stop().unwrap();
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn empty_null_payloads_missing_error_messages_and_single_stream_calibration_are_bounded() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let dir = std::env::temp_dir().join(format!("gdp-sdk-payload-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let original = fs::read_to_string(root.join("tests/mock_sdk.c")).unwrap();
+    let p = VideoProfile {
+        width: 2,
+        height: 2,
+        fps: 30,
+    };
+    for (i, from, to) in [
+        (0, "return sizeof(bytes);", "return 0;"),
+        (1, "return bytes;", "return NULL;"),
+        (2, "return \"mock SDK rejection\";", "return NULL;"),
+        (
+            3,
+            "(void)p;(void)e;return 2;}\nprofile *ob_stream_profile_list_get_profile",
+            "(void)p;(void)e;return 1;}\nprofile *ob_stream_profile_list_get_profile",
+        ),
+    ] {
+        assert!(original.contains(from));
+        let source = dir.join(format!("{i}.c"));
+        fs::write(&source, original.replace(from, to)).unwrap();
+        let lib = dir.join(format!("{i}.so"));
+        let output = Command::new("cc")
+            .args(if cfg!(target_os = "macos") {
+                vec!["-dynamiclib"]
+            } else {
+                vec!["-shared", "-fPIC"]
+            })
+            .arg(&source)
+            .arg("-o")
+            .arg(&lib)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let sdk = Sdk::load(&lib).unwrap();
+        assert!(
+            sdk.open("test-device", Some(VideoProfile { width: 0, ..p }), None)
+                .is_err()
+        );
+        assert!(
+            sdk.open("test-device", Some(VideoProfile { width: 3, ..p }), None)
+                .is_err()
+        );
+        if i == 2 {
+            let error = sdk
+                .open("private-unknown", Some(p), None)
+                .err()
+                .unwrap()
+                .to_string();
+            assert_eq!(error, "SDK error without message");
+            continue;
+        }
+        let mut pipeline = sdk
+            .open("test-device", Some(p), if i == 3 { None } else { Some(p) })
+            .unwrap();
+        if i == 3 {
+            let calibration = pipeline.calibration().unwrap();
+            assert!(calibration.color.is_some());
+            assert!(calibration.depth_to_color.is_none());
+        } else {
+            let set = pipeline.wait(10).unwrap().unwrap();
+            let frame = set.color().unwrap().unwrap();
+            if i == 0 {
+                assert!(frame.data().unwrap().is_empty());
+            } else {
+                assert!(
+                    frame
+                        .data()
+                        .unwrap_err()
+                        .to_string()
+                        .contains("null frame data")
+                );
+            }
+        }
+        pipeline.stop().unwrap();
+    }
+    fs::remove_dir_all(dir).unwrap();
+}

@@ -158,4 +158,55 @@ mod tests {
         assert!(content_digest(ContentKind::Snapshot, br#"{"snapshot_id":"abc"}"#).is_err());
         assert!(content_digest(ContentKind::Snapshot, br#"{"calibration_id":"abc"}"#).is_ok());
     }
+    #[test]
+    fn strict_visitor_keeps_owned_strings_and_rejects_non_json_or_nonfinite_values() {
+        use serde::de::{
+            IntoDeserializer,
+            value::{BytesDeserializer, Error, F64Deserializer},
+        };
+        let value = Strict::deserialize(Value::String("owned text".into()).into_deserializer())
+            .unwrap()
+            .0;
+        assert_eq!(value, Value::String("owned text".into()));
+        let nan = F64Deserializer::<Error>::new(f64::NAN);
+        assert!(
+            Strict::deserialize(nan)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("nonfinite")
+        );
+        let bytes = BytesDeserializer::<Error>::new(b"not a JSON string");
+        assert!(
+            Strict::deserialize(bytes)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("unique object keys")
+        );
+    }
+    #[test]
+    fn nullable_serde_adapter_and_document_size_limit_keep_json_null_semantics() {
+        struct OptionalUnit;
+        impl<'de> serde::Deserializer<'de> for OptionalUnit {
+            type Error = serde::de::value::Error;
+            fn deserialize_any<V: serde::de::Visitor<'de>>(
+                self,
+                v: V,
+            ) -> std::result::Result<V::Value, Self::Error> {
+                serde::Deserializer::deserialize_option(
+                    serde::de::value::UnitDeserializer::new(),
+                    v,
+                )
+            }
+            serde::forward_to_deserialize_any! {bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string bytes byte_buf option unit unit_struct newtype_struct seq tuple tuple_struct map struct enum identifier ignored_any}
+        }
+        assert_eq!(Strict::deserialize(OptionalUnit).unwrap().0, Value::Null);
+        assert_eq!(
+            parse_strict(&vec![b' '; 4 * 1024 * 1024 + 1])
+                .unwrap_err()
+                .code,
+            "JSON_SIZE"
+        );
+    }
 }

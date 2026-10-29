@@ -636,4 +636,26 @@ elif a and a[0] in ('exec','stop'):
         saved=json.loads((self.root/'state/latest-job.json').read_text())
         self.assertEqual(saved['status'],'passed');self.assertIn('finished_at',saved)
 
+    def test_editing_bindings_settings_and_check_uses_the_same_cli_contract(self):
+        self.cli('bind','camera_a','SYNTHETIC_NEW')
+        saved=json.loads((self.root/'inventory.json').read_text());self.assertEqual(saved['cameras'][0]['serial_number'],'SYNTHETIC_NEW')
+        self.cli('set','camera_a','color_width','640')
+        self.assertEqual(json.loads((self.root/'inventory.json').read_text())['cameras'][0]['parameters']['color_width'],640)
+        self.cli('bind','missing','SYNTHETIC',ok=False);self.cli('set','camera_a','color_width','invalid-json',ok=False)
+        self.cli('calibration-export',ok=False)
+        self.live_fixture()
+        self.assertTrue(json.loads(self.cli('check').stdout)['ready'])
+
+
+    def test_background_build_log_tail_is_bounded_without_losing_completion(self):
+        import time
+        docker=self.root/'bin/docker';source=docker.read_text();source=source.replace("elif a and a[0]=='logs':print('synthetic log')","elif a and a[0]=='build':\n    for i in range(1300):print('synthetic-build-line-'+str(i))\nelif a and a[0]=='logs':print('synthetic log')")
+        docker.write_text(source);self.start();self.request('/api/job',{'action':'build'});deadline=time.monotonic()+10
+        while time.monotonic()<deadline:
+            state=json.loads(self.request('/api/state'))
+            if state['job'] and state['job']['status']!='running':break
+            time.sleep(.05)
+        self.assertEqual(state['job']['status'],'passed',state['job']);self.assertEqual(len(state['job']['log']),1200);self.assertTrue(any('synthetic-build-line-1299' in line for line in state['job']['log']))
+
+
 if __name__=='__main__':unittest.main(verbosity=2)

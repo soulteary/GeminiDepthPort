@@ -410,6 +410,57 @@ mod active_readback_tests {
         atomic_json(&guard(&ctl), &wrong_record).unwrap();
         assert!(!active_bindings_match(&ctl, generation, &expected));
         atomic_json(&guard(&ctl), &record).unwrap();
+        for mode in 0..3 {
+            let mut changed = record.clone();
+            match mode {
+                0 => changed["requests"] = json!([]),
+                1 => changed["requests"][0]["camera_name"] = json!("camera_b"),
+                _ => changed["state"] = json!("preparing"),
+            }
+            atomic_json(&guard(&ctl), &changed).unwrap();
+            assert!(!active_bindings_match(&ctl, generation, &expected));
+        }
+        let mut duplicated = record.clone();
+        duplicated["requests"]
+            .as_array_mut()
+            .unwrap()
+            .push(record["requests"][0].clone());
+        atomic_json(&guard(&ctl), &duplicated).unwrap();
+        let two = [
+            ActiveBinding {
+                camera_name: "camera_a",
+                binding: &request.binding,
+                snapshot_id: &request.snapshot_id,
+                runtime_config_sha256: &request.runtime_config_sha256,
+                worker_pid: 42,
+            },
+            ActiveBinding {
+                camera_name: "camera_b",
+                binding: &request.binding,
+                snapshot_id: &request.snapshot_id,
+                runtime_config_sha256: &request.runtime_config_sha256,
+                worker_pid: 42,
+            },
+        ];
+        assert!(!active_bindings_match(&ctl, generation, &two));
+        atomic_json(&guard(&ctl), &record).unwrap();
+        let mut preparing = request.clone();
+        preparing.phase = GatePhase::Preparing;
+        atomic_json(
+            &folder.join("control.json"),
+            &serde_json::to_value(preparing).unwrap(),
+        )
+        .unwrap();
+        assert!(!active_bindings_match(&ctl, generation, &expected));
+        atomic_json(
+            &folder.join("control.json"),
+            &serde_json::to_value(&request).unwrap(),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(folder.join("ack.json"), fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!active_bindings_match(&ctl, generation, &expected));
+        fs::set_permissions(folder.join("ack.json"), fs::Permissions::from_mode(0o600)).unwrap();
         fs::remove_file(folder.join("control.json")).unwrap();
         assert!(!active_bindings_match(&ctl, generation, &expected));
         assert_eq!(status(&ctl)["blocked"], true);

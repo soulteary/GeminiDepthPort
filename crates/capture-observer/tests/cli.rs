@@ -86,3 +86,49 @@ fn cli_interruption_command_survives_finalization_as_a_bounded_reasoned_event() 
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["violation"], "OBSERVER_INTERRUPTED");
 }
+
+#[test]
+fn command_line_config_limits_and_metadata_dispatch_do_not_accept_unsupported_versions() {
+    for args in [
+        vec!["--help"],
+        vec![],
+        vec!["--config", "/nonexistent-observer-config"],
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_capture-observer"))
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.success(), args == ["--help"]);
+    }
+    let path =
+        std::env::temp_dir().join(format!("gdp-observer-limits-{}.json", std::process::id()));
+    std::fs::write(&path, vec![b' '; 65537]).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_capture-observer"))
+        .arg("--config")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("CONFIG_LIMIT"));
+    std::fs::write(&path, serde_json::to_vec(&common::config()).unwrap()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_capture-observer"))
+        .arg("--config")
+        .arg(&path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    for v in [
+        json!({"version":2,"command":{"kind":"finalize"}}),
+        json!({"version":1,"command":{"kind":"metadata","stream":"color","at":common::at(0),"metadata":{"stamp":{"sec":1,"nanosec":0},"data":"invalid"}}}),
+    ] {
+        writeln!(input, "{v}").unwrap();
+    }
+    drop(input);
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("OBSERVER_REQUEST_VERSION"));
+    assert!(text.contains("update"));
+    std::fs::remove_file(path).unwrap();
+}

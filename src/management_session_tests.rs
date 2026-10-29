@@ -1326,3 +1326,425 @@ fn ensure_started_persists_preparation_failure_before_attempting_start() {
     assert_eq!(result["error"], error.split(':').next().unwrap());
     atomic(&pointer, &original).unwrap();
 }
+
+#[test]
+fn malformed_generation_records_cannot_authorize_live_control_even_with_matching_file_hashes() {
+    for mode in 0..10 {
+        let f = Fixture::new(true, 1);
+        let mut manifest = f.generation.clone();
+        let path = f
+            .ctl
+            .root
+            .join("state/generations")
+            .join(text(&manifest["generation"]))
+            .join("manifest.json");
+        match mode {
+            0 => manifest["kind"] = json!("unknown"),
+            1 => manifest["cameras"] = json!(vec![json!({"name":"a","service":"camera_a"}); 4]),
+            2 => manifest["cameras"][0]["service"] = json!("foreign"),
+            3 => manifest["capture_backend"] = json!("unknown"),
+            4 => {
+                manifest["capture_backend"] = json!("rust");
+                manifest["capture_runtime"] = Value::Null;
+            }
+            5 => {
+                manifest["files"]["../escape"] = json!("a".repeat(64));
+            }
+            6 => manifest["draft"] = json!(true),
+            7 => manifest["inventory_sha256"] = json!("a".repeat(64)),
+            8 => manifest["cameras"] = json!([]),
+            _ => {
+                manifest["cameras"][0]["name"] = json!("camera_b");
+                manifest["cameras"][0]["service"] = json!("camera_camera_b");
+            }
+        }
+        atomic_json(&path, &manifest).unwrap();
+        atomic_json(&f.ctl.root.join("state/current-generation.json"),&json!({"generation":manifest["generation"],"manifest_sha256":file_hash(&path).unwrap()})).unwrap();
+        assert!(f.ctl.check_render(&f.inventory).is_err(), "{mode}");
+    }
+    let f = Fixture::new(true, 1);
+    atomic_json(
+        &f.ctl.root.join("state/current-generation.json"),
+        &json!({"generation":"../escape"}),
+    )
+    .unwrap();
+    assert!(generation::load(&f.ctl).is_err());
+}
+
+#[test]
+fn runtime_artifact_contract_rejects_incomplete_hashes_licenses_and_image_identity() {
+    for mode in 0..7 {
+        let mut f = Fixture::new(false, 1);
+        let runtime = f.install_rust_runtime();
+        let mut manifest = runtime["manifest"].clone();
+        let mut image = json!([{"Id":runtime["image_id"],"Config":{"Labels":{"org.geminidepthport.capture-backend":"rust-v1","org.opencontainers.image.revision":f.inventory["upstream_commit"]}}}]);
+        match mode {
+            0 => {
+                image[0]["Config"]["Labels"]["org.geminidepthport.capture-backend"] =
+                    json!("official")
+            }
+            1 => manifest["version"] = json!(2),
+            2 => manifest["sdk_sha256"] = json!("bad"),
+            3 => manifest["sdk_source"]["license_files"] = json!({}),
+            4 => manifest["files"]["/usr/local/bin/capture-service"] = json!("d".repeat(64)),
+            5 => manifest["usb_recovery"]["sha256"] = json!("d".repeat(64)),
+            _ => image[0]["Id"] = json!("mutable-image"),
+        }
+        let previous = f.ctl.command_runner.clone().unwrap();
+        f.ctl.command_runner = Some(Arc::new(move |args, input| {
+            if args.get(1).is_some_and(|s| s == "image") {
+                return Ok(image.to_string());
+            }
+            if args
+                .last()
+                .is_some_and(|s| s == "/opt/gdp-capture/runtime.json")
+            {
+                return Ok(manifest.to_string());
+            }
+            previous(args, input)
+        }));
+        let error = crate::capture_backend::runtime(&f.ctl, &f.inventory)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with("RUST_IMAGE_CONTRACT") || error.starts_with("RUST_RUNTIME_CONTRACT"),
+            "{mode}: {error}"
+        );
+    }
+}
+#[test]
+fn release_validates_the_entire_guard_before_removing_any_gate() {
+    for mode in 0..4 {
+        let f = Fixture::new(false, 1);
+        let _responder = Responder::start(&f, AckMode::All);
+        let receipt = recording::protect(&f.ctl, &f.inventory, &f.generation).unwrap();
+        let guard = f.ctl.root.join("state/recording-guard.json");
+        let mut value = read_json(&guard).unwrap();
+        match mode {
+            0 => value["version"] = json!(3),
+            1 => value["requests"] = json!({}),
+            2 => value["requests"][0]["camera_name"] = Value::Null,
+            _ => value["requests"][0]["request"]["token_sha256"] = json!("d".repeat(64)),
+        }
+        atomic_json(&guard, &value).unwrap();
+        assert!(crate::recording::release(&f.ctl, text(&receipt["token"]), value).is_err());
+        assert!(guard.is_file());
+    }
+}
+
+#[test]
+fn malformed_quality_pages_and_snapshot_clock_metadata_cannot_be_reported_ready() {
+    for mode in 0..10 {
+        let f = Fixture::new(false, 1);
+        f.edit(|d| {
+            let b = &mut d.cameras[0].bundle;
+            match mode {
+                0 => b["status"]["snapshot_path"] = json!("/tmp/foreign"),
+                1 => {
+                    b["status"]["snapshot_id"] = Value::Null;
+                }
+                2 => b["current"]["quality"]["version"] = json!(2),
+                3 => b["current"]["quality"]["at"]["offset_ns"] = Value::Null,
+                4 => b["current"]["quality"]["current_session_finalized"] = json!(true),
+                5 => b["events"]["has_more"] = json!(true),
+                6 => b["events"]["events"][0]["sequence"] = json!(0),
+                7 => b["events"]["origin_session_id"] = json!("f".repeat(32)),
+                8 => b["current"]["quality"]["at"]["session_id"] = json!("f".repeat(32)),
+                _ => b["current"]["quality"]["session_id"] = json!("f".repeat(32)),
+            }
+        });
+        assert!(
+            f.query(if (5..=7).contains(&mode) {
+                "events"
+            } else {
+                "current"
+            })
+            .is_err(),
+            "{mode}"
+        );
+    }
+}
+#[test]
+fn live_instance_discovery_and_health_refuse_duplicate_roles_and_unready_workers() {
+    let f = Fixture::new(false, 2);
+    f.edit(|d| d.cameras[1].container["Config"]["Labels"]["orbbec.camera"] = json!("camera_a"));
+    error(f.ctl.existing(&f.generation), "DUPLICATE_INSTANCE");
+    let f = Fixture::new(false, 1);
+    f.edit(|d| {
+        d.cameras[0].container["Config"]["Labels"]["orbbec.generation"] = json!("f".repeat(32))
+    });
+    error(
+        f.ctl.existing(&f.generation),
+        "RUNNING_CONFIGURATION_CHANGED",
+    );
+    let f = Fixture::new(false, 1);
+    f.edit(|d| {
+        d.cameras[0].container["State"]["Status"] = json!("running");
+        d.cameras[0].container["State"]["Health"]["Status"] = json!("starting");
+    });
+    error(f.ctl.healthy("camera_camera_a", 1), "CAMERA_HEALTH_FAILED");
+    let mut f = Fixture::new(false, 1);
+    f.install_rust_runtime();
+    assert!(f.ctl.build(&f.inventory).is_ok());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn official_preflight_requires_declared_image_interface_observer_and_host_usb_paths() {
+    for mode in 0..3 {
+        let mut f = Fixture::new(true, 1);
+        f.prepare_host();
+        if mode == 2 {
+            fs::remove_dir_all(f.ctl.host_root.as_ref().unwrap().join("dev/bus/usb")).unwrap();
+        } else {
+            let previous = f.ctl.command_runner.clone().unwrap();
+            f.ctl.command_runner = Some(Arc::new(move |args, input| {
+                let result = previous(args, input)?;
+                if args.get(1).is_some_and(|s| s == "image") {
+                    let mut value: Value = serde_json::from_str(&result)?;
+                    value[0]["Config"]["Labels"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove(if mode == 0 {
+                            "org.geminidepthport.native-yuyv"
+                        } else {
+                            "org.geminidepthport.official-observer"
+                        });
+                    return Ok(value.to_string());
+                }
+                Ok(result)
+            }));
+        }
+        assert!(f.ctl.preflight(&f.inventory).is_err(), "{mode}");
+    }
+}
+#[test]
+fn regeneration_never_reuses_a_managed_file_that_escaped_through_a_symlink() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new(true, 1);
+    let folder = f
+        .ctl
+        .root
+        .join("state/generations")
+        .join(text(&f.generation["generation"]));
+    let path = folder.join("compose.yaml");
+    let outside = f.ctl.root.join("outside-compose");
+    fs::copy(&path, &outside).unwrap();
+    fs::remove_file(&path).unwrap();
+    symlink(&outside, &path).unwrap();
+    assert!(
+        generation::load(&f.ctl)
+            .unwrap_err()
+            .to_string()
+            .starts_with("GENERATION_INVALID")
+    );
+    fs::remove_file(&path).unwrap();
+    fs::copy(&outside, &path).unwrap();
+    let moved = f.ctl.root.join("moved-generation");
+    fs::rename(&folder, &moved).unwrap();
+    symlink(&moved, &folder).unwrap();
+    assert!(generation::load(&f.ctl).is_err());
+}
+#[test]
+fn checked_render_refuses_empty_camera_sets_and_inventory_drift_before_start() {
+    let f = Fixture::new(true, 1);
+    let mut manifest = f.generation.clone();
+    manifest["cameras"] = json!([]);
+    manifest["files"]
+        .as_object_mut()
+        .unwrap()
+        .retain(|name, _| name == "compose.yaml");
+    let path = f
+        .ctl
+        .root
+        .join("state/generations")
+        .join(text(&manifest["generation"]))
+        .join("manifest.json");
+    atomic_json(&path, &manifest).unwrap();
+    atomic_json(
+        &f.ctl.root.join("state/current-generation.json"),
+        &json!({"generation":manifest["generation"],"manifest_sha256":file_hash(&path).unwrap()}),
+    )
+    .unwrap();
+    error(f.ctl.check_render(&f.inventory), "NO_ACTIVE_CAMERAS");
+    let mut changed = f.inventory.clone();
+    changed["ros_domain_id"] = json!(100);
+    let changed = config::invalidate(&f.inventory, &changed);
+    assert!(
+        generation::create(&f.ctl, &changed, true)
+            .unwrap_err()
+            .to_string()
+            .starts_with("INVENTORY_DRIFT")
+    );
+}
+
+#[test]
+fn controller_protection_dispatches_native_handshake_and_refuses_an_incomplete_official_group() {
+    let f = Fixture::new(false, 1);
+    let _responder = Responder::start(&f, AckMode::All);
+    let protected = f.ctl.protect().unwrap();
+    assert_eq!(protected["runtime_session_bound"], true);
+    f.ctl.release(text(&protected["token"])).unwrap();
+    let f = Fixture::new(true, 1);
+    f.edit(|d| d.cameras.clear());
+    error(f.ctl.protect(), "GROUP_INCOMPLETE");
+}
+#[test]
+fn release_io_obstacles_preserve_the_credentialed_guard_and_do_not_remove_directories() {
+    let f = Fixture::new(false, 1);
+    let _responder = Responder::start(&f, AckMode::All);
+    let protected = recording::protect(&f.ctl, &f.inventory, &f.generation).unwrap();
+    let path = f.gate("camera_a").join("control.json");
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    assert!(f.ctl.release(text(&protected["token"])).is_err());
+    assert!(path.is_dir());
+    assert_eq!(f.guard()["state"], "releasing");
+}
+
+#[test]
+fn native_capture_policy_requires_explicit_backend_units_pair_clock_and_supervision_limits() {
+    let f = Fixture::new(false, 1);
+    crate::capture_backend::validate(&f.inventory).unwrap();
+    for (pointer, value) in [
+        ("/capture_backend", json!("unknown")),
+        ("/schema_version", json!(1)),
+        ("/rust_capture", json!({})),
+        ("/rust_capture/depth_unit_policy", json!("guess")),
+        ("/rust_capture/pairing/clock", json!("guess")),
+        ("/rust_capture/poll_ms", json!(0)),
+        ("/rust_capture/service", json!({})),
+    ] {
+        let mut data = f.inventory.clone();
+        *data.pointer_mut(pointer).unwrap() = value;
+        assert!(
+            crate::capture_backend::validate(&data).is_err(),
+            "{pointer}"
+        );
+    }
+}
+
+#[test]
+fn quality_batch_and_window_refuse_bad_limits_cursor_origins_and_missing_page_continuity() {
+    let f = Fixture::new(false, 1);
+    let current = f.query("current").unwrap();
+    let expected = json!({"generation_id":current["generation_id"],"instance_id":current["instance_id"],"session_id":current["session_id"],"snapshot_id":current["snapshot_id"]});
+    for value in [
+        json!({"version":1,"cameras":[{"camera":"camera_a","limit":0,"expected":expected}]}),
+        json!({"version":1,"cameras":[{"camera":3,"expected":expected}]}),
+    ] {
+        assert!(
+            crate::quality_batch::execute_with("quality-batch", &value, |_, _, _, _| panic!(
+                "invalid request must not query"
+            ))
+            .is_err()
+        );
+    }
+    assert!(
+        crate::quality_batch::execute_with("unknown", &json!({"version":1}), |_, _, _, _| panic!(
+            "unknown kind must not query"
+        ))
+        .is_err()
+    );
+    let base = json!({"version":1,"camera":"camera_a","expected":expected,"from_cursor":{"origin_session_id":current["session_id"],"after_sequence":0},"to_sequence":1,"limit":1});
+    for mode in 0..3 {
+        let mut value = base.clone();
+        if mode == 0 {
+            value["camera"] = json!(3);
+        }
+        if mode == 1 {
+            value["from_cursor"]["origin_session_id"] = json!("f".repeat(32));
+        }
+        assert!(
+            crate::quality_batch::execute_with("quality-window", &value, |_, _, _, _| {
+                let mut result = f.query("events")?;
+                result["result"]["page"]["latest_sequence"] = json!(5);
+                result["result"]["page"]["events"] = json!([]);
+                Ok(result)
+            })
+            .is_err(),
+            "{mode}"
+        );
+    }
+}
+
+#[test]
+fn recording_context_rechecks_inventory_after_its_final_live_witness() {
+    let baseline = Fixture::new(false, 1);
+    baseline.acquire().unwrap();
+    let reads = baseline.docker.lock().unwrap().cameras[0].status_reads;
+    let mut f = Fixture::new(false, 1);
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let root = f.ctl.root.clone();
+    let previous = f.ctl.command_runner.clone().unwrap();
+    f.ctl.command_runner = Some(Arc::new(move |args, input| {
+        let result = previous(args, input)?;
+        if args.get(1).is_some_and(|s| s == "exec")
+            && args.last().is_some_and(|s| s == "1" || s == "0")
+            && count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == reads
+        {
+            atomic_json(&root.join("inventory.json"), &json!({"changed":true}))?;
+        }
+        Ok(result)
+    }));
+    error(
+        managed_quality::recording_context(&f.ctl, true),
+        "RECORDING_CONFIGURATION_CHANGED",
+    );
+}
+#[test]
+fn snapshot_status_transport_failure_never_returns_a_live_capture_context() {
+    let mut f = Fixture::new(false, 1);
+    let previous = f.ctl.command_runner.clone().unwrap();
+    f.ctl.command_runner = Some(Arc::new(move |args, input| {
+        if args.get(1).is_some_and(|s| s == "exec")
+            && args.last().is_some_and(|s| s == "1" || s == "0")
+        {
+            bail!("synthetic transport failure");
+        }
+        previous(args, input)
+    }));
+    assert!(f.acquire().is_err());
+}
+
+#[test]
+fn saving_cannot_upgrade_profile_confirmation_without_a_probe() {
+    let f = Fixture::new(true, 1);
+    let mut previous = f.inventory.clone();
+    previous["cameras"][0]["profiles_verified"] = json!(false);
+    previous["cameras"][0]["verification"] = Value::Null;
+    atomic_json(&f.ctl.root.join("inventory.json"), &previous).unwrap();
+    assert!(
+        f.ctl
+            .save(&f.inventory, false)
+            .unwrap_err()
+            .to_string()
+            .starts_with("PROFILE_PROBE_REQUIRED")
+    );
+    assert_eq!(f.ctl.load().unwrap(), previous);
+}
+
+#[test]
+fn discovery_rejects_invalid_container_references_and_incomplete_inspection() {
+    for malformed_reference in [true, false] {
+        let mut f = Fixture::new(true, 1);
+        f.ctl.command_runner = Some(Arc::new(move |args, _| {
+            match args.get(1).map(String::as_str) {
+                Some("ps") => Ok(if malformed_reference {
+                    "../escape".into()
+                } else {
+                    "a".repeat(64)
+                }),
+                Some("inspect") => Ok("[]".into()),
+                _ => bail!("unexpected Docker command"),
+            }
+        }));
+        assert!(
+            f.ctl
+                .instances("camera")
+                .unwrap_err()
+                .to_string()
+                .starts_with("INSTANCE_DISCOVERY")
+        );
+    }
+}

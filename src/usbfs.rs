@@ -23,7 +23,9 @@ pub fn status(d: &Value) -> Value {
     )
 }
 pub fn preflight(d: &Value) -> Result<()> {
-    let status = status(d);
+    check_status(d, &status(d))
+}
+fn check_status(d: &Value, status: &Value) -> Result<()> {
     if d.get("usbfs_minimum_mb").is_some() {
         require(
             status["available"] == true,
@@ -55,5 +57,27 @@ mod tests {
                 .as_bool()
                 .unwrap()
         );
+    }
+    #[test]
+    fn configured_usbfs_preflight_refuses_unavailable_or_insufficient_resources_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("parameter");
+        let d = json!({"usbfs_minimum_mb":128});
+        assert!(
+            check_status(&d, &status_at(&file, Some(128)))
+                .unwrap_err()
+                .to_string()
+                .starts_with("USBFS_UNAVAILABLE")
+        );
+        fs::write(&file, b"16\n").unwrap();
+        assert!(
+            check_status(&d, &status_at(&file, Some(128)))
+                .unwrap_err()
+                .to_string()
+                .starts_with("USBFS_RESOURCE_INSUFFICIENT")
+        );
+        fs::write(&file, b"0\n").unwrap();
+        assert!(check_status(&d, &status_at(&file, Some(128))).is_ok());
+        assert_eq!(fs::read(&file).unwrap(), b"0\n");
     }
 }

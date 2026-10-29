@@ -46,11 +46,20 @@ fn timeout_kills_a_term_resistant_worker_and_empty_command_is_rejected() {
     // Use an executable script so --root is a worker argument rather than a shell option.
     use std::os::unix::fs::PermissionsExt;
     let script = root.path().join("worker");
-    std::fs::write(
-        &script,
-        "#!/bin/sh\ntrap '' TERM\nwhile :; do sleep 1; done\n",
-    )
-    .unwrap();
+    geminidepthport::control::Controller::new(root.path())
+        .unwrap()
+        .run_with_input(
+            &[
+                "/bin/sh".into(),
+                "-c".into(),
+                "cat > \"$1\"".into(),
+                "--".into(),
+                script.to_string_lossy().into(),
+            ],
+            5,
+            b"#!/bin/sh\ntrap '' TERM\nwhile :; do sleep 1; done\n",
+        )
+        .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
     let error = command(
         root.path(),
@@ -59,6 +68,6 @@ fn timeout_kills_a_term_resistant_worker_and_empty_command_is_rejected() {
         None,
     )
     .unwrap_err();
-    assert!(error.to_string().starts_with("COMMAND_TIMEOUT"));
+    assert!(error.to_string().starts_with("COMMAND_TIMEOUT"), "{error}");
     assert!(started.elapsed().as_secs() < 6);
 }

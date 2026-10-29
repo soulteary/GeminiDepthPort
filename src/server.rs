@@ -891,6 +891,20 @@ fn handle(mut req: Request, m: &Arc<Manager>, port: u16) {
         Err(e) => json_response(req, 400, json!({"error":e.to_string()})),
     }
 }
+fn expire_idle_previews(m: &Manager) {
+    if m.last_seen.lock().unwrap().elapsed() > Duration::from_secs(120) {
+        if let Ok(_busy) = m.busy() {
+            if let Ok(_lock) = m.ctl.lock(true) {
+                // Recheck after both operation locks: activity may have
+                // resumed since the outer idle observation.
+                if m.last_seen.lock().unwrap().elapsed() > Duration::from_secs(120) {
+                    let _ = stop_owned_previews(&m.ctl);
+                }
+            }
+        }
+    }
+}
+
 pub fn serve(ctl: Controller, host: &str, port: u16) -> Result<()> {
     require(
         ["127.0.0.1", "0.0.0.0"].contains(&host),
@@ -945,17 +959,7 @@ pub fn serve(ctl: Controller, host: &str, port: u16) -> Result<()> {
     println!("Camera console: http://127.0.0.1:{actual_port}");
     while !STOP.load(Ordering::Relaxed) {
         thread::sleep(Duration::from_millis(250));
-        if m.last_seen.lock().unwrap().elapsed() > Duration::from_secs(120) {
-            if let Ok(_busy) = m.busy() {
-                if let Ok(_lock) = m.ctl.lock(true) {
-                    // Recheck after both operation locks: activity may have
-                    // resumed since the outer idle observation.
-                    if m.last_seen.lock().unwrap().elapsed() > Duration::from_secs(120) {
-                        let _ = stop_owned_previews(&m.ctl);
-                    }
-                }
-            }
-        }
+        expire_idle_previews(&m);
     }
     cancel_commands();
     for worker in workers {

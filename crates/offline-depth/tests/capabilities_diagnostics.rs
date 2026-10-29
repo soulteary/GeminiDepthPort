@@ -256,3 +256,42 @@ fn actual_sigterm_is_a_cooperative_cancel_not_a_success() {
     assert!(!output.path().join("signal").exists());
     assert!(!output.path().join("signal.partial/COMPLETE").exists());
 }
+
+#[test]
+fn public_error_categories_keep_backward_compatible_codes_and_specific_failure_details() {
+    use offline_depth::OfflineError;
+    let io = fs::File::open("/nonexistent-gdp-error-source").unwrap_err();
+    assert_eq!(OfflineError::from(io).code(), "INPUT_OUTPUT_IO");
+    let geometry = d2c_core::CameraModel::new(
+        d2c_core::CameraIntrinsics {
+            width: 0,
+            height: 1,
+            fx: 1.,
+            fy: 1.,
+            cx: 0.,
+            cy: 0.,
+            skew: 0.,
+        },
+        d2c_core::DistortionModel::PinholeZero,
+    )
+    .unwrap_err();
+    assert_eq!(OfflineError::from(geometry).code(), "GEOMETRY_INVALID");
+    let warp = d2c_core::DepthScale::millimeters_per_count(0.).unwrap_err();
+    assert_eq!(OfflineError::from(warp).code(), "WARP_FAILED");
+    let tmp = tempfile::tempdir().unwrap();
+    let id = capture_contract::SnapshotId::parse("a".repeat(64)).unwrap();
+    let output =
+        depth_output::Job::create(tmp.path(), "../escape", depth_output::Mode::Directory, id)
+            .err()
+            .unwrap();
+    assert_eq!(OfflineError::from(output).code(), "OUTPUT_FAILED");
+    let uncertain = depth_output::OutputError::CommitUncertain {
+        path: tmp.path().join("committed"),
+        source: std::io::Error::other("parent durability was not confirmed"),
+    };
+    assert_eq!(
+        OfflineError::from(uncertain).code(),
+        "OUTPUT_COMMIT_UNCERTAIN"
+    );
+    assert_eq!(OfflineError::Worker.code(), "OUTPUT_WORKER_FAILED");
+}

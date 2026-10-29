@@ -770,3 +770,105 @@ fn recorder_scope_is_terminal_under_unrelated_ros_health_and_old_scope_dtos_roun
             .any(|episode| episode.scope == Scope::Recorder)
     );
 }
+
+#[test]
+fn malformed_stream_sets_time_domains_and_lifecycle_requests_fail_without_creating_events() {
+    for streams in [
+        vec![],
+        vec!["bad name".into()],
+        vec!["color".into(), "color".into()],
+    ] {
+        assert!(QualityEngine::new(policy(), id('a'), streams).is_err());
+    }
+    let mut e = engine();
+    assert_eq!(
+        e.evaluate(
+            at('a', 0),
+            Scope::Stream("missing".into()),
+            FrameViolation::StreamStale,
+            Condition::Violated
+        ),
+        Err("STREAM_UNREGISTERED")
+    );
+    assert_eq!(
+        e.evaluate(
+            at('a', 0),
+            Scope::Group,
+            FrameViolation::ObserverInterrupted,
+            Condition::Violated
+        ),
+        Err("LIFECYCLE_COMMAND_REQUIRED")
+    );
+    assert_eq!(e.tick(at('b', 1)), Err("MONOTONIC_DOMAIN_MISMATCH"));
+    e.tick(at('a', 10)).unwrap();
+    assert_eq!(e.tick(at('a', 9)), Err("MONOTONIC_REGRESSION"));
+    assert!(e.events(None, 0).is_err());
+    e.finalize_session();
+    assert_eq!(e.tick(at('a', 11)), Err("SESSION_FINALIZED"));
+    assert_eq!(e.begin_session(id('a')), Err("SESSION_ID_REUSED"));
+    let mut p = policy();
+    p.max_sessions = 1;
+    p.summary_capacity = 1;
+    let mut e = QualityEngine::new(p, id('a'), vec!["color".into()]).unwrap();
+    assert_eq!(e.begin_session(id('b')), Err("SESSION_LIMIT_EXHAUSTED"));
+}
+
+#[test]
+fn declared_clock_domains_remain_distinct_and_conflicting_interruption_reasons_fail() {
+    for clock in [
+        ClockDomain::DeviceMicroseconds,
+        ClockDomain::SessionMonotonicNanoseconds,
+    ] {
+        let mut e = engine();
+        let mut f = frame('a', 1, 1);
+        f.source = Some(SourceStamp {
+            clock: SourceClock::Capture(clock),
+            value: 1,
+        });
+        f.mapper = ClockMapper::Unknown;
+        e.record_frame(f).unwrap();
+        assert!(
+            e.snapshot()
+                .active_episodes
+                .iter()
+                .all(|v| v.violation != FrameViolation::StreamStale)
+        );
+    }
+    let mut e = engine();
+    e.interrupt(at('a', 1), InterruptionReason::DriverExited)
+        .unwrap();
+    assert_eq!(
+        e.interrupt(at('a', 2), InterruptionReason::CoreUnavailable),
+        Err("SESSION_ALREADY_INTERRUPTED")
+    );
+    let mut p = policy();
+    p.quality.max_source_age_ns = 0;
+    assert!(
+        validate_source_age(
+            SourceStamp {
+                clock: SourceClock::ObservedHeaderNanoseconds,
+                value: 1
+            },
+            ClockMapper::DeclaredObservedUnixHeader,
+            Some(1),
+            &p.quality
+        )
+        .is_err()
+    );
+    for metric in [
+        DepthPixelMetrics {
+            samples: 0,
+            zero_samples: 0,
+            nonzero_samples: 0,
+            max_u16_samples: 0,
+        },
+        DepthPixelMetrics {
+            samples: 1,
+            zero_samples: 0,
+            nonzero_samples: 0,
+            max_u16_samples: 0,
+        },
+    ] {
+        assert!(metric.validate().is_err());
+    }
+}

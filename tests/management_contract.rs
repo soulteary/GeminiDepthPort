@@ -451,3 +451,97 @@ fn legacy_inventory_cannot_enable_unbound_streams_or_unsupported_sources() {
             .contains("Enable image stream")
     );
 }
+
+#[test]
+fn calibration_evidence_rejects_missing_source_and_unbound_numeric_geometry() {
+    let oracle: Value = serde_json::from_str(include_str!("rust/contracts.json")).unwrap();
+    let case = &oracle["requests"][0];
+    for (pointer, value) in [
+        ("/source", json!("unknown")),
+        ("/cameras", json!({})),
+        ("/cameras/camera_a/color", Value::Null),
+        ("/cameras/camera_a/color/k", json!([1])),
+        ("/cameras/camera_a/depth_to_color", Value::Null),
+        (
+            "/cameras/camera_a/depth_to_color/rotation",
+            json!([0, 0, 0, 0]),
+        ),
+    ] {
+        let mut observations = case["observations"].clone();
+        *observations.pointer_mut(pointer).unwrap() = value;
+        assert!(
+            geminidepthport::calibration::snapshot(
+                &case["data"],
+                text(&case["generation"]),
+                &observations
+            )
+            .is_err(),
+            "{pointer}"
+        );
+    }
+    assert!(
+        geminidepthport::calibration::request(&oracle["legacy"], text(&case["generation"]))
+            .is_err()
+    );
+    assert!(geminidepthport::calibration::request(&case["data"], "invalid").is_err());
+    let mut data = case["data"].clone();
+    for c in data["cameras"].as_array_mut().unwrap() {
+        c["enabled"] = json!(false);
+    }
+    assert!(geminidepthport::calibration::request(&data, text(&case["generation"])).is_err());
+}
+
+#[test]
+fn legacy_and_single_stream_generation_preserve_interface_and_python_signature_contracts() {
+    let legacy: Value = serde_json::from_str(include_str!("fixtures/inventory.v1.json")).unwrap();
+    let camera = config::resolved(&legacy, &legacy["cameras"][0]);
+    let (_, health, binding) = generation::camera_files(&legacy, &camera).unwrap();
+    assert_eq!(binding["contract"], "legacy");
+    assert_eq!(health["streams"].as_array().unwrap().len(), 2);
+    let mut data = fixture();
+    data["cameras"][0]["parameters"]["enable_color"] = json!(false);
+    let camera = config::resolved(&data, &data["cameras"][0]);
+    let (_, health, _) = generation::camera_files(&data, &camera).unwrap();
+    assert_eq!(health["streams"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        config::signature(&json!({"a":[1,true,null],"profiles_verified":true})),
+        hash("{\"a\": [1, true, null]}")
+    );
+    for (value, truth) in [
+        (json!(0), false),
+        (json!(1), true),
+        (json!(""), false),
+        (json!("false"), true),
+        (json!([]), false),
+        (json!([false]), true),
+        (json!({}), false),
+        (json!({"a":false}), true),
+    ] {
+        assert_eq!(config::truthy(&value), truth);
+    }
+}
+
+#[test]
+fn incomplete_v2_camera_fields_empty_stream_sets_and_bad_health_are_rejected() {
+    let original = fixture();
+    for (pointer, value) in [
+        ("/cameras/0/parameters/enable_color", json!(false)),
+        ("/cameras/0/parameters/depth_width", json!(0)),
+        ("/cameras/0/health", json!({"unknown":1})),
+    ] {
+        let mut d = original.clone();
+        *d.pointer_mut(pointer).unwrap() = value;
+        if pointer.ends_with("enable_color") {
+            d["cameras"][0]["parameters"]["enable_depth"] = json!(false);
+        }
+        assert!(config::validate(&d, true).is_err());
+    }
+    let mut d = original.clone();
+    d["cameras"][0]["unknown"] = json!(true);
+    assert!(config::validate(&d, true).is_err());
+    assert!(config::migrate(&original, &Value::Null).is_err());
+    let mut legacy: Value =
+        serde_json::from_str(include_str!("fixtures/inventory.v1.json")).unwrap();
+    legacy["cameras"][0]["parameters"]["enable_depth"] = json!(false);
+    config::validate(&legacy, true).unwrap();
+}

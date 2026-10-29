@@ -957,4 +957,92 @@ mod tests {
         decoder.next_frame(&mut pixels).unwrap();
         assert_eq!(pixels, [0, 0, 255, 255, 0, 1]);
     }
+    #[test]
+    fn filesystem_obstacles_poison_output_jobs_without_a_complete_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(
+            Job::create(
+                tmp.path(),
+                "../escape",
+                Mode::Directory,
+                record().context.snapshot_id
+            )
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("JOB_NAME")
+        );
+        let snapshot = record().context.snapshot_id;
+        for mode in 0..3 {
+            let name = format!("obstacle{mode}");
+            let mut job =
+                Job::create(tmp.path(), &name, Mode::Directory, snapshot.clone()).unwrap();
+            if mode == 0 {
+                fs::write(job.stage_path().join("source-blobs"), b"obstacle").unwrap();
+                let error = job
+                    .attach_source_blob(&digest(b"data"), b"data")
+                    .unwrap_err();
+                assert!(error.to_string().contains("Io"));
+            } else if mode == 1 {
+                fs::remove_dir(job.stage_path().join("frames")).unwrap();
+                fs::write(job.stage_path().join("frames"), b"obstacle").unwrap();
+                assert!(job.append(&encoded()).is_err());
+            } else {
+                job.append(&encoded()).unwrap();
+                fs::create_dir(tmp.path().join(&name)).unwrap();
+                assert!(
+                    job.finish()
+                        .unwrap_err()
+                        .to_string()
+                        .contains("OUTPUT_EXISTS")
+                );
+                continue;
+            }
+            assert!(
+                job.attach_json("build-info.json", b"{}")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("JOB_FAILED")
+            );
+            assert!(job.finish().is_err());
+            assert!(!tmp.path().join(name).join("COMPLETE").exists());
+        }
+    }
+    #[test]
+    fn external_encoding_json_and_io_failures_retain_actionable_diagnostics() {
+        fn parse(bytes: &[u8]) -> Result<serde_json::Value> {
+            Ok(serde_json::from_slice(bytes)?)
+        }
+        let error = parse(b"{invalid").unwrap_err();
+        assert!(error.to_string().contains("line: 1"));
+        let mut bytes = Vec::new();
+        let encoder = png::Encoder::new(&mut bytes, 0, 1);
+        let error = encoder
+            .write_header()
+            .map_err(OutputError::from)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("Encode"));
+        let tmp = tempfile::tempdir().unwrap();
+        let mut job = Job::create(
+            tmp.path(),
+            "missing-manifest",
+            Mode::Directory,
+            record().context.snapshot_id,
+        )
+        .unwrap();
+        job.append(&encoded()).unwrap();
+        fs::remove_file(job.stage_path().join("manifest.jsonl.partial")).unwrap();
+        assert!(job.finish().unwrap_err().to_string().contains("Io"));
+        let mut job = Job::create(
+            tmp.path(),
+            "missing-tar",
+            Mode::Tar,
+            record().context.snapshot_id,
+        )
+        .unwrap();
+        job.append(&encoded()).unwrap();
+        fs::remove_file(job.stage_path().join("depth.tar.partial")).unwrap();
+        assert!(job.finish().is_err());
+    }
 }

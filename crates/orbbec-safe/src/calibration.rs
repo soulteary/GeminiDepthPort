@@ -311,4 +311,40 @@ mod tests {
         assert!(distortion(sys::CameraDistortion { model: 2, ..raw }).is_err());
         assert!(distortion(sys::CameraDistortion { model: 3, ..raw }).is_err());
     }
+    #[test]
+    fn finite_zero_and_equidistant_distortion_models_keep_their_exact_parameter_order() {
+        let zero = sys::CameraDistortion {
+            k1: 0.,
+            k2: 0.,
+            k3: 0.,
+            k4: 0.,
+            k5: 0.,
+            k6: 0.,
+            p1: 0.,
+            p2: 0.,
+            model: 0,
+        };
+        assert_eq!(distortion(zero).unwrap(), ("plumb_bob".into(), vec![0.; 5]));
+        let equidistant = sys::CameraDistortion {
+            k1: 1.,
+            k2: 2.,
+            k3: 3.,
+            k4: 4.,
+            model: 5,
+            ..zero
+        };
+        assert_eq!(
+            distortion(equidistant).unwrap(),
+            ("equidistant".into(), vec![1., 2., 3., 4.])
+        );
+        assert!(
+            distortion(sys::CameraDistortion {
+                k1: f32::NAN,
+                ..zero
+            })
+            .unwrap_err()
+            .to_string()
+            .contains("nonfinite")
+        );
+    }
 }

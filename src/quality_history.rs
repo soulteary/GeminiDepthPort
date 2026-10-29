@@ -579,4 +579,57 @@ mod tests {
         save(&dir.join("interruption.json"), &fact);
         assert!(read_inner(&ctl, "cam_a", &gid, &sid).is_err());
     }
+    #[test]
+    fn historical_session_config_and_summary_mismatches_remain_incomplete() {
+        for mode in 0..6 {
+            let (_temp, ctl, gid) = fixture(true);
+            let sid = "a".repeat(32);
+            let dir = session(&ctl, &gid, &sid, true, true);
+            let folder = ctl.root.join("state/generations").join(&gid);
+            let (path, mut value) = if mode < 3 {
+                let p = folder.join("manifest.json");
+                let v = read_json(&p).unwrap();
+                (p, v)
+            } else if mode < 5 {
+                let p = dir.join("current.json");
+                let v = read_json(&p).unwrap();
+                (p, v)
+            } else {
+                let p = dir.join("summary.json");
+                let v = read_json(&p).unwrap();
+                (p, v)
+            };
+            match mode {
+                0 => value["cameras"] = json!([]),
+                1 => {
+                    value["capture_backend"] = json!("official");
+                    value["observer_backend"] = Value::Null;
+                }
+                2 => value["files"]["config/cam_a/capture.json"] = json!("f".repeat(64)),
+                3 => value["session_id"] = json!("b".repeat(32)),
+                4 => value["snapshot_id"] = json!("b".repeat(64)),
+                _ => value["summary"]["finalized"] = json!(false),
+            }
+            save(&path, &value);
+            assert!(read_inner(&ctl, "cam_a", &gid, &sid).is_err(), "{mode}");
+        }
+    }
+    #[test]
+    fn history_directory_rejects_component_traversal_and_oversized_private_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Directory::root(tmp.path()).unwrap();
+        assert!(dir.open("../escape", false).is_err());
+        let path = tmp.path().join("large.json");
+        let file = File::create(&path).unwrap();
+        file.set_len(4 * 1024 * 1024 + 1).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(dir.bytes("large.json").is_err());
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(Directory::root(Path::new("/")).is_err());
+        } else {
+            let name = CString::new(tmp.path().as_os_str().as_encoded_bytes()).unwrap();
+            assert_eq!(unsafe { libc::chown(name.as_ptr(), 65534, u32::MAX) }, 0);
+            assert!(Directory::root(tmp.path()).is_err());
+        }
+    }
 }

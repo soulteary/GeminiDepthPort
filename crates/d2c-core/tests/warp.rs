@@ -448,3 +448,24 @@ fn extreme_geometry_is_counted_without_nonfinite_output_and_packing_checks_lengt
         Err(WarpError::MemoryLimit)
     ));
 }
+
+#[test]
+fn finite_source_rays_that_overflow_transformed_coordinates_are_invalid_output() {
+    let mut k = camera(1, 1).intrinsics();
+    k.cx = -1e200;
+    let source = CameraModel::new(k, DistortionModel::PinholeZero).unwrap();
+    let lut = rays(&source);
+    let pixels = bytes(&[65535]);
+    let mut buffer = buffer();
+    let result = warp_depth_to_color(
+        raw(&pixels, 1, 1, 1e200),
+        &lut,
+        &camera(1, 1),
+        DepthToColorTransform::new(I, [0.; 3]).unwrap(),
+        &mut buffer,
+    )
+    .unwrap();
+    assert_eq!(result.stats.nonfinite, 1);
+    assert_eq!(result.depth_mm, [0]);
+    assert_eq!(result.validity, [0]);
+}

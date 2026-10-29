@@ -647,3 +647,54 @@ fn directory_source_reports_manifest_limits_and_stable_schema_errors() {
     let result = cli(input.path(), &["--validate-only"]);
     assert!(String::from_utf8_lossy(&result.stdout).contains("JSON_SCHEMA"));
 }
+
+#[test]
+fn cli_argument_conflicts_and_unwritable_progress_report_stable_codes() {
+    let input = tempfile::tempdir().unwrap();
+    fixture(input.path(), false, 0.);
+    for (args, code) in [
+        (vec!["--unknown"], "UNKNOWN_ARGUMENT"),
+        (vec!["--pair", "not-a-number"], "PAIR_ARGUMENT"),
+        (vec!["--mode", "invalid"], "MODE_ARGUMENT"),
+        (
+            vec!["--preserve-counts", "--normalize-mm"],
+            "COUNTS_OPERATION_CONFLICT",
+        ),
+        (
+            vec!["--validate-only", "--output", "/unused"],
+            "VALIDATE_OUTPUT_ARGUMENT",
+        ),
+        (vec!["--output", "relative"], "ABSOLUTE_OUTPUT_REQUIRED"),
+        (
+            vec!["--progress", "/nonexistent-gdp-parent/progress.jsonl"],
+            "INPUT_OUTPUT_IO",
+        ),
+    ] {
+        let result = cli(input.path(), &args);
+        assert!(!result.status.success());
+        assert!(
+            String::from_utf8_lossy(&result.stdout).contains(code),
+            "{result:?}"
+        );
+    }
+    let version = Command::new(env!("CARGO_BIN_EXE_offline-depth"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(version.status.success());
+    assert!(String::from_utf8_lossy(&version.stdout).contains("offline-depth"));
+    for args in [
+        vec!["--version", "extra"],
+        vec!["--capabilities", "--require"],
+        vec!["--input", "relative", "--validate-only"],
+    ] {
+        assert!(
+            !Command::new(env!("CARGO_BIN_EXE_offline-depth"))
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+}

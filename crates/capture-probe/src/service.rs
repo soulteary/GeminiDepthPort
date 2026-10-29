@@ -2759,4 +2759,122 @@ mod tests {
             "PAIR_FRAME_CONTRACT_INVALID"
         );
     }
+    #[test]
+    fn quality_adapter_propagates_storage_obstacles_and_rejects_rebinding_after_finalization() {
+        for file in ["query.json", "current.json", "events.json", "summary.json"] {
+            let dir = std::env::temp_dir().join(format!(
+                "gdp-quality-obstacle-{}",
+                random_session().unwrap()
+            ));
+            let mut q = ServiceQuality::new(
+                runtime_policy(),
+                &"a".repeat(32),
+                &"b".repeat(64),
+                Instant::now(),
+                &dir.join("status.json"),
+            )
+            .unwrap();
+            q.persist().unwrap();
+            let path = q.directory.join(file);
+            if path.exists() {
+                fs::remove_file(&path).unwrap();
+            }
+            fs::create_dir(&path).unwrap();
+            assert!(
+                if file == "summary.json" {
+                    q.finalize()
+                } else {
+                    q.persist()
+                }
+                .is_err(),
+                "{file}"
+            );
+            fs::remove_dir_all(dir).unwrap();
+        }
+        let dir =
+            std::env::temp_dir().join(format!("gdp-quality-binding-{}", random_session().unwrap()));
+        let mut q = ServiceQuality::new(
+            runtime_policy(),
+            &"a".repeat(32),
+            &"b".repeat(64),
+            Instant::now(),
+            &dir.join("status.json"),
+        )
+        .unwrap();
+        let snapshot = quality_snapshot(&"a".repeat(32), &"b".repeat(64));
+        q.bind(&snapshot).unwrap();
+        let meta = orbbec_safe::FrameMetadata {
+            format: orbbec_safe::Format::Depth16,
+            width: 3,
+            height: 1,
+            index: 1,
+            timestamp_us: 100,
+            system_timestamp_us: 100,
+            data_size: 6,
+            depth_scale_mm: Some(1.),
+        };
+        q.receipt("depth", Some(&meta), Instant::now(), Some(100000), true)
+            .unwrap();
+        assert!(q.binding_invalid);
+        q.persist().unwrap();
+        q.engine.finalize_session();
+        let mut content = snapshot.content;
+        content.calibration.observed_unix_ns = Some(2);
+        content.binding.calibration_id = content.calibration.id().unwrap();
+        assert!(q.bind(&content.seal().unwrap()).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn service_policy_rejects_unsafe_recording_control_paths_and_fail_closed_runtime_quality() {
+        for path in [
+            "relative/control.json",
+            "/tmp/control.json",
+            "/private/x/../control.json",
+            "/private/x/not-control.json",
+        ] {
+            let mut v = config();
+            v["service"]["recording_control_path"] = json!(path);
+            assert!(ServiceConfig::parse(&v.to_string()).is_err());
+        }
+        let mut v = config();
+        let mut policy = runtime_policy();
+        policy.quality.action = capture_contract::QualityAction::FailClosed;
+        v["quality_policy"] = serde_json::to_value(&policy.quality).unwrap();
+        v["quality_runtime"] = serde_json::to_value(policy).unwrap();
+        assert!(
+            ServiceConfig::parse(&v.to_string())
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("report-only")
+        );
+    }
+    #[test]
+    fn unbound_pixels_zero_publication_and_repeated_finalization_remain_explicit() {
+        let dir =
+            std::env::temp_dir().join(format!("gdp-quality-empty-{}", random_session().unwrap()));
+        let mut q = ServiceQuality::new(
+            runtime_policy(),
+            &"a".repeat(32),
+            &"b".repeat(64),
+            Instant::now(),
+            &dir.join("status.json"),
+        )
+        .unwrap();
+        let samples = frame_core::DepthSampleStats {
+            samples: 2,
+            zero_samples: 1,
+            nonzero_samples: 1,
+            max_u16_samples: 0,
+        };
+        q.pixels(samples, None, true).unwrap();
+        assert!(q.contexts.is_empty());
+        q.publication(false, 0).unwrap();
+        assert_eq!(q.partial_publications, 0);
+        assert_eq!(q.publication_failures, 1);
+        q.finalize().unwrap();
+        q.finalize().unwrap();
+        assert!(q.finalized);
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

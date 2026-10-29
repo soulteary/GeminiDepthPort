@@ -1089,3 +1089,136 @@ fn stream_metrics(state: &StreamState) -> crate::StreamWindowMetrics {
     result.max_u16_fraction = totals.map(|p| p.max_u16_fraction());
     result
 }
+
+#[cfg(test)]
+mod sequence_boundaries {
+    use super::*;
+    fn engine() -> QualityEngine {
+        let policy = RuntimeQualityPolicy {
+            version: 1,
+            quality: QualityPolicy {
+                version: 1,
+                max_source_age_ns: 100,
+                max_future_ns: 10,
+                max_pair_delta_us: 10,
+                min_valid_fraction: 0.,
+                max_zero_fraction: 1.,
+                action: QualityAction::ReportOnly,
+            },
+            stale_after_ns: 10,
+            event_capacity: 8,
+            window_capacity: 8,
+            window_horizon_ns: 100,
+            summary_capacity: 1,
+            max_sessions: 2,
+            rules: FrameViolation::ALL
+                .into_iter()
+                .map(|v| {
+                    (
+                        v,
+                        RulePolicy {
+                            open_after: 1,
+                            recover_after: 1,
+                            severity: QualityState::Degraded,
+                        },
+                    )
+                })
+                .collect(),
+        };
+        QualityEngine::new(
+            policy,
+            SessionId::parse("a".repeat(32)).unwrap(),
+            vec!["color".into(), "depth".into()],
+        )
+        .unwrap()
+    }
+    #[test]
+    fn multi_stream_ticks_and_receipts_cannot_wrap_the_public_event_sequence() {
+        let mut e = engine();
+        e.event_sequence = u64::MAX - 1;
+        assert_eq!(
+            e.tick(MonoTime {
+                session_id: e.current_session.clone(),
+                offset_ns: 10
+            }),
+            Err("EVENT_SEQUENCE_EXHAUSTED")
+        );
+        assert_eq!(e.event_sequence, u64::MAX);
+        assert_eq!(e.events.back().unwrap().sequence, u64::MAX);
+        let mut e = engine();
+        e.event_sequence = u64::MAX - 1;
+        let frame = FrameObservation {
+            context: FrameContext {
+                version: 1,
+                session_id: e.current_session.clone(),
+                generation_id: capture_contract::GenerationId::parse("b".repeat(32)).unwrap(),
+                configuration_id: capture_contract::ConfigurationId::parse("c".repeat(64)).unwrap(),
+                calibration_id: capture_contract::CalibrationId::parse("d".repeat(64)).unwrap(),
+                snapshot_id: capture_contract::SnapshotId::parse("e".repeat(64)).unwrap(),
+                stream_id: "color".into(),
+                sequence: Some(1),
+                device_timestamp_us: Some(1),
+                system_timestamp_us: Some(1),
+                received_mono_offset_ns: 1,
+            },
+            contract_valid: false,
+            valid_fraction: None,
+            zero_fraction: None,
+            source: None,
+            mapper: crate::ClockMapper::Unknown,
+            received_unix_ns: None,
+        };
+        assert_eq!(
+            e.record_frame(frame.clone()),
+            Err("EVENT_SEQUENCE_EXHAUSTED")
+        );
+        assert_eq!(e.event_sequence, u64::MAX);
+        let mut e = engine();
+        e.event_sequence = u64::MAX;
+        assert_eq!(
+            e.record_frame(frame.clone()),
+            Err("EVENT_SEQUENCE_EXHAUSTED")
+        );
+        let mut good = frame.clone();
+        good.contract_valid = true;
+        let mut e = engine();
+        e.evaluate(
+            MonoTime {
+                session_id: e.current_session.clone(),
+                offset_ns: 0,
+            },
+            Scope::Stream("color".into()),
+            FrameViolation::StreamStale,
+            Condition::Violated,
+        )
+        .unwrap();
+        e.event_sequence = u64::MAX - 1;
+        assert_eq!(
+            e.record_frame(good.clone()),
+            Err("EVENT_SEQUENCE_EXHAUSTED")
+        );
+        let pixels = crate::DepthPixelMetrics {
+            samples: 1,
+            zero_samples: 0,
+            nonzero_samples: 1,
+            max_u16_samples: 0,
+        };
+        let mut e = engine();
+        e.record_frame_deferred_pixels(good.clone()).unwrap();
+        e.event_sequence = u64::MAX;
+        assert_eq!(
+            e.record_pixel_metrics(&good.context, pixels, good.context.received_at(), true),
+            Err("EVENT_SEQUENCE_EXHAUSTED")
+        );
+        let mut e = engine();
+        e.record_frame_deferred_pixels(frame.clone()).unwrap();
+        e.record_pixel_metrics(&frame.context, pixels, frame.context.received_at(), true)
+            .unwrap();
+        assert!(
+            e.snapshot()
+                .active_episodes
+                .iter()
+                .any(|v| v.violation == FrameViolation::FrameContractInvalid)
+        );
+    }
+}
