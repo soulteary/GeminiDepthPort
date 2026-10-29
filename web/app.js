@@ -30,6 +30,50 @@ function bindings() {
   $('serial').innerHTML = options.map(d => `<option value="${escapeHTML(d.serial_number)}">${escapeHTML(d.product)} · ${escapeHTML(d.serial_number)}</option>`).join('');
   $('serial').value = cameraData.serial_number;
 }
+function showAcquisition() {
+  const rust = draft.capture_backend === 'rust';
+  $('acquisition-fields').hidden = !rust;
+  if (!rust) return;
+  const policy = draft.rust_capture?.acquisition;
+  const preset = policy?.preset || 'legacy';
+  const advanced = policy?.advanced || {};
+  $('acquisition-preset').value = preset;
+  $('acquisition-timestamp').value = advanced.message_timestamp || 'global';
+  $('acquisition-aggregate').value = advanced.aggregate || 'any';
+  $('acquisition-sync').checked = advanced.sdk_frame_sync ?? preset === 'strict-rgbd';
+  $('acquisition-advanced').hidden = preset === 'legacy';
+  $('acquisition-aggregate').querySelector('option[value="all"]').disabled = preset === 'complete';
+  $('acquisition-aggregate').querySelector('option[value="disabled"]').disabled = preset === 'strict-rgbd';
+  $('acquisition-note').textContent = preset === 'legacy' ? '保留原有 SDK 行为和时间戳；选择预设后才会应用新策略。' :
+    preset === 'complete' ? '有效彩色和深度图像独立发布；SDK 默认关闭软件同步，配对失败不影响原始图像发布。' :
+    preset === 'strict-rgbd' ? 'SDK 开启软件同步；仅发布通过时间差检查的 RGB-D 对，未配对帧不发布。' : '硬件同步尚无配置和验证通路，无法启动。';
+  const stamped = rust && Boolean(policy);
+  $('camera-timestamp-source').readOnly = stamped;
+}
+function readAcquisition(event) {
+  if (!draft || draft.capture_backend !== 'rust') return;
+  if (!event?.target?.id?.startsWith('acquisition-')) return;
+  const preset = $('acquisition-preset').value;
+  if (preset === 'legacy') {
+    delete draft.rust_capture.acquisition;
+    for (const c of draft.cameras) c.timestamp_source = 'host';
+  } else {
+    if (event.target.id === 'acquisition-preset') {
+      $('acquisition-timestamp').value = 'global';
+      $('acquisition-aggregate').value = 'any';
+      $('acquisition-sync').checked = preset === 'strict-rgbd';
+    }
+    const message_timestamp = $('acquisition-timestamp').value;
+    draft.rust_capture.acquisition = {preset,advanced:{
+      sdk_frame_sync:$('acquisition-sync').checked,
+      aggregate:$('acquisition-aggregate').value,message_timestamp,
+    }};
+    for (const c of draft.cameras) c.timestamp_source = message_timestamp === 'global' ? 'global' : 'host';
+  }
+  for (const c of draft.cameras) { c.profiles_verified = false; c.verification = null; }
+  $('camera-timestamp-source').value = camera().timestamp_source;
+  showAcquisition();
+}
 function showRole() {
   if (!draft) return;
   if (!draft.cameras.some(c => c.name === role)) role = draft.cameras[0]?.name;
@@ -52,10 +96,12 @@ function showRole() {
   formats.forEach(key => $(key).value = c.parameters[key]);
   $('profile-note').textContent = '尺寸、帧率与时间来源需按实机填写；出帧确认不替代标定及语义验收。';
   for (const stream of ['color','depth']) for (const key of ['width','height','fps']) $(stream+'_'+key).required = c.enabled && c.parameters['enable_'+stream];
+  showAcquisition();
   updatePreview();
 }
-function readForm() {
+function readForm(event) {
   if (!draft) return;
+  readAcquisition(event);
   const c = camera(); c.serial_number = $('serial').value;
   numeric.forEach(key => {if (parameterSupported(key) && $(key).value !== '') c.parameters[key] = Number($(key).value);});
   if (draft.schema_version === 2) {
@@ -94,7 +140,7 @@ async function saveConfig() {
   const cameras = draft.cameras.map(c => ({name:c.name,serial_number:c.serial_number,
     ...(draft.schema_version === 2 ? Object.fromEntries(['enabled','namespace','frame_prefix','timestamp_source','calibration_revision','health'].map(k=>[k,c[k]])) : {}),
     parameters:Object.fromEntries([...numeric,...booleans,...formats].filter(k => parameterSupported(k) && k in c.parameters).map(k=>[k,c.parameters[k]]))}));
-  const result = await api('/api/config', {revision,cameras});
+  const result = await api('/api/config', {revision,cameras,...(draft.capture_backend === 'rust' ? {acquisition:draft.rust_capture?.acquisition || null} : {})});
   const fresh = await api('/api/state'); state = fresh; revision = fresh.revision;
   draft = structuredClone(fresh.inventory); setDirty(false); showRole(); notify(result.message);
 }
@@ -110,6 +156,7 @@ function updateButtons() {
   document.querySelectorAll('.role-tab').forEach(button => button.disabled = pending);
   $('refresh').disabled = pending;
   document.querySelectorAll('#camera-form input,#camera-form select').forEach(input => input.disabled = pending || jobBusy || !parameterSupported(input.id) || (draft?.schema_version === 2 && formats.includes(input.id)));
+  if (draft?.rust_capture?.acquisition?.preset === 'strict-rgbd') $('acquisition-sync').disabled = true;
   updatePreview();
 }
 async function refresh(manual=false) {

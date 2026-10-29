@@ -9,6 +9,7 @@
 
 - [部署与开机管理](guides/deployment.md)
 - [Web 配置、预览与确认](guides/web.md)
+- [接收长尾与分阶段诊断](guides/pipeline-diagnostics.md)
 - [相机配置](guides/configuration.md)与[旧版迁移](guides/migration-v1.md)
 - [生命周期与录制保护](guides/lifecycle.md)
 - [可选 Rust 采集后端](guides/rust-backend.md)

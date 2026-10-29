@@ -55,6 +55,7 @@ def main():
     parser.add_argument('--freshness-seconds', type=float, required=True)
     parser.add_argument('--max-future-seconds', type=float, default=.1)
     parser.add_argument('--max-pair-delta-us', type=int, required=True)
+    parser.add_argument('--timestamp-source', choices=('host', 'global'), default='host')
     parser.add_argument('--pair-clock', choices=('device', 'system'), required=True)
     parser.add_argument('--allow-session-restart', action='store_true')
     parser.add_argument('--legacy-no-session', action='store_true')
@@ -68,6 +69,7 @@ def main():
                          'metadata_topic': base + '/frame_metadata', 'frame_id': observed['frame_id'],
                          'width': observed['width'], 'height': observed['height'],
                          'encoding': 'yuyv' if role == 'color' else '16UC1',
+                         'timestamp_source': args.timestamp_source,
                          'min_fps': args.min_fps, 'min_frames': args.min_frames,
                          'max_gap_seconds': args.max_gap_seconds, 'freshness_seconds': args.freshness_seconds,
                          'max_future_seconds': args.max_future_seconds,

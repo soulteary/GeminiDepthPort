@@ -37,7 +37,7 @@
         "freshness_seconds": 1,
         "min_fps_ratio": 0.8
       },
-      "timestamp_source": "host",
+      "timestamp_source": "global",
       "calibration_revision": "",
       "depth_unit": "mm"
     }
@@ -47,6 +47,9 @@
   },
   "capture_backend": "rust",
   "rust_capture": {
+    "acquisition": {
+      "preset": "complete"
+    },
     "depth_unit_policy": "normalize-mm",
     "pairing": {
       "clock": "device",

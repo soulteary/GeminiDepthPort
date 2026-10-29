@@ -51,7 +51,7 @@ def stamp_key(stamp):
     return stamp.sec, stamp.nanosec
 
 
-def run_case(library, namespace, stream):
+def run_case(library, namespace, stream, stamp_source="system", observed_timing=False):
     image_topic = namespace + '/' + stream + '/image_raw'
     info_topic = namespace + '/' + stream + '/camera_info'
     metadata_topic = namespace + '/' + stream + '/frame_metadata'
@@ -75,6 +75,8 @@ def run_case(library, namespace, stream):
     require(library.gdp_ros_create(c.byref(config), c.byref(handle)) == 1 and not handle.value, 'C ABI accepted invalid calibration')
     config.k[0] = 1.
     require(library.gdp_ros_create(c.byref(config), c.byref(handle)) == 0 and handle.value, 'bridge creation failed')
+    if observed_timing:
+        require(library.gdp_ros_set_session_id(handle, b'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') == 0, 'session binding failed')
     # Mutate caller calibration after create: bridge must have copied it.
     config.k[0] = 999.
     d[0] = 999.
@@ -117,7 +119,9 @@ def run_case(library, namespace, stream):
                     'graph reliability/durability differs: ' + json.dumps(observed))
         for sequence in range(1, 31):
             micros = time.time_ns() // 1000
-            sec, nanos = micros // 1_000_000, (micros % 1_000_000) * 1000
+            global_us = micros - 5000
+            selected_us = global_us if stamp_source == 'global' else micros
+            sec, nanos = selected_us // 1_000_000, (selected_us % 1_000_000) * 1000
             original = struct.pack('<4H', 0, 1, 10, 6554) if depth else bytes((16 + sequence, 128, 32, 128, 64, 90, 80, 240))
             payload = (c.c_uint8 * 8).from_buffer_copy(original)
             frame = Frame(1, c.sizeof(Frame), 2 if depth else 1, 2, 2, 4, 0, sec, nanos, sequence,
@@ -132,8 +136,17 @@ def run_case(library, namespace, stream):
                     require(library.gdp_ros_publish(handle, c.byref(frame)) == 1, 'C ABI accepted non-millimetre 16UC1')
                     frame.normalized = 1
                     frame.output_depth_scale_mm = 1.
-            require(library.gdp_ros_publish(handle, c.byref(frame)) == 0, 'bridge publication failed')
-            expected[(sec, nanos)] = (sequence, original, micros)
+            sdk_return = time.time_ns() if observed_timing else None
+            if observed_timing:
+                require(library.gdp_ros_publish_observed(handle, c.byref(frame), global_us if stamp_source == 'global' else 0,
+                        2 if stamp_source == 'global' else 1, sdk_return, 1) == 0, 'observed bridge publication failed')
+            elif stamp_source == 'global':
+                require(library.gdp_ros_publish(handle, c.byref(frame)) == 1, 'legacy ABI accepted a global stamp as system')
+                require(library.gdp_ros_publish_timestamped(handle, c.byref(frame), 0, 2) == 1, 'global zero accepted')
+                require(library.gdp_ros_publish_timestamped(handle, c.byref(frame), global_us, 2) == 0, 'global bridge publication failed')
+            else:
+                require(library.gdp_ros_publish(handle, c.byref(frame)) == 0, 'bridge publication failed')
+            expected[(sec, nanos)] = (sequence, original, micros, sdk_return)
             # Make a retained caller pointer observable as corrupted delivery.
             for i in range(8):
                 payload[i] ^= 255
@@ -147,7 +160,7 @@ def run_case(library, namespace, stream):
         require(len(matched) >= 3, 'insufficient matched Image/CameraInfo/metadata messages')
         previous_sequence = 0
         for key in matched:
-            sequence, original, micros = expected[key]
+            sequence, original, micros, sdk_return = expected[key]
             image, info, item = images[key], infos[key], metadata[key]
             require(image.encoding == encoding and image.width == 2 and image.height == 2 and image.step == 4
                     and image.is_bigendian == 0 and bytes(image.data) == original, 'Image layout or owned bytes differ')
@@ -158,8 +171,19 @@ def run_case(library, namespace, stream):
                     and item['frame_id'] == frame_id and item['encoding'] == encoding
                     and item['width'] == 2 and item['height'] == 2 and item['step'] == 4
                     and item['system_timestamp_us'] == micros and item['device_timestamp_us'] == (0 if sequence == 1 else sequence * 1000)
-                    and item['stamp_mapping'] == 'sdk-system-unix' and item['normalized'] is depth
+                    and item['stamp_mapping'] == 'sdk-' + stamp_source + '-unix' and item['normalized'] is depth
+                    and item.get('global_timestamp_us') == (micros - 5000 if stamp_source == 'global' else None)
                     and item['publisher_qos_verified'] is True, 'per-frame metadata differs')
+            require(item.get('sdk_return_unix_ns') == sdk_return, 'SDK return observation changed')
+            require(item['sdk_system_clock_verified'] is observed_timing, 'SDK clock verification flag changed')
+            require(item['timing_clock'] == 'host-realtime-unix-ns'
+                    and item['metadata_available_after_image_publish'] is True
+                    and item['publication_start_unix_ns'] > 0
+                    and item['image_publish_finished_unix_ns'] >= item['publication_start_unix_ns']
+                    and type(item['image_publish_wall_ns']) is int and item['image_publish_wall_ns'] >= 0,
+                    'publication timing metadata differs')
+            if sdk_return is not None:
+                require(item['publication_start_unix_ns'] >= sdk_return, 'SDK return observation came after publish')
             if depth:
                 require(abs(item['source_depth_scale_mm'] - .1) < 1e-7 and item['output_depth_scale_mm'] == 1., 'normalized depth scales differ')
                 require(struct.unpack('<4H', bytes(image.data)) == (0, 1, 10, 6554), 'millimetre depth samples differ')
@@ -182,6 +206,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--library', required=True)
     parser.add_argument('--namespace', required=True, help='Dedicated absolute synthetic-test namespace')
+    parser.add_argument('--stamp-source', choices=('system', 'global'), default='system')
+    parser.add_argument('--observed-timing', action='store_true')
     args = parser.parse_args()
     require(args.library.startswith('/'), 'absolute bridge library required')
     require(args.namespace.startswith('/') and not args.namespace.endswith('/'), 'explicit non-root test namespace required')
@@ -191,10 +217,16 @@ def main():
     library.gdp_ros_create.restype = c.c_int32
     library.gdp_ros_publish.argtypes = [c.c_void_p, c.POINTER(Frame)]
     library.gdp_ros_publish.restype = c.c_int32
+    library.gdp_ros_publish_timestamped.argtypes = [c.c_void_p, c.POINTER(Frame), c.c_uint64, c.c_uint32]
+    library.gdp_ros_publish_timestamped.restype = c.c_int32
+    library.gdp_ros_publish_observed.argtypes = [c.c_void_p, c.POINTER(Frame), c.c_uint64, c.c_uint32, c.c_uint64, c.c_uint32]
+    library.gdp_ros_publish_observed.restype = c.c_int32
+    library.gdp_ros_set_session_id.argtypes = [c.c_void_p, c.c_char_p]
+    library.gdp_ros_set_session_id.restype = c.c_int32
     library.gdp_ros_destroy.argtypes = [c.c_void_p]
     library.gdp_ros_destroy.restype = None
     require(library.gdp_ros_abi_version() == 1, 'ABI version differs')
-    results = [run_case(library, args.namespace, stream) for stream in ('color', 'depth')]
+    results = [run_case(library, args.namespace, stream, args.stamp_source, args.observed_timing) for stream in ('color', 'depth')]
     print(json.dumps({'ok': True, 'kind': 'synthetic-ros-wire-smoke', 'streams': results, 'hardware_verified': False}))
 
 

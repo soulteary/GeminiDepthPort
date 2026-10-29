@@ -12,7 +12,11 @@ static void release(obj *o) { if(!--o->refs){live[o->kind]--;free(o);} }
 static void event(const char *name) {const char *path=getenv("GEMINIDEPTHPORT_MOCK_EVENTS");if(path){FILE *f=fopen(path,"a");if(f){fprintf(f,"%s\n",name);fclose(f);}}}
 int ob_get_version(void){return 20903;}
 obj *ob_create_context(error **e){(void)e;return make(0);}
-void ob_delete_context(obj *o,error **e){(void)e;if(calibration_live||live[1]||live[2]||live[3]||live[4]||live[5])abort();release(o);event("context-delete");}
+void ob_delete_context(obj *o,error **e){(void)e;
+#ifndef MOCK_MULTIPLE_CONTEXTS
+if(calibration_live||live[1]||live[2]||live[3]||live[4]||live[5])abort();
+#endif
+release(o);event("context-delete");}
 obj *ob_query_device_list(obj *c,error **e){(void)c;(void)e;return make(1);}
 void ob_delete_device_list(obj *o,error **e){(void)e;if(live[2]||live[3]||live[4]||live[5])abort();release(o);event("list-delete");}
 obj *ob_device_list_get_device_by_serial_number(obj *l,const char *serial,error **e){(void)l;if(strcmp(serial,"test-device")){*e=(error*)1;return NULL;}return make(2);}
@@ -67,4 +71,37 @@ extrinsic ob_stream_profile_get_extrinsic_to(const profile *source,profile *targ
   if(source->stream!=3||target->stream!=2){*e=(error*)1;return(extrinsic){{0},{0}};}
   return(extrinsic){{0,-1,0,1,0,0,0,0,1},{100,200,300}};
 }
+#endif
+
+#ifndef MOCK_NO_CAPTURE_CONTROLS
+#ifndef MOCK_CAPTURE_FAILURE
+#define MOCK_CAPTURE_FAILURE 0
+#endif
+#ifndef MOCK_INITIAL_CLOCK
+#define MOCK_INITIAL_CLOCK 0
+#endif
+static int global_enabled, host_clock=MOCK_INITIAL_CLOCK, clock_get_count;
+static int capture_error(error **e,int stage){if(MOCK_CAPTURE_FAILURE==stage){*e=(error*)1;return 1;}return 0;}
+int ob_context_get_timestamp_clock_type(const obj *c,error **e){(void)c;event("clock-get");clock_get_count++;if(capture_error(e,6)||(MOCK_CAPTURE_FAILURE==9&&clock_get_count>1)){*e=(error*)1;return 0;}return host_clock;}
+void ob_context_set_timestamp_clock_type(obj *c,int clock,error **e){(void)c;if(active)abort();event(clock==0?"clock-realtime":"clock-monotonic");if(!capture_error(e,7)&&MOCK_CAPTURE_FAILURE!=8)host_clock=clock;}
+void ob_pipeline_enable_frame_sync(obj *p,error **e){(void)p;if(active)abort();event("sync-on");(void)capture_error(e,4);}
+void ob_pipeline_disable_frame_sync(obj *p,error **e){(void)p;if(active)abort();event("sync-off");(void)capture_error(e,4);}
+void ob_config_set_frame_aggregate_output_mode(obj *c,int mode,error **e){(void)c;if(active)abort();event(mode==0?"aggregate-all":mode==2?"aggregate-any":mode==3?"aggregate-disabled":"aggregate-invalid");(void)capture_error(e,3);}
+_Bool ob_device_is_global_timestamp_supported(const obj *d,error **e){(void)d;event("global-support");if(capture_error(e,1))return 0;
+#ifdef MOCK_GLOBAL_UNSUPPORTED
+return 0;
+#else
+return 1;
+#endif
+}
+void ob_device_enable_global_timestamp(obj *d,_Bool enabled,error **e){(void)d;if(active)abort();event(enabled?"global-on":"global-off");if(!capture_error(e,2))global_enabled=enabled;}
+#ifndef MOCK_NO_GLOBAL_READ
+uint64_t ob_frame_get_global_timestamp_us(const obj *f,error **e){(void)f;if(capture_error(e,5))return 0;
+#ifdef MOCK_GLOBAL_ZERO
+return 0;
+#else
+return global_enabled?5000:0;
+#endif
+}
+#endif
 #endif

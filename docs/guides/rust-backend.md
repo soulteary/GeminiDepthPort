@@ -29,9 +29,9 @@ Rust 数据链是显式可选后端。未填写 `capture_backend` 或填写 `off
 }
 ```
 
-每台启用的相机需要独立的真实绑定、命名空间、光学帧前缀和实际验证过的彩色/深度宽高帧率。当前常驻 Rust 服务要求同时启用两路；正式彩色为 YUYV，深度为原始未配准 Y16，并通过显式策略验证或归一化为毫米 `16UC1`。`timestamp_source` 必须填写 `host`，对应 SDK system Unix 时间；它不代表设备曝光时间或跨设备硬件同步。
+每台启用的相机需要独立的真实绑定、命名空间、光学帧前缀和实际验证过的彩色/深度宽高帧率。当前常驻 Rust 服务要求同时启用两路；正式彩色为 YUYV，深度为原始未配准 Y16，并通过显式策略验证或归一化为毫米 `16UC1`。上面的兼容策略使用 `timestamp_source:"host"`，对应 SDK system Unix 时间。新配置可显式添加 `acquisition:{"preset":"complete"}`，并将启用相机的 `timestamp_source` 改为 `global`；预设及高级参数详见[配置指南](configuration.md#rust-采集预设)。global 映射不代表硬件曝光同步。
 
-输入参数只接受两路启用标志、宽高帧率、YUYV/Y16 格式、`depth_registration:false` 和四项 `DEFAULT` QoS。曝光、增益、滤波、翻转、旋转、SDK 同步等官方参数当前均拒绝，包括填写一个看似默认的值；不会静默忽略或假装已经下发。USB 后端、曝光/滤波等仍沿用 SDK 自身行为，未实现的设置不能通过管理入口承诺改变。
+相机 `parameters` 只接受两路启用标志、宽高帧率、YUYV/Y16 格式、`depth_registration:false` 和四项 `DEFAULT` QoS。曝光、增益、滤波、翻转、旋转、SDK 同步等官方驱动参数当前均拒绝，包括填写一个看似默认的值；不会静默忽略或假装已经下发。SDK 软件同步、聚合模式及 global 时间启用只通过 `rust_capture.acquisition` 受控设置。USB 后端、曝光/滤波等仍沿用 SDK 自身行为，未实现的设置不能通过管理入口承诺改变。
 
 `gemini_305` 为 Rust 专用型号档案，精确识别 Gemini 305，不把相近型号混绑。选择官方后端时明确拒绝该档案。原有 Gemini 335L/Gemini 2 档案保持兼容；某型号能通过配置校验不等于完成该设备、固件及档位的真机验收。
 

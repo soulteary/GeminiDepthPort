@@ -22,6 +22,17 @@ int main() {
   f.stamp_sec=1700000000; f.stamp_nanosec=1000; f.sequence=1; f.has_system_timestamp=1;
   f.system_timestamp_us=1700000000000001; f.data=pixels; f.data_len=8;
   assert(gdp_ros::frame_valid(&f,2,2));
+  const auto global = f.system_timestamp_us - 1;
+  assert(!gdp_ros::frame_valid_timestamped(&f,2,2,global,2));
+  f.stamp_nanosec=0;
+  assert(gdp_ros::frame_valid_timestamped(&f,2,2,global,2));
+  assert(!gdp_ros::frame_valid(&f,2,2));
+  assert(!gdp_ros::frame_valid_timestamped(&f,2,2,0,2));
+  assert(!gdp_ros::frame_valid_timestamped(&f,2,2,global,0));
+  assert(!gdp_ros::frame_valid_timestamped(&f,2,2,std::numeric_limits<uint64_t>::max(),2));
+  assert(!gdp_ros::frame_valid_timestamped(nullptr,2,2,global,2));
+  f.stamp_nanosec=1000;
+  assert(gdp_ros::frame_valid_timestamped(&f,2,2,global,1));
   f.has_device_timestamp=1; f.device_timestamp_us=0;
   assert(gdp_ros::frame_valid(&f,2,2)); // device-clock origin differs from Unix
   f.data_len=7; assert(!gdp_ros::frame_valid(&f,2,2)); f.data_len=8;

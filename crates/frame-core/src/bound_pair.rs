@@ -190,6 +190,7 @@ impl BoundPairGuard {
                 sequence: Some(m.sequence),
                 device_timestamp_us: m.device_timestamp_us,
                 system_timestamp_us: m.system_timestamp_us,
+                global_timestamp_us: m.global_timestamp_us,
                 received_mono_offset_ns: u64::try_from(ns)
                     .map_err(|_| BoundPairError::ReceiveClock)?,
             },
@@ -378,6 +379,10 @@ mod tests {
                 sequence: seq,
                 device_timestamp_us: Some(stamp),
                 system_timestamp_us: Some(stamp + 1000),
+                global_timestamp_us: Some(stamp + 900),
+                sdk_return_unix_ns: None,
+                sdk_system_clock_verified: false,
+
                 source_depth_scale_mm: depth.then_some(if native { 0.1 } else { 1. }),
                 output_depth_scale_mm: depth.then_some(if native { 0.1 } else { 1. }),
                 normalized: false,
@@ -406,6 +411,7 @@ mod tests {
                 .unwrap();
             bound.evidence.validate().unwrap();
             assert_eq!(bound.evidence.depth.context.system_timestamp_us, Some(1101));
+            assert_eq!(bound.evidence.depth.context.global_timestamp_us, Some(1001));
             assert_eq!(bound.evidence.depth_stamp_us, 101);
             assert_eq!(bound.evidence.color.context.sequence, Some(20));
             let id = bound.evidence.depth.context.snapshot_id.clone();

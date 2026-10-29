@@ -71,6 +71,7 @@ fn frame(session: char, mono: u64, source: u64) -> FrameObservation {
             sequence: None,
             device_timestamp_us: None,
             system_timestamp_us: None,
+            global_timestamp_us: None,
             received_mono_offset_ns: mono,
         },
         contract_valid: true,

@@ -1,7 +1,7 @@
 FROM ros:humble-ros-base-jammy
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 COPY ros /ws/ros
-COPY runtime/qos_contract.py /ws/runtime/qos_contract.py
+COPY runtime/qos_contract.py runtime/pipeline_diagnostics.py runtime/host_pressure.py /ws/runtime/
 RUN source /opt/ros/humble/setup.bash \
     && cmake -S /ws/ros -B /ws/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/gdp-ros \
     && cmake --build /ws/build --parallel 2 \

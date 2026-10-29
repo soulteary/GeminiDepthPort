@@ -363,6 +363,174 @@ fn editable_config_rejects_incomplete_unknown_or_undetected_bindings_before_savi
         assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
     }
 }
+
+fn acquisition_edit_payload(f: &Fixture) -> Value {
+    let data = f.ctl.load().unwrap();
+    json!({"revision":f.ctl.revision().unwrap(),"cameras":data["cameras"].as_array().unwrap().iter().map(|c|json!({"name":c["name"],"parameters":{}})).collect::<Vec<_>>()})
+}
+
+#[test]
+fn acquisition_http_save_invalidates_all_confirmations_and_stops_each_owned_preview() {
+    let mut f = Fixture::new(false, 2);
+    f.prepare_host();
+    let previews = Arc::new(Mutex::new(f.inventory["cameras"].as_array().unwrap().iter().enumerate().map(|(i,c)|json!({"Id":format!("{:064x}",1000+i),"Name":format!("/orbbec-web-preview-{}",text(&c["name"])),"Config":{"Labels":{"orbbec.web.preview":PROJECT}},"State":{"Running":true},"Mounts":[{"Destination":"/config","Source":f.ctl.root.join("work/web-preview").join(text(&c["name"])).join("config")}]})).collect::<Vec<_>>()));
+    let external = previews.clone();
+    let stopped = Arc::new(Mutex::new(Vec::new()));
+    let stopped_calls = stopped.clone();
+    let previous = f.ctl.command_runner.clone().unwrap();
+    f.ctl.command_runner = Some(Arc::new(move |args, input| {
+        if args.get(1).is_some_and(|a| a == "ps")
+            && args.iter().any(|a| a.contains("orbbec.web.preview"))
+        {
+            return Ok(external
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|p| text(&p["Id"]))
+                .collect::<Vec<_>>()
+                .join("\n"));
+        }
+        if args.get(1).is_some_and(|a| a == "inspect") {
+            let items = external.lock().unwrap();
+            if args[2..]
+                .iter()
+                .any(|id| items.iter().any(|p| p["Id"] == *id))
+            {
+                return Ok(json!(
+                    items
+                        .iter()
+                        .filter(|p| args[2..].iter().any(|id| p["Id"] == *id))
+                        .collect::<Vec<_>>()
+                )
+                .to_string());
+            }
+        }
+        if args.get(1).is_some_and(|a| a == "stop" || a == "rm") {
+            let mut items = external.lock().unwrap();
+            if let Some(index) = items
+                .iter()
+                .position(|p| args.last().is_some_and(|id| p["Id"] == *id))
+            {
+                if args[1] == "stop" {
+                    stopped_calls
+                        .lock()
+                        .unwrap()
+                        .push(items[index]["Id"].clone());
+                    items[index]["State"]["Running"] = false.into();
+                } else {
+                    items.remove(index);
+                }
+                return Ok(String::new());
+            }
+        }
+        previous(args, input)
+    }));
+    let mut payload = acquisition_edit_payload(&f);
+    payload["acquisition"] = json!({"preset":"complete"});
+    for camera in payload["cameras"].as_array_mut().unwrap() {
+        camera["timestamp_source"] = "global".into();
+    }
+    let m = manager(&f);
+    let (status, _, body) = request(&m, "POST", "/api/config", &payload.to_string(), &[]);
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let saved = f.ctl.load().unwrap();
+    assert_eq!(saved["rust_capture"]["acquisition"], payload["acquisition"]);
+    for camera in saved["cameras"].as_array().unwrap() {
+        assert_eq!(camera["profiles_verified"], false);
+        assert!(camera["verification"].is_null());
+        assert_eq!(camera["timestamp_source"], "global");
+    }
+    assert!(previews.lock().unwrap().is_empty());
+    assert_eq!(stopped.lock().unwrap().len(), 3);
+    assert!(config::validate(&saved, false).is_err());
+    // Reverting to the compatibility policy is an atomic shared edit too.
+    let mut reset = acquisition_edit_payload(&f);
+    reset["acquisition"] = Value::Null;
+    for camera in reset["cameras"].as_array_mut().unwrap() {
+        camera["timestamp_source"] = "host".into();
+    }
+    save_config(&f.ctl, &reset).unwrap();
+    let legacy = f.ctl.load().unwrap();
+    assert!(legacy["rust_capture"].get("acquisition").is_none());
+    assert!(
+        legacy["cameras"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["timestamp_source"] == "host" && c["profiles_verified"] == false)
+    );
+}
+
+#[test]
+fn unchanged_acquisition_save_preserves_confirmations_and_needs_no_docker() {
+    let mut f = Fixture::new(false, 2);
+    f.prepare_host();
+    let mut data = f.inventory.clone();
+    data["rust_capture"]["acquisition"] =
+        json!({"preset":"complete","advanced":{"message_timestamp":"system"}});
+    for index in 0..2 {
+        data["cameras"][index]["verification"]["configuration_digest"] =
+            config::camera_digest(&data, &data["cameras"][index]).into();
+    }
+    config::validate(&data, false).unwrap();
+    atomic_json(&f.ctl.root.join("inventory.json"), &data).unwrap();
+    let before = fs::read(f.ctl.root.join("inventory.json")).unwrap();
+    let mut payload = acquisition_edit_payload(&f);
+    payload["acquisition"] = data["rust_capture"]["acquisition"].clone();
+    f.ctl.command_runner = Some(Arc::new(|args, _| {
+        panic!("unchanged save must not contact Docker: {args:?}")
+    }));
+    save_config(&f.ctl, &payload).unwrap();
+    assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
+    let saved = f.ctl.load().unwrap();
+    assert_eq!(
+        saved["cameras"][0]["verification"],
+        data["cameras"][0]["verification"]
+    );
+    assert_eq!(
+        saved["cameras"][1]["verification"],
+        data["cameras"][1]["verification"]
+    );
+}
+
+#[test]
+fn invalid_acquisition_http_edits_are_transactional_and_official_backend_refuses_them() {
+    for acquisition in [
+        json!({"preset":"unknown"}),
+        json!({"preset":"hardware-sync"}),
+        json!({"preset":"complete","advanced":{"aggregate":"all"}}),
+        json!({"preset":"strict-rgbd","advanced":{"sdk_frame_sync":false}}),
+        json!({"preset":"complete"}), // host declaration conflicts with global
+        json!({"preset":"complete","unknown":true}),
+    ] {
+        let f = Fixture::new(false, 1);
+        let before = fs::read(f.ctl.root.join("inventory.json")).unwrap();
+        let mut payload = acquisition_edit_payload(&f);
+        payload["acquisition"] = acquisition;
+        let (status, _, body) = request(
+            &manager(&f),
+            "POST",
+            "/api/config",
+            &payload.to_string(),
+            &[],
+        );
+        assert_eq!(status, 400, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
+    }
+    for acquisition in [json!({"preset":"complete"}), Value::Null] {
+        let f = Fixture::new(true, 1);
+        let before = fs::read(f.ctl.root.join("inventory.json")).unwrap();
+        let mut payload = acquisition_edit_payload(&f);
+        payload["acquisition"] = acquisition;
+        assert!(
+            save_config(&f.ctl, &payload)
+                .unwrap_err()
+                .to_string()
+                .starts_with("CAPTURE_BACKEND")
+        );
+        assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
+    }
+}
 #[test]
 fn editable_bindings_use_detected_model_and_changes_invalidate_confirmation() {
     let mut f = Fixture::new(true, 1);

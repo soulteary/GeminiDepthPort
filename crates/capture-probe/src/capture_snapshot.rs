@@ -94,7 +94,7 @@ pub(crate) fn build(
         physical_accuracy_verified: false,
         legacy_source_sha256: None,
     };
-    let configuration = json!({"capture":config.configuration,"runtime_config_sha256":runtime_sha,"runtime_artifacts":runtime_contract,"actual_color_profile":{"width":c.profile.width,"height":c.profile.height,"fps":c.profile.fps},"actual_depth_profile":{"width":d.profile.width,"height":d.profile.height,"fps":d.profile.fps},"source_depth_scale_mm":source_depth_scale_mm,"timestamp_mapping":"sdk-system-unix-microseconds-to-ros-nanoseconds","sync_mode":"sdk_frameset_association_only"});
+    let configuration = json!({"capture":config.configuration,"runtime_config_sha256":runtime_sha,"runtime_artifacts":runtime_contract,"actual_color_profile":{"width":c.profile.width,"height":c.profile.height,"fps":c.profile.fps},"actual_depth_profile":{"width":d.profile.width,"height":d.profile.height,"fps":d.profile.fps},"source_depth_scale_mm":source_depth_scale_mm,"timestamp_mapping":config.message_timestamp().ros_stamp_source(),"acquisition_effective":config.acquisition,"sync_mode":"sdk_frameset_association_only"});
     let configuration_id = ConfigurationId::parse(content_digest(
         ContentKind::Configuration,
         &serde_json::to_vec(&configuration)?,
@@ -145,6 +145,7 @@ mod tests {
                 frame_id: "depth_optical".into(),
             },
             normalize: true,
+            acquisition: None,
             quality_policy: Some(QualityPolicy {
                 version: 1,
                 max_source_age_ns: 1_000_000_000,

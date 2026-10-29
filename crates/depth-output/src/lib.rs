@@ -585,6 +585,7 @@ mod tests {
                 sequence: Some(42),
                 device_timestamp_us: Some(10),
                 system_timestamp_us: Some(20),
+                global_timestamp_us: None,
                 received_mono_offset_ns: 30,
             },
             kind: DepthKind::OriginalMillimetres,

@@ -26,6 +26,12 @@ pub struct PacketMetadata {
     pub device_timestamp_us: Option<u64>,
     /// SDK system timestamp, eligible for explicit Unix mapping only.
     pub system_timestamp_us: Option<u64>,
+    /// Capture timestamp mapped into the host clock domain; zero is unavailable.
+    pub global_timestamp_us: Option<u64>,
+    /// Host realtime sampled immediately after the SDK wait returned this frameset.
+    pub sdk_return_unix_ns: Option<u64>,
+    /// True only after SDK context realtime clock selection was checked.
+    pub sdk_system_clock_verified: bool,
     pub source_depth_scale_mm: Option<f32>,
     pub output_depth_scale_mm: Option<f32>,
     pub normalized: bool,
@@ -209,6 +215,10 @@ mod tests {
             sequence: 1,
             device_timestamp_us: Some(10),
             system_timestamp_us: Some(1_700_000_000_000_001),
+            global_timestamp_us: None,
+            sdk_return_unix_ns: None,
+            sdk_system_clock_verified: false,
+
             source_depth_scale_mm: Some(0.1),
             output_depth_scale_mm: Some(1.0),
             normalized: true,

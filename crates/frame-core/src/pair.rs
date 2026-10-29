@@ -277,6 +277,10 @@ mod tests {
                 sequence,
                 device_timestamp_us: stamp,
                 system_timestamp_us: Some(1000),
+                global_timestamp_us: None,
+                sdk_return_unix_ns: None,
+                sdk_system_clock_verified: false,
+
                 source_depth_scale_mm: if depth { Some(1.0) } else { None },
                 output_depth_scale_mm: if depth { Some(1.0) } else { None },
                 normalized: false,

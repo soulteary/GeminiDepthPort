@@ -60,6 +60,9 @@ fn packet() -> PacketMetadata {
         sequence: 1,
         device_timestamp_us: Some(10),
         system_timestamp_us: Some(1_700_000_000_000_001),
+        global_timestamp_us: None,
+        sdk_return_unix_ns: None,
+        sdk_system_clock_verified: false,
         source_depth_scale_mm: None,
         output_depth_scale_mm: None,
         normalized: false,
@@ -637,5 +640,238 @@ fn native_creation_without_a_handle_and_auxiliary_session_extension_failure_are_
     let mut aux = RosAuxPublisher::load(&library, b, transform, 1).unwrap();
     assert!(aux.set_session_id(&"a".repeat(32)).is_err());
     drop(aux);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn explicit_global_mapping_preserves_system_and_rejects_unavailable_or_bad_stamp() {
+    use ros_output::TimestampSource;
+    let dir = std::env::temp_dir().join(format!("gdp-ros-global-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let library = dir.join("global.so");
+    compile(
+        &root.join("tests/mock_bridge.cpp"),
+        &library,
+        &root.join("../../ros/include"),
+        false,
+    );
+    let mut publisher = Publisher::load(&library, binding(), calibration()).unwrap();
+    let mut metadata = packet();
+    let bytes = [16, 128, 32, 128, 64, 90, 80, 240];
+    let system = metadata.system_timestamp_us.unwrap();
+    for invalid in [None, Some(0), Some(u64::MAX)] {
+        metadata.global_timestamp_us = invalid;
+        assert!(
+            publisher
+                .publish_with_timestamp_source(
+                    &metadata,
+                    &bytes,
+                    system * 1000,
+                    TimestampSource::Global
+                )
+                .is_err()
+        );
+    }
+    metadata.global_timestamp_us = Some(system - 5000);
+    let global_ns = (system - 5000) * 1000;
+    assert!(
+        publisher
+            .publish_with_timestamp_source(
+                &metadata,
+                &bytes,
+                global_ns + 1,
+                TimestampSource::Global
+            )
+            .is_err()
+    );
+    publisher
+        .publish_with_timestamp_source(&metadata, &bytes, global_ns, TimestampSource::Global)
+        .unwrap();
+    assert_eq!(metadata.system_timestamp_us, Some(system));
+    assert!(
+        publisher
+            .publish_with_timestamp_source(&metadata, &bytes, global_ns, TimestampSource::Global)
+            .is_err()
+    );
+    metadata.sequence += 1;
+    metadata.global_timestamp_us = Some(system - 4999);
+    publisher
+        .publish_with_timestamp_source(&metadata, &bytes, system * 1000, TimestampSource::System)
+        .unwrap();
+    metadata.sequence = 999;
+    metadata.global_timestamp_us = Some(system + 1);
+    assert!(
+        publisher
+            .publish_with_timestamp_source(
+                &metadata,
+                &bytes,
+                (system + 1) * 1000,
+                TimestampSource::Global
+            )
+            .is_err()
+    );
+    metadata.sequence = 3;
+    publisher
+        .publish_with_timestamp_source(
+            &metadata,
+            &bytes,
+            (system + 1) * 1000,
+            TimestampSource::Global,
+        )
+        .unwrap();
+    drop(publisher);
+    // An ABI-v1 bridge without the optional extension remains valid for system,
+    // but explicitly requested global never downgrades to its old entry point.
+    let legacy_source = dir.join("legacy.cpp");
+    fs::write(
+        &legacy_source,
+        format!(
+            "#define MOCK_NO_TIMESTAMP_EXTENSION\n{}",
+            fs::read_to_string(root.join("tests/mock_bridge.cpp")).unwrap()
+        ),
+    )
+    .unwrap();
+    let legacy = dir.join("legacy.so");
+    compile(
+        &legacy_source,
+        &legacy,
+        &root.join("../../ros/include"),
+        false,
+    );
+    let mut publisher = Publisher::load(&legacy, binding(), calibration()).unwrap();
+    metadata.sequence = 1;
+    assert!(
+        publisher
+            .publish_with_timestamp_source(
+                &metadata,
+                &bytes,
+                (system + 1) * 1000,
+                TimestampSource::Global
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("extension unavailable")
+    );
+    metadata.global_timestamp_us = None;
+    metadata.device_timestamp_us = Some(0);
+    publisher.publish(&metadata, &bytes, system * 1000).unwrap();
+    drop(publisher);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn sdk_return_observation_extension_is_explicit_and_does_not_change_image_stamps() {
+    let dir = std::env::temp_dir().join(format!("gdp-ros-observation-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let library = dir.join("observed.so");
+    compile(
+        &root.join("tests/mock_bridge.cpp"),
+        &library,
+        &root.join("../../ros/include"),
+        false,
+    );
+    let mut publisher = Publisher::load(&library, binding(), calibration()).unwrap();
+    let mut metadata = packet();
+    metadata.device_timestamp_us = Some(0);
+    let stamp = metadata.system_timestamp_us.unwrap() * 1000;
+    let bytes = [16, 128, 32, 128, 64, 90, 80, 240];
+    metadata.sdk_return_unix_ns = Some(0);
+    assert!(
+        publisher
+            .publish(&metadata, &bytes, stamp)
+            .unwrap_err()
+            .to_string()
+            .contains("return Unix")
+    );
+    metadata.sdk_return_unix_ns = Some(stamp + 3_000_000);
+    assert!(!metadata.sdk_system_clock_verified);
+    publisher.publish(&metadata, &bytes, stamp).unwrap();
+    assert_eq!(metadata.system_timestamp_us.unwrap() * 1000, stamp);
+    metadata.sequence = 2;
+    metadata.global_timestamp_us = Some(stamp / 1000 + 1);
+    publisher
+        .publish_with_timestamp_source(
+            &metadata,
+            &bytes,
+            stamp + 1000,
+            ros_output::TimestampSource::Global,
+        )
+        .unwrap();
+    drop(publisher);
+    // The verified flag is an explicit per-frame provenance bit, not inferred
+    // from a nonzero timestamp. Native expectations catch wrong ABI forwarding.
+    let verified_source = dir.join("verified.cpp");
+    fs::write(
+        &verified_source,
+        format!(
+            "#define MOCK_EXPECT_CLOCK_VERIFIED 1\n{}",
+            fs::read_to_string(root.join("tests/mock_bridge.cpp")).unwrap()
+        ),
+    )
+    .unwrap();
+    let verified_library = dir.join("verified.so");
+    compile(
+        &verified_source,
+        &verified_library,
+        &root.join("../../ros/include"),
+        false,
+    );
+    let mut publisher = Publisher::load(&verified_library, binding(), calibration()).unwrap();
+    assert!(
+        publisher
+            .publish_with_timestamp_source(
+                &metadata,
+                &bytes,
+                stamp + 1000,
+                ros_output::TimestampSource::Global
+            )
+            .is_err()
+    );
+    metadata.sdk_system_clock_verified = true;
+    publisher
+        .publish_with_timestamp_source(
+            &metadata,
+            &bytes,
+            stamp + 1000,
+            ros_output::TimestampSource::Global,
+        )
+        .unwrap();
+    drop(publisher);
+    let source = dir.join("no-observation.cpp");
+    fs::write(
+        &source,
+        format!(
+            "#define MOCK_NO_OBSERVATION_EXTENSION\n{}",
+            fs::read_to_string(root.join("tests/mock_bridge.cpp")).unwrap()
+        ),
+    )
+    .unwrap();
+    let legacy = dir.join("legacy.so");
+    compile(&source, &legacy, &root.join("../../ros/include"), false);
+    let mut publisher = Publisher::load(&legacy, binding(), calibration()).unwrap();
+    assert!(
+        publisher
+            .publish_with_timestamp_source(
+                &metadata,
+                &bytes,
+                stamp + 1000,
+                ros_output::TimestampSource::Global
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("observation extension unavailable")
+    );
+    metadata.sdk_return_unix_ns = None;
+    publisher
+        .publish_with_timestamp_source(
+            &metadata,
+            &bytes,
+            stamp + 1000,
+            ros_output::TimestampSource::Global,
+        )
+        .unwrap();
+    drop(publisher);
     fs::remove_dir_all(dir).unwrap();
 }

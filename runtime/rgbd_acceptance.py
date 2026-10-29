@@ -56,6 +56,7 @@ def validate_spec(spec):
             require(isinstance(value, str) and len(value) <= 256 and value.startswith('/'), 'TOPIC_INVALID')
             topics.append(value)
         require(isinstance(stream.get('frame_id'), str) and 0 < len(stream['frame_id']) <= 256, 'FRAME_INVALID')
+        require(stream.get('timestamp_source', 'host') in ('host', 'global'), 'TIMESTAMP_SOURCE')
         require(stream.get('encoding') == ('yuyv' if role == 'color' else '16UC1'), 'ENCODING_SPEC')
         require(all(integer(stream.get(k), 1) and stream[k] <= 16384 for k in ('width', 'height')), 'DIMENSION_SPEC')
         require(role != 'color' or stream['width'] % 2 == 0, 'DIMENSION_SPEC')
@@ -165,7 +166,10 @@ class StreamStats:
     # Fixed buckets bound memory for arbitrarily long runs; p99 is an upper bound.
     AGE_BOUNDS_MS = (1, 2, 5, 10, 20, 33, 50, 75, 100, 150, 250, 500, 1000, 2000, 5000, 10000)
 
-    def __init__(self):
+    def __init__(self, timestamp_source=None):
+        self.timestamp_source = timestamp_source
+        self.stamp_mappings = set()
+        self.negative_ages = 0
         self.images = self.matched = self.sequence_gaps = self.gap_events = 0
         self.last_stamp = self.last_sequence = self.first_receive = self.last_receive = None
         self.age_sum = self.age_max = 0
@@ -187,15 +191,27 @@ class StreamStats:
                            'maximum': self.age_max / 1e6 if self.images else None,
                            'p99_bucket_upper_bound': p99, 'histogram_bounds_ms': list(self.AGE_BOUNDS_MS),
                            'histogram_counts': self.age_bins,
-                           'scope': 'subscriber-receive-unix-minus-published-system-stamp-not-exposure-latency'},
+                           'negative_samples': self.negative_ages,
+                           'scope': self.age_scope()},
                 'contract_errors': dict(self.errors)}
+
+
+    def age_scope(self):
+        mapping = next(iter(self.stamp_mappings)) if len(self.stamp_mappings) == 1 else None
+        if not self.stamp_mappings:
+            mapping = {'host': 'sdk-system-unix', 'global': 'sdk-global-unix'}.get(self.timestamp_source)
+        if mapping == 'sdk-system-unix':
+            return 'subscriber-receive-unix-minus-sdk-system-receive-stamp-not-exposure-latency'
+        if mapping == 'sdk-global-unix':
+            return 'subscriber-receive-unix-minus-sdk-global-capture-stamp-includes-capture-processing-transport-and-mapping-error'
+        return 'subscriber-receive-unix-minus-published-header-unspecified-or-mixed-clock-not-stage-latency'
 
 
 class Observer:
     def __init__(self, spec, wire_only=False):
         self.spec = validate_spec(spec)
         self.wire_only = wire_only
-        self.stats = {role: StreamStats() for role in ('color', 'depth')}
+        self.stats = {role: StreamStats(self.spec['streams'][role].get('timestamp_source')) for role in ('color', 'depth')}
         self.pending = {role: OrderedDict() for role in self.stats}
         self.complete = {role: OrderedDict() for role in self.stats}
         self.pairs = OrderedDict()
@@ -306,6 +322,7 @@ class Observer:
                     stats.first_receive = stats.first_receive if stats.first_receive is not None else receive_ns
                     stats.last_receive = receive_ns
                     stats.images += 1
+                    stats.negative_ages += int(age < 0)
                     stats.age_sum += age
                     stats.age_max = max(stats.age_max, age)
                     index = next((i for i, bound in enumerate(stats.AGE_BOUNDS_MS) if age <= bound * 1e6), len(stats.AGE_BOUNDS_MS))
@@ -345,8 +362,16 @@ class Observer:
             metadata = item['metadata']
             require(metadata.get('version') == 1 and metadata.get('publisher_qos_verified') is True, 'METADATA_SCHEMA')
             require(all(metadata.get(k) == image.get(k) for k in ('frame_id', 'width', 'height', 'step', 'encoding')), 'METADATA_IMAGE_MISMATCH')
-            require(metadata.get('stamp_mapping') == 'sdk-system-unix' and integer(metadata.get('system_timestamp_us'), 1)
-                    and metadata['system_timestamp_us'] * 1000 == stamp, 'METADATA_TIME_MAPPING')
+            mapping = metadata.get('stamp_mapping')
+            source_key = {'sdk-system-unix': 'system_timestamp_us',
+                          'sdk-global-unix': 'global_timestamp_us'}.get(mapping)
+            require(source_key is not None and integer(metadata.get('system_timestamp_us'), 1)
+                    and integer(metadata.get(source_key), 1)
+                    and metadata[source_key] * 1000 == stamp, 'METADATA_TIME_MAPPING')
+            if 'timestamp_source' in expected:
+                require(mapping == {'host': 'sdk-system-unix', 'global': 'sdk-global-unix'}.get(expected['timestamp_source']),
+                        'METADATA_TIME_MAPPING')
+            self.stats[role].stamp_mappings.add(mapping)
             require(integer(metadata.get('sequence')), 'METADATA_SEQUENCE')
             session = self._session(role, metadata)
             last = self.stats[role].last_sequence

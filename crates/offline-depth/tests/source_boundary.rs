@@ -150,6 +150,10 @@ fn bound_pair_builder_rejects_receive_clock_geometry_and_unit_rebinding_before_c
                 sequence: 1,
                 device_timestamp_us: Some(100),
                 system_timestamp_us: Some(200),
+                global_timestamp_us: None,
+                sdk_return_unix_ns: None,
+                sdk_system_clock_verified: false,
+
                 source_depth_scale_mm: depth.then_some(1.),
                 output_depth_scale_mm: depth.then_some(1.),
                 normalized: false,

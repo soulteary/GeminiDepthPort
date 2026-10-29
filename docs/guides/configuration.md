@@ -27,6 +27,51 @@
 
 完整接入参考见[公开示例](../../examples/README.md)：官方三机和 Rust 单机均保持未绑定、禁用与未确认。
 
+## Rust 采集预设
+
+显式选择 Rust 后端后，可在 `rust_capture.acquisition` 中选择采集目标。
+新配置推荐 `{"preset":"complete"}`；旧配置省略该字段时保留原有 SDK 默认同步与
+system 消息时间戳，不会在升级后自动切换行为。
+
+- `complete`：关闭 SDK 软件彩深同步，采用 `any` 聚合输出，保留有效单流图像；
+  消息时间戳默认使用 global。适合优先保存收到的图像。它不承诺设备、USB 或队列绝不丢帧。
+- `strict-rgbd`：开启 SDK 软件彩深同步，采用 `any` 聚合以观察缺流，
+  仅发布通过现有完整 RGB-D 配对检查的图像。消息时间戳默认使用 global；
+  配对输出可能少于 SDK 收到的图像数量。
+- `hardware-sync`：保留的硬件同步预设。目前未实现硬件主从配置及验证，明确拒绝启用；
+  不会把 global 时钟映射或 SDK 软件配对显示成硬件同步。
+
+例如，为不支持 global 的设备明确选用 system 时间，而不是逐帧静默回退：
+
+```json
+{
+  "acquisition": {
+    "preset": "complete",
+    "advanced": { "message_timestamp": "system" }
+  }
+}
+```
+
+上例字段应放入完整的 `rust_capture` 策略中。global 对应启用相机的
+`timestamp_source:"global"`；system 对应 `timestamp_source:"host"`，不一致会被拒绝。
+global 必须由设备支持、成功启用且帧值有效；启动期限内允许等待拟合产生非零值，
+就绪后失效则明确失败，不会混用 system。适配层在开始采集前显式设置并读回 SDK
+主机时钟为 Unix 实时时钟，活跃 pipeline 期间禁止切换，确保可用于 ROS `header.stamp`。
+
+高级选项还有 `sdk_frame_sync`（布尔）、`aggregate`（`any`、`all`、`disabled`）及
+`unpaired`（`preserve`、`strict`）。覆盖不能破坏预设语义：`complete` 不接受 `all` 或
+`strict`，`strict-rgbd` 必须开启软件同步并采用 `strict`，且不接受会逐帧独立输出的
+`disabled` 聚合模式。`all` 会在 SDK 内过滤不完整帧，
+使应用无法统计那些帧；通常保留 `any`。SDK 同步与聚合选项均在开始采集前下发。
+
+现有 `pairing.clock` 与 `max_delta_us` 仍只检查同一 SDK frameset，
+尚不提供跨 frameset 的缓冲配对或跨设备配对。global 用于消息时间表达，不会改变
+SDK 内部选择 device/system 配对时钟的逻辑，也不会使曝光时刻自动对齐。
+
+原始单流保留是 ROS 图像输出能力；下游录制器需要订阅并记录两路。
+内置 native V2 录制格式仍要求完整、有效配对，缺流时失败，不会伪造配对或宣布录制完整。
+每次修改预设或高级参数都会改变配置绑定，需要重新生成并确认档位。
+
 ## 离线校验
 
 在已安装项目依赖的环境执行：

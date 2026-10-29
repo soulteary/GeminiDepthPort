@@ -77,6 +77,7 @@ pub fn config() -> ObserverConfig {
                 sequence: None,
                 device_timestamp_us: None,
                 system_timestamp_us: None,
+                global_timestamp_us: None,
                 received_mono_offset_ns: 0,
             };
             (

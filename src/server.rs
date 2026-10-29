@@ -144,6 +144,30 @@ fn save_config(ctl: &Controller, payload: &Value) -> Result<Value> {
         "CAMERA_FIELDS",
         "All configured cameras required",
     )?;
+    // Acquisition settings are shared by all cameras and participate in every
+    // confirmation digest. Apply them atomically with the camera edits.
+    let acquisition_changed = if let Some(acquisition) = payload.get("acquisition") {
+        require(
+            crate::capture_backend::selected(&d) == "rust",
+            "CAPTURE_BACKEND",
+            "Acquisition presets require the Rust backend",
+        )?;
+        let previous = d["rust_capture"].get("acquisition").cloned();
+        if acquisition.is_null() {
+            d["rust_capture"]
+                .as_object_mut()
+                .unwrap()
+                .remove("acquisition");
+        } else {
+            let policy: capture_contract::AcquisitionPolicy =
+                serde_json::from_value(acquisition.clone())?;
+            policy.resolve()?;
+            d["rust_capture"]["acquisition"] = acquisition.clone();
+        }
+        previous != d["rust_capture"].get("acquisition").cloned()
+    } else {
+        false
+    };
     let found = ctl.scan()?;
     let mut changed = vec![];
     for update in updates {
@@ -183,7 +207,7 @@ fn save_config(ctl: &Controller, payload: &Value) -> Result<Value> {
             .unwrap()
             .extend(p.as_object().unwrap().clone());
         validate_editable(&c["parameters"])?;
-        if config::signature(c) != before {
+        if acquisition_changed || config::signature(c) != before {
             c["profiles_verified"] = false.into();
             if c.get("verification").is_some() {
                 c["verification"] = Value::Null;

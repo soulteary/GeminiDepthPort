@@ -22,6 +22,10 @@ fn packet(depth: bool, sequence: u64, timestamp: u64) -> FramePacket<Vec<u8>> {
             sequence,
             device_timestamp_us: Some(timestamp),
             system_timestamp_us: Some(timestamp),
+            global_timestamp_us: None,
+            sdk_return_unix_ns: None,
+            sdk_system_clock_verified: false,
+
             source_depth_scale_mm: depth.then_some(1.),
             output_depth_scale_mm: depth.then_some(1.),
             normalized: false,

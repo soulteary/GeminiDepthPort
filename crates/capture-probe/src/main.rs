@@ -457,6 +457,10 @@ fn packet_metadata(
         sequence: source.index,
         device_timestamp_us: Some(source.timestamp_us),
         system_timestamp_us: Some(source.system_timestamp_us),
+        global_timestamp_us: None,
+        sdk_return_unix_ns: None,
+        sdk_system_clock_verified: false,
+
         source_depth_scale_mm: if depth { source.depth_scale_mm } else { None },
         output_depth_scale_mm: if depth { Some(1.0) } else { None },
         normalized: depth && o.depth_unit_policy == DepthUnitPolicy::NormalizeMm,

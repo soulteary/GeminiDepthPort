@@ -92,6 +92,7 @@ pub fn fixture(root: &Path, counts: bool, tz: f64) -> DirectoryManifest {
         sequence: Some(1),
         device_timestamp_us: Some(1000),
         system_timestamp_us: Some(10000),
+        global_timestamp_us: None,
         received_mono_offset_ns: 100,
     };
     let frame = |stream: &str| FrameEvidence {

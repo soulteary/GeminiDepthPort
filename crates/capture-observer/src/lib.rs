@@ -115,6 +115,7 @@ impl ObserverConfig {
                 || stream.context.sequence.is_some()
                 || stream.context.device_timestamp_us.is_some()
                 || stream.context.system_timestamp_us.is_some()
+                || stream.context.global_timestamp_us.is_some()
                 || stream.context.received_mono_offset_ns != 0
                 || !stream.camera_info_tolerance.is_finite()
                 || stream.camera_info_tolerance <= 0.0
@@ -316,6 +317,7 @@ struct ReportedMetadata {
     sequence: Option<u64>,
     device: Option<u64>,
     system: Option<u64>,
+    global: Option<u64>,
     session: Option<SessionId>,
 }
 #[derive(Default)]
@@ -725,12 +727,31 @@ impl CaptureObserver {
                         .map_err(|_| "METADATA_INVALID")?,
                 ),
             };
-            Ok(ReportedMetadata {
+            let reported = ReportedMetadata {
                 sequence: optional("sequence")?,
                 device: optional("device_timestamp_us")?,
                 system: optional("system_timestamp_us")?,
+                global: optional("global_timestamp_us")?,
                 session,
-            })
+            };
+            // An explicit SDK mapping must describe this header exactly. Keep
+            // capture and host-receipt times separate; neither is sync proof.
+            let mapped = match value.get("stamp_mapping") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(v) if v == "sdk-system-unix" => Some(reported.system),
+                Some(v) if v == "sdk-global-unix" => Some(reported.global),
+                Some(_) => return Err("METADATA_UNSUPPORTED"),
+            };
+            if let Some(mapped) = mapped {
+                let source = mapped.filter(|v| *v > 0).ok_or("METADATA_INVALID")?;
+                if source.checked_mul(1000) != Some(stamp.to_ns()?) {
+                    return Err("METADATA_INVALID");
+                }
+            }
+            if reported.global == Some(0) {
+                return Err("METADATA_INVALID");
+            }
+            Ok(reported)
         })();
         let metadata = match parsed {
             Ok(v) => v,
@@ -969,6 +990,7 @@ impl CaptureObserver {
                 context.sequence = meta.value.sequence;
                 context.device_timestamp_us = meta.value.device;
                 context.system_timestamp_us = meta.value.system;
+                context.global_timestamp_us = meta.value.global;
             }
             let frame = ObservedFrame {
                 observation_sequence: image.id,

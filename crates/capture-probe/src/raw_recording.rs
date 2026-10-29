@@ -1,18 +1,21 @@
 //! Opt-in bounded owned native SDK capture. SDK handles never cross threads.
 use anyhow::{Context, Result, ensure};
-use capture_contract::{DepthRepresentation, snapshot::SnapshotEnvelope};
+use capture_contract::{DepthRepresentation, snapshot::SnapshotEnvelope, timing::StageStats};
 use frame_core::{
     BoundPairEvidence, BoundPairGuard, FrameEncoding, FrameLayout, FramePacket, PacketMetadata,
     PairPolicy, PairProvenance, PixelFormat,
 };
-use offline_depth::{StorageEndian, recording::RawRecordingWriter};
+use offline_depth::{
+    StorageEndian,
+    recording::{RawRecordingDiagnostics, RawRecordingWriter},
+};
 use serde_json::{Value, json};
 use std::{
+    collections::VecDeque,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, SyncSender, TrySendError},
     },
     thread::{self, JoinHandle},
     time::Instant,
@@ -118,19 +121,140 @@ struct Shared {
     waiting_framesets: u64,
     native_snapshot: Option<String>,
     ros_snapshot: Option<String>,
+    disk: RawRecordingDiagnostics,
 }
 struct OwnedPair {
     evidence: BoundPairEvidence,
     color: Vec<u8>,
     depth: Vec<u8>,
+    enqueued: Instant,
 }
+struct QueueState {
+    pairs: VecDeque<OwnedPair>,
+    closed: bool,
+    bytes: u64,
+    high_water_pairs: usize,
+    high_water_bytes: u64,
+    inflight_pairs: u64,
+    inflight_bytes: u64,
+    dequeued: u64,
+    discarded: u64,
+    wait: StageStats,
+}
+enum QueueSendError {
+    Full,
+    Disconnected,
+}
+struct RecordingQueue {
+    state: Mutex<QueueState>,
+    available: Condvar,
+    capacity: usize,
+}
+impl RecordingQueue {
+    fn new(capacity: usize) -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(QueueState {
+                pairs: VecDeque::with_capacity(capacity),
+                closed: false,
+                bytes: 0,
+                high_water_pairs: 0,
+                high_water_bytes: 0,
+                inflight_pairs: 0,
+                inflight_bytes: 0,
+                dequeued: 0,
+                discarded: 0,
+                wait: StageStats::default(),
+            }),
+            available: Condvar::new(),
+            capacity,
+        })
+    }
+    fn send(&self, pair: OwnedPair) -> std::result::Result<(), QueueSendError> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.closed {
+            return Err(QueueSendError::Disconnected);
+        }
+        if state.pairs.len() == self.capacity {
+            return Err(QueueSendError::Full);
+        }
+        state.bytes += (pair.color.len() + pair.depth.len()) as u64;
+        state.pairs.push_back(pair);
+        state.high_water_pairs = state.high_water_pairs.max(state.pairs.len());
+        state.high_water_bytes = state.high_water_bytes.max(state.bytes);
+        self.available.notify_one();
+        Ok(())
+    }
+    fn recv(&self) -> Option<OwnedPair> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if let Some(pair) = state.pairs.pop_front() {
+                let bytes = (pair.color.len() + pair.depth.len()) as u64;
+                state.bytes -= bytes;
+                state.inflight_pairs = 1;
+                state.inflight_bytes = bytes;
+                state.dequeued += 1;
+                state.wait.observe(pair.enqueued.elapsed());
+                return Some(pair);
+            }
+            if state.closed {
+                return None;
+            }
+            state = self
+                .available
+                .wait(state)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+    }
+    fn written(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.inflight_pairs = 0;
+        state.inflight_bytes = 0;
+    }
+    fn close(&self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).closed = true;
+        self.available.notify_all();
+    }
+    fn abandon(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.closed = true;
+        state.discarded += state.pairs.len() as u64 + state.inflight_pairs;
+        state.pairs.clear();
+        state.bytes = 0;
+        state.inflight_pairs = 0;
+        state.inflight_bytes = 0;
+        self.available.notify_all();
+    }
+    fn report(&self) -> Value {
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        json!({"capacity_pairs":self.capacity,"queued_pairs":s.pairs.len(),"queued_payload_bytes":s.bytes,
+            "oldest_queued_age_ns":s.pairs.front().map(|pair|pair.enqueued.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64),
+            "high_water_pairs":s.high_water_pairs,"high_water_payload_bytes":s.high_water_bytes,
+            "inflight_pairs":s.inflight_pairs,"inflight_payload_bytes":s.inflight_bytes,
+            "dequeued_pairs":s.dequeued,"discarded_pairs":s.discarded,"closed":s.closed,
+            "wait":s.wait.report(),"scope":"owned-whole-pair-fifo; excludes SDK and ROS queues"})
+    }
+}
+struct RecordingSender(Arc<RecordingQueue>);
+impl Drop for RecordingSender {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+struct WorkerQueueGuard(Arc<RecordingQueue>);
+impl Drop for WorkerQueueGuard {
+    fn drop(&mut self) {
+        self.0.abandon();
+    }
+}
+
 pub(crate) struct RawRecorder {
     settings: RawSettings,
     session: String,
     name: String,
     shared: Arc<Mutex<Shared>>,
     abort: Arc<AtomicBool>,
-    sender: Option<SyncSender<OwnedPair>>,
+    sender: Option<RecordingSender>,
+    queue: Option<Arc<RecordingQueue>>,
     worker: Option<JoinHandle<()>>,
     guard: Option<BoundPairGuard>,
     reported_failure: bool,
@@ -165,9 +289,11 @@ impl RawRecorder {
                 waiting_framesets: 0,
                 native_snapshot: None,
                 ros_snapshot: None,
+                disk: RawRecordingDiagnostics::default(),
             })),
             abort: Arc::new(AtomicBool::new(false)),
             sender: None,
+            queue: None,
             worker: None,
             guard: None,
             reported_failure: false,
@@ -244,7 +370,10 @@ impl RawRecorder {
         };
         let native = content.seal()?;
         self.guard = Some(BoundPairGuard::new(native.clone(), origin)?);
-        let (tx, rx) = mpsc::sync_channel::<OwnedPair>(self.settings.queue_capacity);
+        let queue = RecordingQueue::new(self.settings.queue_capacity);
+        let rx = Arc::clone(&queue);
+        let tx = RecordingSender(Arc::clone(&queue));
+        self.queue = Some(queue);
         let shared = Arc::clone(&self.shared);
         let abort = Arc::clone(&self.abort);
         let settings = self.settings.clone();
@@ -265,18 +394,26 @@ impl RawRecorder {
         let worker = thread::Builder::new()
             .name("native-depth-recording".into())
             .spawn(move || {
+                let _queue_guard = WorkerQueueGuard(rx.clone());
                 #[cfg(test)]
                 if test_panic_worker {
                     panic!("injected raw writer panic");
                 }
                 let outcome = (|| -> Result<()> {
                     std::fs::create_dir_all(&settings.directory)?;
-                    let mut writer = RawRecordingWriter::begin_with_limit(
+                    let disk = shared
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .disk
+                        .clone();
+                    let mut writer = RawRecordingWriter::begin_with_diagnostics(
                         &settings.directory,
                         &name,
                         native,
                         settings.max_bytes,
+                        disk,
                     )?;
+                    shared.lock().unwrap_or_else(|e| e.into_inner()).disk = writer.diagnostics();
                     #[cfg(test)]
                     if let Some(gate) = test_gate {
                         gate.started.wait();
@@ -284,7 +421,7 @@ impl RawRecorder {
                     }
                     writer.attach_ros_snapshot(&source_ros_snapshot)?;
                     let mut written = 0u64;
-                    while let Ok(pair) = rx.recv() {
+                    while let Some(pair) = rx.recv() {
                         ensure!(!abort.load(Ordering::Acquire), "raw aborted");
                         writer.append(
                             &pair.evidence,
@@ -292,6 +429,7 @@ impl RawRecorder {
                             &pair.depth,
                             StorageEndian::Little,
                         )?;
+                        rx.written();
                         written += 1;
                         let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
                         state.written = written;
@@ -316,7 +454,10 @@ impl RawRecorder {
                         // This gate linearizes the completed capture transaction.
                         // A later SDK failure cannot undo an already committed job.
                         state.state = State::Committing;
-                        Ok(state)
+                        // Committing is terminal for SDK-side fail(). Release this
+                        // state lock before disk publication/fsync so telemetry
+                        // remains readable throughout a slow durability barrier.
+                        Ok(())
                     })?;
                     let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
                     ensure!(s.state != State::Failed, "raw failed before commit");
@@ -408,12 +549,14 @@ impl RawRecorder {
             evidence: pair.evidence,
             color: pair.pair.color.payload,
             depth: pair.pair.depth.payload,
+            enqueued: Instant::now(),
         };
         let result = self
             .sender
             .as_ref()
             .context("raw queue missing")?
-            .try_send(message);
+            .0
+            .send(message);
         match result {
             Ok(()) => {
                 #[cfg(test)]
@@ -440,12 +583,12 @@ impl RawRecorder {
                 }
                 Ok(())
             }
-            Err(TrySendError::Full(_)) => {
+            Err(QueueSendError::Full) => {
                 self.lock().overflows += 1;
                 self.fail("RAW_QUEUE_OVERFLOW");
                 anyhow::bail!("raw queue overflow")
             }
-            Err(TrySendError::Disconnected(_)) => {
+            Err(QueueSendError::Disconnected) => {
                 self.fail("RAW_STORAGE_OR_QUEUE_CLOSED");
                 anyhow::bail!("raw queue closed")
             }
@@ -488,7 +631,7 @@ impl RawRecorder {
     }
     pub fn status(&self) -> Value {
         let s = self.lock();
-        json!({"version":1,"state":s.state.as_str(),"reason":s.reason,"session_id":self.session,"max_pairs":self.settings.max_pairs,"max_bytes":self.settings.max_bytes,"queue_capacity":self.settings.queue_capacity,"submitted_pairs":s.submitted,"written_pairs":s.written,"payload_bytes_submitted":s.payload_bytes,"whole_pair_queue_overflows":s.overflows,"startup_framesets_excluded":s.excluded_startup,"waiting_framesets_excluded":s.waiting_framesets,"native_snapshot_id":s.native_snapshot,"ros_snapshot_id":s.ros_snapshot,"job_path":self.settings.directory.join(&self.name),"partial_path":self.settings.directory.join(format!("{}.partial",self.name)),"business_validity":null,"recording_protection_released":false})
+        json!({"version":1,"state":s.state.as_str(),"reason":s.reason,"session_id":self.session,"max_pairs":self.settings.max_pairs,"max_bytes":self.settings.max_bytes,"queue_capacity":self.settings.queue_capacity,"submitted_pairs":s.submitted,"written_pairs":s.written,"payload_bytes_submitted":s.payload_bytes,"whole_pair_queue_overflows":s.overflows,"writer_queue":self.queue.as_ref().map(|q| q.report()),"disk_stages":s.disk.report(),"startup_framesets_excluded":s.excluded_startup,"waiting_framesets_excluded":s.waiting_framesets,"native_snapshot_id":s.native_snapshot,"ros_snapshot_id":s.ros_snapshot,"job_path":self.settings.directory.join(&self.name),"partial_path":self.settings.directory.join(format!("{}.partial",self.name)),"business_validity":null,"recording_protection_released":false})
     }
 }
 impl Drop for RawRecorder {
@@ -541,6 +684,10 @@ fn copy_packet(
         sequence: source.index,
         device_timestamp_us: Some(source.timestamp_us),
         system_timestamp_us: Some(source.system_timestamp_us),
+        global_timestamp_us: None,
+        sdk_return_unix_ns: None,
+        sdk_system_clock_verified: false,
+
         source_depth_scale_mm: scale,
         output_depth_scale_mm: scale,
         normalized: false,
@@ -667,6 +814,10 @@ mod tests {
                 sequence: if depth { 200 + n } else { 17 + n * 3 },
                 device_timestamp_us: Some(n * 1000),
                 system_timestamp_us: Some(1_000_000 + n * 1000),
+                global_timestamp_us: None,
+                sdk_return_unix_ns: None,
+                sdk_system_clock_verified: false,
+
                 source_depth_scale_mm: scale,
                 output_depth_scale_mm: scale,
                 normalized: false,
@@ -805,6 +956,10 @@ mod tests {
             gate.resume.wait();
             sink.finish_session(false).unwrap();
             assert_eq!(sink.status()["state"], "failed");
+            assert_eq!(sink.status()["writer_queue"]["queued_pairs"], 0);
+            assert_eq!(sink.status()["writer_queue"]["inflight_pairs"], 0);
+            assert_eq!(sink.status()["writer_queue"]["high_water_pairs"], 1);
+            assert_eq!(sink.status()["writer_queue"]["discarded_pairs"], 1);
             assert!(!dir.join(&sink.name).exists());
             let stage = dir.join(format!("{}.partial", sink.name));
             assert!(stage.is_dir());
@@ -1007,4 +1162,185 @@ mod tests {
         assert!(!dir.join(&sink.name).exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn writer_queue_observes_actual_fifo_bytes_and_wait_without_conflating_inflight() {
+        let dir = directory();
+        let ros = snapshot();
+        let mut sink = RawRecorder::new(
+            settings(&dir, 2, 1_000_000),
+            ros.content.binding.session_id.as_str(),
+        );
+        let gate = Arc::new(TestGate {
+            started: std::sync::Barrier::new(2),
+            resume: std::sync::Barrier::new(2),
+        });
+        sink.test_gate = Some(gate.clone());
+        sink.initialize(&ros, Instant::now(), 0.1).unwrap();
+        gate.started.wait();
+        for n in 1..=2 {
+            sink.submit_owned(
+                packet(false, n, Instant::now()),
+                packet(true, n, Instant::now()),
+                n,
+                policy(),
+            )
+            .unwrap();
+        }
+        let before = sink.status();
+        assert_eq!(before["writer_queue"]["queued_pairs"], 2);
+        assert_eq!(before["writer_queue"]["queued_payload_bytes"], 16);
+        assert!(
+            before["writer_queue"]["oldest_queued_age_ns"]
+                .as_u64()
+                .is_some()
+        );
+        assert_eq!(before["writer_queue"]["high_water_pairs"], 2);
+        assert_eq!(before["writer_queue"]["inflight_pairs"], 0);
+        assert_eq!(before["writer_queue"]["wait"]["samples"], 0);
+        assert_eq!(before["written_pairs"], 0);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        gate.resume.wait();
+        sink.finish_session(true).unwrap();
+        let after = sink.status();
+        assert_eq!(after["state"], "complete");
+        for field in [
+            "queued_pairs",
+            "queued_payload_bytes",
+            "inflight_pairs",
+            "inflight_payload_bytes",
+            "discarded_pairs",
+        ] {
+            assert_eq!(after["writer_queue"][field], 0, "{field}");
+        }
+        assert_eq!(after["writer_queue"]["oldest_queued_age_ns"], Value::Null);
+        assert_eq!(after["writer_queue"]["dequeued_pairs"], 2);
+        assert_eq!(after["writer_queue"]["wait"]["samples"], 2);
+        assert!(
+            after["writer_queue"]["wait"]["minimum_ns"]
+                .as_u64()
+                .unwrap()
+                >= 10_000_000
+        );
+        assert_eq!(after["disk_stages"]["append"]["samples"], 2);
+        assert_eq!(after["disk_stages"]["finish_total"]["samples"], 1);
+        assert_eq!(after["disk_stages"]["rename"]["samples"], 1);
+        assert!(after["disk_stages"]["fsync"]["samples"].as_u64().unwrap() > 0);
+        assert!(after["disk_stages"]["write"]["samples"].as_u64().unwrap() > 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn delayed_and_failed_real_fsync_are_visible_without_blocking_status_or_false_complete() {
+        let dir = directory();
+        let library = super::disk_io_faults::compile(&dir);
+        for (case, operation, suffix) in [
+            ("commit-delay", "fsync", "/COMPLETE"),
+            ("commit-failure", "fsync", "/COMPLETE"),
+            ("append-fsync", "fsync", "/depth-00000000000000000001.raw"),
+            ("append-write", "write", "/depth-00000000000000000001.raw"),
+        ] {
+            let delayed = case != "commit-failure";
+            let marker = dir.join(case);
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "raw_recording::tests::disk_stage_child",
+                    "--ignored",
+                ])
+                .env("GDP_DISK_DELAY_TEST", case);
+            super::disk_io_faults::inject(&mut command, &library, operation, suffix, &marker);
+            if delayed {
+                command.env("GDP_IO_DELAY_MS", "200");
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            super::disk_io_faults::assert_injected(&marker, operation);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "child-only LD_PRELOAD disk fault fixture"]
+    fn disk_stage_child() {
+        let case = std::env::var("GDP_DISK_DELAY_TEST").unwrap();
+        let delayed = case != "commit-failure";
+        let appending = case.starts_with("append-");
+        let dir = directory();
+        let ros = snapshot();
+        let mut sink = RawRecorder::new(
+            settings(&dir, if appending { 2 } else { 1 }, 1_000_000),
+            ros.content.binding.session_id.as_str(),
+        );
+        sink.initialize(&ros, Instant::now(), 0.1).unwrap();
+        for n in 1..=if appending { 2 } else { 1 } {
+            sink.submit_owned(
+                packet(false, n, Instant::now()),
+                packet(true, n, Instant::now()),
+                n,
+                policy(),
+            )
+            .unwrap();
+        }
+        let marker = PathBuf::from(std::env::var_os("GDP_IO_FAULT_MARKER").unwrap());
+        let started = Instant::now();
+        while !marker.exists() {
+            assert!(started.elapsed() < std::time::Duration::from_secs(3));
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if delayed {
+            let started = Instant::now();
+            let status = sink.status();
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(100),
+                "status blocked behind disk fsync"
+            );
+            if appending {
+                assert_eq!(status["writer_queue"]["inflight_pairs"], 1);
+                assert_eq!(status["writer_queue"]["inflight_payload_bytes"], 8);
+                assert_eq!(status["writer_queue"]["queued_pairs"], 1);
+                assert_eq!(status["writer_queue"]["queued_payload_bytes"], 8);
+                assert_eq!(status["written_pairs"], 0);
+            } else {
+                assert_eq!(status["state"], "committing");
+                // A post-gate SDK failure cannot undo the accepted transaction.
+                sink.fail("SDK_FAILED_AFTER_COMMIT_GATE");
+            }
+        }
+        sink.finish_session(true).unwrap();
+        let status = sink.status();
+        assert_eq!(status["writer_queue"]["queued_pairs"], 0);
+        assert_eq!(status["writer_queue"]["inflight_pairs"], 0);
+        assert_eq!(status["disk_stages"]["finish_total"]["samples"], 1);
+        if delayed {
+            assert_eq!(status["state"], "complete");
+            assert!(
+                status["disk_stages"][if case == "append-write" {
+                    "write"
+                } else {
+                    "fsync"
+                }]["maximum_ns"]
+                    .as_u64()
+                    .unwrap()
+                    >= 150_000_000
+            );
+            assert!(dir.join(&sink.name).join("COMPLETE").exists());
+        } else {
+            assert_eq!(status["state"], "failed");
+            assert_eq!(status["disk_stages"]["failed_calls"]["fsync"], 1);
+            assert_eq!(status["disk_stages"]["failed_calls"]["finish"], 1);
+            assert!(!dir.join(&sink.name).join("COMPLETE").exists());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../../../tests/support/io_faults.rs"]
+mod disk_io_faults;

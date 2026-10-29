@@ -51,7 +51,7 @@ fn compile(compiler: &str, source: &Path, output: &Path, include: Option<&Path>)
 fn replace(source: &mut String, old: &str, new: &str) {
     assert!(
         source.contains(old),
-        "ABI fixture changed; review service adaptation"
+        "ABI fixture changed; review service adaptation: {old}"
     );
     *source = source.replace(old, new);
 }
@@ -96,7 +96,7 @@ fn fixture() -> Fixture {
     replace(
         &mut sdk_source,
         "if(ms==1)return NULL;usleep(10000);service_sequence++;return make(5);",
-        "usleep(10000);if(getenv(\"GDP_MOCK_WAIT_ERROR\")){*e=(error*)1;return NULL;}if(ms==1||getenv(\"GDP_MOCK_TIMEOUT\")||(getenv(\"GDP_MOCK_STALL\")&&service_sequence>3))return NULL;service_sequence++;return make(5);",
+        "const char *wait_ms=getenv(\"GDP_MOCK_WAIT_DELAY_MS\");usleep(wait_ms?(useconds_t)(strtoul(wait_ms,NULL,10)*1000):10000);if(getenv(\"GDP_MOCK_WAIT_ERROR\")){*e=(error*)1;return NULL;}if(ms==1||getenv(\"GDP_MOCK_TIMEOUT\")||(getenv(\"GDP_MOCK_STALL\")&&service_sequence>3))return NULL;service_sequence++;return make(5);",
     );
     replace(
         &mut sdk_source,
@@ -204,11 +204,32 @@ fn fixture() -> Fixture {
         "return bytes;",
         "static unsigned char zero[sizeof(bytes)];return getenv(\"GDP_MOCK_ZERO_PIXELS\")?zero:bytes;",
     );
+    replace(
+        &mut sdk_source,
+        "return global_enabled?5000:0;",
+        "if(getenv(\"GDP_MOCK_GLOBAL_DEPTH_ZERO\")&&f->stream==3){return 0;}const char *warmup=getenv(\"GDP_MOCK_GLOBAL_WARMUP\");if(warmup&&service_sequence<=strtoul(warmup,NULL,10))return 0;if(getenv(\"GDP_MOCK_GLOBAL_LOST\")&&fault_active())return 0;return global_enabled?1700000000000000ULL+service_sequence*33333-2000:0;",
+    );
+    replace(
+        &mut sdk_source,
+        "obj *f=make(5);f->stream=2;return f;",
+        "if(getenv(\"GDP_MOCK_ALTERNATING\")&&service_sequence%2==0)return NULL;obj *f=make(5);f->stream=2;return f;",
+    );
+    replace(
+        &mut sdk_source,
+        "obj *f=make(5);f->stream=3;return f;",
+        "if(getenv(\"GDP_MOCK_ALTERNATING\")&&service_sequence%2!=0)return NULL;obj *f=make(5);f->stream=3;return f;",
+    );
+    replace(
+        &mut sdk_source,
+        "return getenv(\"GDP_MOCK_MUTATE_PAYLOAD\")",
+        "if(getenv(\"GDP_MOCK_BAD_DEPTH_ONLY\")&&p->stream==3)return 3;return getenv(\"GDP_MOCK_MUTATE_PAYLOAD\")",
+    );
     let sdk_c = root.join("mock-sdk.c");
     fs::write(&sdk_c, sdk_source).unwrap();
     compile("cc", &sdk_c, &sdk, None);
     let mut bridge_source =
         fs::read_to_string(crate_root.join("../ros-output/tests/mock_bridge.cpp")).unwrap();
+    bridge_source.insert_str(0, "#include <unistd.h>\n");
     replace(
         &mut bridge_source,
         "if (frame->sequence == 1 && (!frame->has_device_timestamp || frame->device_timestamp_us != 0)) return 2;",
@@ -244,7 +265,7 @@ fn fixture() -> Fixture {
     replace(
         &mut bridge_source,
         "auto &p = *static_cast<Mock *>(handle);",
-        "auto &p = *static_cast<Mock *>(handle); if(std::getenv(\"GDP_MOCK_DEPTH_PUBLISH_ERROR\") && p.frame_id==\"depth_optical\")return 2;",
+        "auto &p = *static_cast<Mock *>(handle); const char *pub_ms=std::getenv(\"GDP_MOCK_PUBLISH_DELAY_MS\"); if(pub_ms)usleep(static_cast<useconds_t>(std::strtoul(pub_ms,nullptr,10)*1000)); if(std::getenv(\"GDP_MOCK_DEPTH_PUBLISH_ERROR\") && p.frame_id==\"depth_optical\")return 2;",
     );
     replace(
         &mut bridge_source,
@@ -255,6 +276,11 @@ fn fixture() -> Fixture {
         &mut bridge_source,
         "p.calls++; event(\"publish-copied\");",
         "p.calls++; event(\"publish-copied\"); char record[160]; std::snprintf(record,sizeof(record),\"image:%s:%llu\",p.frame_id.c_str(),static_cast<unsigned long long>(frame->sequence)); event(record);",
+    );
+    replace(
+        &mut bridge_source,
+        "event(source == 2 ? \"publish-global\" : \"publish-system-with-global\");",
+        "event(source == 2 ? \"publish-global\" : \"publish-system-with-global\"); char record[160]; std::snprintf(record,sizeof(record),\"image:%s:%llu\",p.frame_id.c_str(),static_cast<unsigned long long>(frame->sequence)); event(record);",
     );
     let bridge_cpp = root.join("mock-bridge.cpp");
     fs::write(&bridge_cpp, bridge_source).unwrap();
@@ -1843,4 +1869,397 @@ fn raw_byte_limit_after_successful_appends_never_commits_a_partial_target() {
     );
     assert!(!Path::new(failed["raw_recording"]["job_path"].as_str().unwrap()).exists());
     stop(&mut supervisor);
+}
+
+fn acquisition(f: &Fixture, preset: &str, global: bool) {
+    let mut value: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    value["acquisition"] = if global {
+        json!({"preset":preset})
+    } else {
+        json!({"preset":preset,"advanced":{"message_timestamp":"system"}})
+    };
+    value["ros"]["stamp_source"] = json!(if global {
+        "sdk-global-unix"
+    } else {
+        "sdk-system-unix"
+    });
+    value["service"]["startup_timeout_ms"] = json!(4000);
+    value["service"]["heartbeat_timeout_ms"] = json!(5000);
+    fs::write(&f.config, value.to_string()).unwrap();
+}
+fn acquisition_child(f: &Fixture, environment: &[(&str, &str)]) -> Child {
+    Command::new(env!("CARGO_BIN_EXE_capture-service"))
+        .args(["--config", f.config.to_str().unwrap()])
+        .envs(environment.iter().copied())
+        .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+        .env("GDP_ROS_MOCK_EVENTS", &f.events)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap()
+}
+#[test]
+fn acquisition_complete_and_strict_apply_sdk_controls_and_global_without_duplicate_images() {
+    for preset in ["complete", "strict-rgbd"] {
+        let f = fixture();
+        acquisition(&f, preset, true);
+        let mut child = acquisition_child(&f, &[]);
+        let ready = wait_status(&f, &mut child, |v| {
+            v["ready"] == true && v["pairs_published"].as_u64().unwrap_or(0) >= 3
+        });
+        assert_eq!(ready["message_timestamp"], "global");
+        assert_eq!(ready["physical_sync_verified"], false);
+        assert_eq!(
+            ready["acquisition_effective"]["sdk_frame_sync"],
+            preset == "strict-rgbd"
+        );
+        stop(&mut child);
+        let events = fs::read_to_string(&f.events).unwrap();
+        let sync = if preset == "complete" {
+            "sync-off"
+        } else {
+            "sync-on"
+        };
+        assert!(events.find(sync).unwrap() < events.find("start").unwrap());
+        assert!(events.find("aggregate-any").unwrap() < events.find("start").unwrap());
+        assert!(events.find("global-on").unwrap() < events.find("start").unwrap());
+        assert!(events.lines().any(|l| l == "publish-global"));
+        let images: Vec<_> = events.lines().filter(|l| l.starts_with("image:")).collect();
+        let unique: std::collections::BTreeSet<_> = images.iter().copied().collect();
+        assert_eq!(
+            images.len(),
+            unique.len(),
+            "an accepted pair must not republish independent images"
+        );
+    }
+}
+#[test]
+fn acquisition_complete_is_ready_with_independent_streams_while_strict_excludes_them() {
+    for preset in ["complete", "strict-rgbd"] {
+        let f = fixture();
+        acquisition(&f, preset, true);
+        let mut child = acquisition_child(&f, &[("GDP_MOCK_ALTERNATING", "1")]);
+        let sampled = wait_status(&f, &mut child, |v| {
+            v["framesets_observed"].as_u64().unwrap_or(0) >= 8
+        });
+        assert_eq!(sampled["ready"], preset == "complete");
+        assert_eq!(sampled["pairs_published"], 0);
+        assert_eq!(sampled["pairs_accepted"], 0);
+        assert_eq!(
+            sampled["readiness_basis"],
+            if preset == "complete" {
+                "both-streams-published"
+            } else {
+                "accepted-rgbd-pairs"
+            }
+        );
+        if preset == "complete" {
+            assert!(sampled["unpaired_images_published"].as_u64().unwrap() >= 8);
+        } else {
+            assert_eq!(sampled["individual_publish_calls"], 0);
+        }
+        stop(&mut child);
+        let events = fs::read_to_string(&f.events).unwrap();
+        assert!(!events.lines().any(|l| l == "aux-publish"));
+    }
+    // One healthy stream must never hide absence of the other stream.
+    let f = fixture();
+    acquisition(&f, "complete", false);
+    let mut child = acquisition_child(&f, &[("GDP_MOCK_MISSING_COLOR", "1")]);
+    let sampled = wait_status(&f, &mut child, |v| {
+        v["unpaired_images_published"].as_u64().unwrap_or(0) >= 5
+    });
+    assert_eq!(sampled["ready"], false);
+    stop(&mut child);
+}
+#[test]
+fn acquisition_complete_preserves_valid_images_when_pair_skew_rejects_metadata() {
+    let f = fixture();
+    acquisition(&f, "complete", false);
+    let mut child = acquisition_child(&f, &[("GDP_MOCK_SKEW", "1")]);
+    let sampled = wait_status(&f, &mut child, |v| {
+        v["ready"] == true && v["skew_rejections"].as_u64().unwrap_or(0) >= 3
+    });
+    assert_eq!(sampled["pairs_accepted"], 0);
+    assert_eq!(sampled["pairs_published"], 0);
+    assert!(sampled["individual_publish_calls"].as_u64().unwrap() >= 6);
+    stop(&mut child);
+    let events = fs::read_to_string(&f.events).unwrap();
+    assert!(!events.lines().any(|l| l == "aux-publish"));
+}
+#[test]
+fn acquisition_global_initial_mapping_waits_but_loss_after_readiness_never_falls_back() {
+    let f = fixture();
+    acquisition(&f, "complete", true);
+    let mut child = acquisition_child(
+        &f,
+        &[
+            ("GDP_MOCK_GLOBAL_WARMUP", "5"),
+            ("GDP_MOCK_GLOBAL_LOST", "1"),
+            ("GDP_MOCK_FAULT_AFTER", "30"),
+        ],
+    );
+    let ready = wait_status(&f, &mut child, |v| v["ready"] == true);
+    assert!(ready["pairs_rejected"].as_u64().unwrap() >= 5);
+    let failed = wait_status(&f, &mut child, |v| {
+        v["ready"] == false && v["reason"] == "SESSION_FAILED"
+    });
+    assert_eq!(failed["ready"], false);
+    assert!(failed["pairs_rejected"].as_u64().unwrap() >= 6);
+    stop(&mut child);
+    let events = fs::read_to_string(&f.events).unwrap();
+    assert!(events.lines().any(|l| l == "publish-global"));
+    assert!(!events.lines().any(|l| l == "publish-copied"));
+}
+
+#[test]
+fn acquisition_complete_preserves_valid_peer_when_other_payload_or_global_is_invalid() {
+    for (global, fault) in [
+        (false, "GDP_MOCK_BAD_DEPTH_ONLY"),
+        (true, "GDP_MOCK_GLOBAL_DEPTH_ZERO"),
+    ] {
+        let f = fixture();
+        acquisition(&f, "complete", global);
+        let mut child = acquisition_child(&f, &[(fault, "1")]);
+        let sampled = wait_status(&f, &mut child, |v| {
+            v["individual_publish_calls"].as_u64().unwrap_or(0) >= 5
+        });
+        assert_eq!(sampled["ready"], false);
+        assert_eq!(sampled["pairs_published"], 0);
+        stop(&mut child);
+        let events = fs::read_to_string(&f.events).unwrap();
+        assert!(
+            events
+                .lines()
+                .filter(|l| l.starts_with("image:color_optical:"))
+                .count()
+                >= 5
+        );
+        assert!(
+            !events
+                .lines()
+                .any(|l| l.starts_with("image:depth_optical:"))
+        );
+    }
+}
+#[test]
+fn acquisition_independent_streams_bind_actual_calibration_snapshot_before_readiness() {
+    let f = fixture();
+    quality_only(&f);
+    acquisition(&f, "complete", true);
+    let mut value: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    value["acquisition"]["advanced"] = json!({"aggregate":"disabled"});
+    fs::write(&f.config, value.to_string()).unwrap();
+    let mut child = acquisition_child(&f, &[("GDP_MOCK_ALTERNATING", "1")]);
+    let ready = wait_status(&f, &mut child, |v| v["ready"] == true);
+    assert!(ready["snapshot_id"].is_string(), "{ready}");
+    let snapshot: Value =
+        serde_json::from_slice(&fs::read(ready["snapshot_path"].as_str().unwrap()).unwrap())
+            .unwrap();
+    assert_eq!(
+        snapshot["content"]["configuration"]["source_depth_scale_mm"],
+        0.1_f32 as f64
+    );
+    assert_eq!(ready["pairs_published"], 0);
+    stop(&mut child);
+    let events = fs::read_to_string(&f.events).unwrap();
+    assert!(events.lines().any(|l| l == "aggregate-disabled"));
+}
+
+#[test]
+fn finite_acquisition_complete_and_strict_validate_global_mapping_and_stream_preservation() {
+    for (preset, global, environment, expected_pairs, expected_color, expected_depth) in [
+        ("complete", true, vec![], true, true, true),
+        ("complete", false, vec![], true, true, true),
+        (
+            "complete",
+            true,
+            vec![("GDP_MOCK_GLOBAL_WARMUP", "2")],
+            true,
+            true,
+            true,
+        ),
+        (
+            "strict-rgbd",
+            true,
+            vec![("GDP_MOCK_GLOBAL_WARMUP", "2")],
+            true,
+            true,
+            true,
+        ),
+        (
+            "complete",
+            true,
+            vec![("GDP_MOCK_GLOBAL_DEPTH_ZERO", "1")],
+            false,
+            true,
+            false,
+        ),
+        (
+            "complete",
+            true,
+            vec![("GDP_MOCK_ALTERNATING", "1")],
+            false,
+            true,
+            true,
+        ),
+        (
+            "complete",
+            false,
+            vec![("GDP_MOCK_BAD_DEPTH_ONLY", "1")],
+            false,
+            true,
+            false,
+        ),
+        (
+            "complete",
+            false,
+            vec![("GDP_MOCK_SKEW", "1")],
+            false,
+            true,
+            true,
+        ),
+        (
+            "complete",
+            true,
+            vec![("GDP_MOCK_GLOBAL_LOST", "1"), ("GDP_MOCK_FAULT_AFTER", "3")],
+            true,
+            true,
+            true,
+        ),
+        (
+            "complete",
+            false,
+            vec![("GDP_MOCK_DEPTH_PUBLISH_ERROR", "1")],
+            false,
+            true,
+            false,
+        ),
+    ] {
+        let f = fixture();
+        acquisition(&f, preset, global);
+        let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+        config.as_object_mut().unwrap().remove("service");
+        config["seconds"] = json!(0.15);
+        fs::write(&f.config, config.to_string()).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_rgbd-probe"))
+            .args(["--config", f.config.to_str().unwrap()])
+            .envs(environment.iter().copied())
+            .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+            .env("GDP_ROS_MOCK_EVENTS", &f.events)
+            .output()
+            .unwrap();
+        let report: Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|e| panic!("{e}; stderr:{}", String::from_utf8_lossy(&output.stderr)));
+        assert_eq!(
+            report["message_timestamp"],
+            if global { "global" } else { "system" }
+        );
+        assert_eq!(
+            report["acquisition"]["sdk_frame_sync"],
+            preset == "strict-rgbd"
+        );
+        assert_eq!(
+            report["ros"]["pairs_publish_calls_succeeded"]
+                .as_u64()
+                .unwrap()
+                > 0,
+            expected_pairs,
+            "{environment:?}: {report}"
+        );
+        let events = fs::read_to_string(&f.events).unwrap();
+        let images: Vec<_> = events.lines().filter(|l| l.starts_with("image:")).collect();
+        let unique: std::collections::BTreeSet<_> = images.iter().copied().collect();
+        assert_eq!(
+            images.len(),
+            unique.len(),
+            "{environment:?}: duplicate image publication"
+        );
+        assert_eq!(
+            images.iter().any(|l| l.starts_with("image:color_optical:")),
+            expected_color,
+            "{environment:?}: {report}"
+        );
+        assert_eq!(
+            images.iter().any(|l| l.starts_with("image:depth_optical:")),
+            expected_depth,
+            "{environment:?}: {report}"
+        );
+        if global {
+            assert!(!events.lines().any(|l| l == "publish-copied"));
+        }
+        if environment.is_empty() {
+            assert!(output.status.success(), "{report}");
+        } else {
+            assert!(
+                !output.status.success(),
+                "probe must report rejected source/pair/output observations: {report}"
+            );
+        }
+    }
+}
+
+#[test]
+fn stage_metrics_attribute_native_publish_and_sdk_wait_delays_separately() {
+    for (environment, stage) in [
+        ("GDP_MOCK_PUBLISH_DELAY_MS", "ros_image_publish_call"),
+        ("GDP_MOCK_WAIT_DELAY_MS", "sdk_wait_call"),
+    ] {
+        let f = fixture();
+        acquisition(&f, "complete", false);
+        let mut child = acquisition_child(&f, &[(environment, "25")]);
+        let ready = wait_status(&f, &mut child, |v| {
+            v["ready"] == true && v["individual_publish_calls"].as_u64().unwrap_or(0) >= 4
+        });
+        let timing = &ready["pipeline_timing"];
+        let measured = if stage == "sdk_wait_call" {
+            &timing[stage]
+        } else {
+            &timing["streams"]["color"][stage]
+        };
+        assert!(
+            measured["minimum_ns"].as_u64().unwrap() >= 20_000_000,
+            "{ready}"
+        );
+        assert!(
+            timing["streams"]["color"]["sdk_return_to_publish_start"]["samples"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert!(timing["sdk_internal_queue"]["current"].is_null());
+        assert!(timing["derived_pair_queue"]["current"].as_u64().unwrap() <= 2);
+        stop(&mut child);
+        let events = fs::read_to_string(&f.events).unwrap();
+        assert!(events.lines().any(|v| v == "sdk-return-observed"));
+        assert!(events.lines().any(|v| v == "sdk-system-clock-verified"));
+        assert_eq!(status(&f).unwrap()["state"], "stopped");
+    }
+}
+#[test]
+fn alternating_partial_diagnostics_accumulate_without_per_frame_status_fsync() {
+    let f = fixture();
+    acquisition(&f, "complete", false);
+    let mut value: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    value["service"]["heartbeat_ms"] = json!(200);
+    fs::write(&f.config, value.to_string()).unwrap();
+    let mut child = acquisition_child(&f, &[("GDP_MOCK_ALTERNATING", "1")]);
+    let observed = wait_status(&f, &mut child, |v| {
+        v["framesets_observed"].as_u64().unwrap_or(0) >= 45
+    });
+    assert_eq!(observed["missing_pairs"], observed["framesets_observed"]);
+    assert!(
+        observed["status_persistence"]["coalesced_partial_updates"]
+            .as_u64()
+            .unwrap()
+            > 20,
+        "{observed}"
+    );
+    assert!(
+        observed["heartbeat_sequence"].as_u64().unwrap() < 15,
+        "{observed}"
+    );
+    assert!(observed["pipeline_timing"]["quality_tick_wall"]["samples"].is_number());
+    stop(&mut child);
+    assert_eq!(status(&f).unwrap()["state"], "stopped");
 }

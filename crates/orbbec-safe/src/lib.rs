@@ -1,7 +1,7 @@
 //! Thread-confined, polling-only SDK ownership adapter.
 //! SDK objects and frames retain their loaded library. No Send/Sync is asserted.
-//! This experimental adapter does not configure exposure, synchronization, depth
-//! filters or ROS timestamp mapping, and is not a replacement production driver.
+//! Software aggregation and global timestamp mapping are explicit opt-ins. This
+//! adapter does not configure exposure, hardware synchronization, or depth filters.
 use orbbec_sys as sys;
 mod calibration;
 pub use calibration::{Extrinsics, SessionCalibration, StreamCalibration};
@@ -12,6 +12,10 @@ use std::{
     path::Path,
     ptr::{self, NonNull},
     rc::Rc,
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -29,6 +33,56 @@ pub struct VideoProfile {
     pub height: u32,
     pub fps: u32,
 }
+/// SDK aggregation output policy; values match ob_frame_aggregate_output_mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum FrameAggregateOutput {
+    All = 0,
+    Any = 2,
+    Disabled = 3,
+}
+/// `None` leaves the SDK default unchanged. Explicit requests fail on unsupported
+/// SDK APIs rather than silently reverting to another capture policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CaptureOptions {
+    pub host_clock: Option<HostClock>,
+    pub software_sync: Option<bool>,
+    pub aggregate: Option<FrameAggregateOutput>,
+    pub global_timestamp: Option<bool>,
+}
+
+/// Clock shared by every Context in the SDK runtime. Realtime is epoch-based;
+/// monotonic values must not be published as Unix/ROS timestamps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum HostClock {
+    Realtime = 0,
+    Monotonic = 1,
+}
+
+// Serialize open/configure/start so a clock change cannot race another adapter
+// stream start. This tracks streams opened through this adapter, not foreign
+// consumers using the same SDK runtime directly.
+static SDK_OPEN_LOCK: Mutex<()> = Mutex::new(());
+static ACTIVE_PIPELINES: AtomicUsize = AtomicUsize::new(0);
+struct Registration(Cell<bool>);
+impl Registration {
+    fn begin(&self) {
+        self.0.set(true);
+        ACTIVE_PIPELINES.fetch_add(1, Ordering::SeqCst);
+    }
+    fn end(&self) {
+        if self.0.replace(false) {
+            ACTIVE_PIPELINES.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+impl Drop for Registration {
+    fn drop(&mut self) {
+        self.end();
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Yuyv,
@@ -124,6 +178,15 @@ impl Sdk {
         color: Option<VideoProfile>,
         depth: Option<VideoProfile>,
     ) -> Result<Pipeline> {
+        self.open_with_options(serial, color, depth, CaptureOptions::default())
+    }
+    pub fn open_with_options(
+        &self,
+        serial: &str,
+        color: Option<VideoProfile>,
+        depth: Option<VideoProfile>,
+        options: CaptureOptions,
+    ) -> Result<Pipeline> {
         if serial.trim().is_empty() {
             return Err(Error("explicit device serial is required".into()));
         }
@@ -139,10 +202,35 @@ impl Sdk {
         if color.is_some_and(|p| p.width % 2 != 0) {
             return Err(Error("YUYV width must be even".into()));
         }
+        let _open_guard = SDK_OPEN_LOCK
+            .lock()
+            .map_err(|_| Error("SDK configuration lock poisoned".into()))?;
         let a = &self.api;
         let context = Handle::new(a, a.ob_delete_context, |e| unsafe {
             (a.ob_create_context)(e)
         })?;
+        if let Some(clock) = options.host_clock {
+            let (get, set) = a.host_clock_api().map_err(Error)?;
+            let mut e = ptr::null_mut();
+            let current = unsafe { get(context.raw(), &mut e) };
+            check(a, e)?;
+            if current != clock as i32 {
+                if ACTIVE_PIPELINES.load(Ordering::SeqCst) != 0 {
+                    return Err(Error(
+                        "cannot change SDK host clock while a pipeline is active".into(),
+                    ));
+                }
+                let mut e = ptr::null_mut();
+                unsafe { set(context.raw(), clock as i32, &mut e) };
+                check(a, e)?;
+                let mut e = ptr::null_mut();
+                let actual = unsafe { get(context.raw(), &mut e) };
+                check(a, e)?;
+                if actual != clock as i32 {
+                    return Err(Error("SDK host clock setting was not applied".into()));
+                }
+            }
+        }
         let list = Handle::new(a, a.ob_delete_device_list, |e| unsafe {
             (a.ob_query_device_list)(context.raw(), e)
         })?;
@@ -175,6 +263,36 @@ impl Sdk {
                 check(a, e)?;
             }
         }
+        // Configure before starting streams: changing sync on a running SDK clears
+        // its frame queues. Resolve only the APIs required by explicit options.
+        if let Some(enabled) = options.global_timestamp {
+            let (supported, enable) = a.global_device_api().map_err(Error)?;
+            let mut e = ptr::null_mut();
+            let has_global = unsafe { supported(device.raw(), &mut e) };
+            check(a, e)?;
+            if !has_global {
+                return Err(Error("device does not support global timestamps".into()));
+            }
+            if enabled {
+                // Refuse a partial global API before mutating device state.
+                a.global_timestamp_api().map_err(Error)?;
+            }
+            let mut e = ptr::null_mut();
+            unsafe { enable(device.raw(), enabled, &mut e) };
+            check(a, e)?;
+        }
+        if let Some(mode) = options.aggregate {
+            let apply = a.aggregate_api().map_err(Error)?;
+            let mut e = ptr::null_mut();
+            unsafe { apply(config.raw(), mode as i32, &mut e) };
+            check(a, e)?;
+        }
+        if let Some(enabled) = options.software_sync {
+            let apply = a.frame_sync_api(enabled).map_err(Error)?;
+            let mut e = ptr::null_mut();
+            unsafe { apply(pipeline.raw(), &mut e) };
+            check(a, e)?;
+        }
         let session = Rc::new(Session {
             pipeline,
             config,
@@ -184,8 +302,10 @@ impl Sdk {
             active: Cell::new(false),
             color_requested: color,
             depth_requested: depth,
+            registration: Registration(Cell::new(false)),
         });
         let mut e = ptr::null_mut();
+        session.registration.begin();
         unsafe {
             (a.ob_pipeline_start_with_config)(session.pipeline.raw(), session.config.raw(), &mut e)
         };
@@ -206,6 +326,9 @@ struct Session {
     active: Cell<bool>,
     color_requested: Option<VideoProfile>,
     depth_requested: Option<VideoProfile>,
+    // Last field releases registration only after SDK parent handles on an
+    // unsuccessful stop; successful stop releases it immediately.
+    registration: Registration,
 }
 impl Session {
     fn api(&self) -> &Rc<sys::Api> {
@@ -219,6 +342,7 @@ impl Session {
         unsafe { (self.api().ob_pipeline_stop)(self.pipeline.raw(), &mut e) };
         check(self.api(), e)?;
         self.active.set(false);
+        self.registration.end();
         Ok(())
     }
 }
@@ -304,6 +428,13 @@ impl Frame {
         let value = unsafe { f(self.ptr.as_ptr(), &mut e) };
         check(self.session.api(), e)?;
         Ok(value)
+    }
+    /// Capture timestamp mapped into the SDK host clock domain. Zero means
+    /// unavailable; callers must not silently replace it with receipt time.
+    pub fn global_timestamp_us(&self) -> Result<Option<u64>> {
+        let read = self.session.api().global_timestamp_api().map_err(Error)?;
+        let timestamp = self.read(read)?;
+        Ok((timestamp != 0).then_some(timestamp))
     }
     pub fn metadata(&self) -> Result<FrameMetadata> {
         let a = self.session.api();

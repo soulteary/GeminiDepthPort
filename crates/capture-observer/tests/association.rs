@@ -196,6 +196,142 @@ fn known_metadata_is_only_publisher_reported_and_zero_device_origin_is_preserved
 }
 
 #[test]
+fn global_headers_preserve_distinct_reported_clocks_without_claiming_hardware_sync() {
+    let mut o = CaptureObserver::new(config()).unwrap();
+    let time = BASE + 1000;
+    add(&mut o, StreamRole::Color, 0, time);
+    add(&mut o, StreamRole::Depth, 2, time);
+    for (role, offset) in [(StreamRole::Color, 4), (StreamRole::Depth, 5)] {
+        let data = serde_json::json!({"version":1,"frame_id":format!("synthetic_{}_optical",role.as_str()),"stamp_sec":1,"stamp_nanosec":1000,"sequence":17,"device_timestamp_us":123,"system_timestamp_us":1_000_100,"global_timestamp_us":1_000_001,"stamp_mapping":"sdk-global-unix"});
+        assert!(
+            o.metadata(
+                role,
+                at(offset),
+                DecodedMetadata {
+                    stamp: stamp(time),
+                    data: data.to_string()
+                }
+            )
+            .unwrap()
+            .rejections
+            .is_empty()
+        );
+    }
+    let update = o.advance_watermark(at(6), time + 100).unwrap();
+    let pair = &update.pairs[0];
+    assert_eq!(pair.color.context.global_timestamp_us, Some(1_000_001));
+    assert_eq!(pair.color.context.system_timestamp_us, Some(1_000_100));
+    assert_eq!(pair.color.context.device_timestamp_us, Some(123));
+    assert_eq!(pair.color.observed_header_ns, time);
+    assert_eq!(
+        pair.color.metadata_provenance,
+        MetadataProvenance::PublisherReported
+    );
+    assert_eq!(pair.same_sdk_frameset, None);
+    assert!(!pair.hardware_sync_verified);
+    // Older serialized contexts round-trip without adding an absent field and
+    // changing canonical identities of existing sealed records.
+    let mut old = serde_json::to_value(&pair.color.context).unwrap();
+    old.as_object_mut().unwrap().remove("global_timestamp_us");
+    let context: capture_contract::FrameContext = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(context.global_timestamp_us, None);
+    assert_eq!(serde_json::to_value(context).unwrap(), old);
+}
+
+#[test]
+fn explicit_sdk_metadata_mappings_require_valid_matching_clock_values() {
+    for (mapping, global, system, valid) in [
+        (
+            serde_json::json!("sdk-global-unix"),
+            serde_json::json!(1_000_001),
+            serde_json::json!(1_000_100),
+            true,
+        ),
+        (
+            serde_json::json!("sdk-system-unix"),
+            serde_json::Value::Null,
+            serde_json::json!(1_000_001),
+            true,
+        ),
+        (
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            true,
+        ),
+        (
+            serde_json::json!("sdk-global-unix"),
+            serde_json::Value::Null,
+            serde_json::json!(1_000_001),
+            false,
+        ),
+        (
+            serde_json::json!("sdk-global-unix"),
+            serde_json::json!(0),
+            serde_json::Value::Null,
+            false,
+        ),
+        (
+            serde_json::json!("sdk-global-unix"),
+            serde_json::json!(1_000_002),
+            serde_json::Value::Null,
+            false,
+        ),
+        (
+            serde_json::json!("sdk-global-unix"),
+            serde_json::json!(u64::MAX),
+            serde_json::Value::Null,
+            false,
+        ),
+        (
+            serde_json::json!("sdk-global-unix"),
+            serde_json::json!("bad"),
+            serde_json::Value::Null,
+            false,
+        ),
+        (
+            serde_json::json!("sdk-system-unix"),
+            serde_json::json!(1_000_001),
+            serde_json::Value::Null,
+            false,
+        ),
+        (
+            serde_json::json!("device"),
+            serde_json::json!(1_000_001),
+            serde_json::Value::Null,
+            false,
+        ),
+        (
+            serde_json::Value::Null,
+            serde_json::json!(0),
+            serde_json::Value::Null,
+            false,
+        ),
+    ] {
+        let mut o = CaptureObserver::new(config()).unwrap();
+        let data = serde_json::json!({"version":1,"frame_id":"synthetic_color_optical","stamp_sec":1,"stamp_nanosec":1000,"stamp_mapping":mapping,"global_timestamp_us":global,"system_timestamp_us":system});
+        let update = o
+            .metadata(
+                StreamRole::Color,
+                at(0),
+                DecodedMetadata {
+                    stamp: stamp(BASE + 1000),
+                    data: data.to_string(),
+                },
+            )
+            .unwrap();
+        assert_eq!(update.rejections.is_empty(), valid, "{data}");
+    }
+    let mut c = config();
+    c.streams
+        .get_mut(&StreamRole::Color)
+        .unwrap()
+        .context
+        .global_timestamp_us = Some(1);
+    assert_eq!(c.validate().unwrap_err(), "OBSERVER_BINDING_INVALID");
+}
+
+#[test]
 fn missing_required_metadata_and_malformed_layout_are_explicit_rejections() {
     let mut c = config();
     c.streams

@@ -1159,6 +1159,7 @@ mod sequence_boundaries {
                 sequence: Some(1),
                 device_timestamp_us: Some(1),
                 system_timestamp_us: Some(1),
+                global_timestamp_us: None,
                 received_mono_offset_ns: 1,
             },
             contract_valid: false,

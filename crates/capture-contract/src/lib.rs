@@ -4,12 +4,18 @@
 use serde::{Deserialize, Serialize};
 use std::{fmt, str::FromStr};
 
+pub mod acquisition;
 pub mod content;
+pub use acquisition::{
+    AcquisitionOverrides, AcquisitionPolicy, AcquisitionPreset, FrameAggregate, MessageTimestamp,
+    ResolvedAcquisition, UnpairedPolicy,
+};
 pub mod geometry;
 pub mod recording;
 pub mod snapshot;
 #[cfg(unix)]
 pub mod store;
+pub mod timing;
 pub use content::{ContentKind, content_digest, parse_strict};
 pub use geometry::{CameraModel, DistortionModel, RigidTransform};
 pub const VERSION: u32 = 1;
@@ -144,6 +150,10 @@ pub struct FrameContext {
     pub sequence: Option<u64>,
     pub device_timestamp_us: Option<u64>,
     pub system_timestamp_us: Option<u64>,
+    /// Publisher-reported capture time mapped into the SDK host clock domain.
+    /// Missing values preserve the serialization of existing sealed records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_timestamp_us: Option<u64>,
     pub received_mono_offset_ns: u64,
 }
 impl FrameContext {

@@ -41,20 +41,32 @@ pub fn validate(d: &Value) -> Result<()> {
     )?;
     let p = &d["rust_capture"];
     require(
-        exact(
-            p,
-            &[
+        p.as_object().is_some_and(|object| {
+            let required = [
                 "depth_unit_policy",
                 "pairing",
                 "poll_ms",
                 "capacity",
                 "startup_discovery_seconds",
                 "service",
-            ],
-        ),
+            ];
+            required.iter().all(|key| object.contains_key(*key))
+                && object
+                    .keys()
+                    .all(|key| required.contains(&key.as_str()) || key == "acquisition")
+        }),
         "RUST_CAPTURE_POLICY",
         "Explicit complete Rust capture policy required",
     )?;
+    let acquisition = p
+        .get("acquisition")
+        .map(|value| {
+            serde_json::from_value::<capture_contract::AcquisitionPolicy>(value.clone())
+                .map_err(anyhow::Error::from)?
+                .resolve()
+                .map_err(anyhow::Error::from)
+        })
+        .transpose()?;
     require(
         p["depth_unit_policy"] == "require-mm" || p["depth_unit_policy"] == "normalize-mm",
         "RUST_DEPTH_POLICY",
@@ -169,9 +181,12 @@ pub fn validate(d: &Value) -> Result<()> {
         )?;
         if c["enabled"] == true {
             require(
-                c["timestamp_source"] == "host",
+                c["timestamp_source"]
+                    == acquisition.map_or("host", |policy| {
+                        policy.message_timestamp.camera_timestamp_source()
+                    }),
                 "RUST_TIME_SOURCE",
-                "Rust capture requires explicit host/system Unix timestamp source",
+                "Camera timestamp source must match the effective acquisition policy",
             )?;
         }
     }
@@ -267,6 +282,18 @@ pub fn service_config(d: &Value, c: &Value, generation: &str, runtime: &Value) -
     service["generation"] = generation.into();
     let m = &runtime["manifest"];
     let mut value = json!({"version":1,"sdk_library":SDK_PATH,"serial":c["serial_number"],"color":stream("color"),"depth":depth,"pairing":policy["pairing"],"poll_ms":policy["poll_ms"],"capacity":policy["capacity"],"startup_discovery_seconds":policy["startup_discovery_seconds"],"ros":{"bridge":BRIDGE_PATH,"namespace":c["namespace"],"stamp_source":"sdk-system-unix"},"service":service,"runtime_contract":{"sdk_sha256":m["sdk_sha256"],"bridge_sha256":m["bridge_sha256"],"service_sha256":m["service_sha256"]}});
+    if let Some(acquisition) = policy.get("acquisition") {
+        value["acquisition"] = acquisition.clone();
+        // The service validates this policy again before loading the SDK. Do not
+        // turn malformed input into a different, apparently valid clock policy.
+        if let Some(resolved) =
+            serde_json::from_value::<capture_contract::AcquisitionPolicy>(acquisition.clone())
+                .ok()
+                .and_then(|policy| policy.resolve().ok())
+        {
+            value["ros"]["stamp_source"] = resolved.message_timestamp.ros_stamp_source().into();
+        }
+    }
     if let Some(recovery) = m.get("usb_recovery") {
         value["usb_recovery"] = recovery.clone();
     }
@@ -303,6 +330,101 @@ pub fn service_config(d: &Value, c: &Value, generation: &str, runtime: &Value) -
 #[cfg(test)]
 mod quality_generation_tests {
     use super::*;
+    fn acquisition_inventory() -> Value {
+        json!({"schema_version":2,"capture_backend":"rust","rust_capture":{"depth_unit_policy":"normalize-mm","pairing":{"clock":"device","max_delta_us":20000},"poll_ms":100,"capacity":4,"startup_discovery_seconds":0,"service":{"idle_timeout_ms":3456,"startup_timeout_ms":15000,"heartbeat_ms":500,"heartbeat_timeout_ms":10000,"max_restarts":2,"restart_backoff_ms":1000,"shutdown_timeout_ms":1000,"ready_min_pairs":5}},"cameras":[{"enabled":true,"timestamp_source":"host","parameters":{"enable_color":true,"enable_depth":true}}]})
+    }
+    #[test]
+    fn acquisition_validation_preserves_legacy_and_rejects_inconsistent_clocks() {
+        let mut d = acquisition_inventory();
+        validate(&d).unwrap();
+        d["rust_capture"]["acquisition"] = json!({"preset":"complete"});
+        assert!(
+            validate(&d)
+                .unwrap_err()
+                .to_string()
+                .starts_with("RUST_TIME_SOURCE")
+        );
+        d["cameras"][0]["timestamp_source"] = "global".into();
+        validate(&d).unwrap();
+        d["rust_capture"]["acquisition"]["preset"] = "strict-rgbd".into();
+        validate(&d).unwrap();
+        d["rust_capture"]["acquisition"]["advanced"] = json!({"message_timestamp":"system"});
+        assert!(validate(&d).is_err());
+        d["cameras"][0]["timestamp_source"] = "host".into();
+        validate(&d).unwrap();
+        d["rust_capture"]["acquisition"]["preset"] = "hardware-sync".into();
+        assert_eq!(
+            validate(&d).unwrap_err().to_string(),
+            "HARDWARE_SYNC_UNAVAILABLE"
+        );
+        d["rust_capture"]["acquisition"] =
+            json!({"preset":"complete","advanced":{"aggregate":"all"}});
+        assert_eq!(
+            validate(&d).unwrap_err().to_string(),
+            "ACQUISITION_PRESET_CONFLICT"
+        );
+        d["rust_capture"]["acquisition"] = json!({"preset":"complete","unknown":true});
+        assert!(validate(&d).is_err());
+        d["rust_capture"]["unknown"] = true.into();
+        assert!(
+            validate(&d)
+                .unwrap_err()
+                .to_string()
+                .starts_with("RUST_CAPTURE_POLICY")
+        );
+    }
+    #[test]
+    fn service_config_binds_requested_acquisition_and_effective_message_clock() {
+        let mut d = acquisition_inventory();
+        let camera = json!({"parameters":{"color_width":640,"color_height":480,"color_fps":30,"depth_width":640,"depth_height":480,"depth_fps":30},"serial_number":"synthetic-private","namespace":"/test","frame_prefix":"test"});
+        let runtime = json!({"manifest":{"sdk_sha256":"a".repeat(64),"bridge_sha256":"b".repeat(64),"service_sha256":"c".repeat(64)}});
+        let legacy = service_config(&d, &camera, &"a".repeat(32), &runtime);
+        assert!(legacy.get("acquisition").is_none());
+        assert_eq!(legacy["ros"]["stamp_source"], "sdk-system-unix");
+        for (acquisition, stamp) in [
+            (json!({"preset":"complete"}), "sdk-global-unix"),
+            (
+                json!({"preset":"strict-rgbd","advanced":{"message_timestamp":"system"}}),
+                "sdk-system-unix",
+            ),
+        ] {
+            d["rust_capture"]["acquisition"] = acquisition.clone();
+            let value = service_config(&d, &camera, &"a".repeat(32), &runtime);
+            assert_eq!(value["acquisition"], acquisition);
+            assert_eq!(value["ros"]["stamp_source"], stamp);
+        }
+        // Invalid input remains invalid for the service parser; it must not
+        // disappear into a legacy policy during generation.
+        d["rust_capture"]["acquisition"] = json!({"preset":"hardware-sync"});
+        assert_eq!(
+            service_config(&d, &camera, &"a".repeat(32), &runtime)["acquisition"],
+            d["rust_capture"]["acquisition"]
+        );
+        d["rust_capture"]["acquisition"] = json!({"preset":"unknown"});
+        assert_eq!(
+            service_config(&d, &camera, &"a".repeat(32), &runtime)["acquisition"],
+            d["rust_capture"]["acquisition"]
+        );
+    }
+    #[test]
+    fn acquisition_is_accepted_by_full_inventory_validation_and_binds_every_camera() {
+        let mut d: Value =
+            serde_json::from_str(include_str!("../inventory.v2.example.json")).unwrap();
+        d["capture_backend"] = "rust".into();
+        d["rust_capture"] = acquisition_inventory()["rust_capture"].clone();
+        crate::config::validate(&d, true).unwrap();
+        let before: Vec<_> = d["cameras"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|camera| preview_revision(&d, camera))
+            .collect();
+        d["rust_capture"]["acquisition"] = json!({"preset":"complete"});
+        crate::config::validate(&d, true).unwrap();
+        for (camera, previous) in d["cameras"].as_array().unwrap().iter().zip(before) {
+            assert_ne!(previous, preview_revision(&d, camera));
+        }
+    }
     #[test]
     fn generated_quality_runtime_keeps_explicit_existing_idle_and_pair_budgets() {
         let d = json!({"rust_capture":{"depth_unit_policy":"normalize-mm","pairing":{"clock":"device","max_delta_us":20000},"poll_ms":100,"capacity":4,"startup_discovery_seconds":0,"service":{"idle_timeout_ms":3456,"startup_timeout_ms":15000,"heartbeat_ms":500,"heartbeat_timeout_ms":10000,"max_restarts":2,"restart_backoff_ms":1000,"shutdown_timeout_ms":1000,"ready_min_pairs":5}}});

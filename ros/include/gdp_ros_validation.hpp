@@ -63,7 +63,8 @@ inline bool config_valid(const gdp_ros_config *c) {
   const double determinant = r[0] * (r[4] * r[8] - r[5] * r[7]) - r[1] * (r[3] * r[8] - r[5] * r[6]) + r[2] * (r[3] * r[7] - r[4] * r[6]);
   return near(determinant, 1., 1e-5);
 }
-inline bool frame_valid(const gdp_ros_frame *f, uint32_t width, uint32_t height) {
+inline bool frame_valid_timestamped(const gdp_ros_frame *f, uint32_t width, uint32_t height, uint64_t global_timestamp_us, uint32_t source) {
+  if (source != 1 && source != 2) return false;
   if (!f || f->abi_version != GDP_ROS_ABI_VERSION || f->struct_size != sizeof(*f)) return false;
   if (f->width != width || f->height != height || !width || !height || width > 16384 || height > 16384) return false;
   if (f->encoding != GDP_ROS_ENCODING_YUYV && f->encoding != GDP_ROS_ENCODING_DEPTH16) return false;
@@ -79,9 +80,12 @@ inline bool frame_valid(const gdp_ros_frame *f, uint32_t width, uint32_t height)
   // Device time zero may be a valid clock origin. Only the mapped Unix/system
   // timestamp must be positive; retain raw device zero distinctly from absent.
   if (!f->has_system_timestamp || !f->system_timestamp_us) return false;
-  // Only the caller-declared SDK-system Unix mapping is currently supported.
+  const uint64_t mapped = source == 1 ? f->system_timestamp_us : global_timestamp_us;
   const uint64_t stamp_ns = uint64_t(f->stamp_sec) * 1000000000 + f->stamp_nanosec;
-  if (f->system_timestamp_us > std::numeric_limits<uint64_t>::max() / 1000 || stamp_ns != f->system_timestamp_us * 1000) return false;
+  if (!mapped || mapped > std::numeric_limits<uint64_t>::max() / 1000 || stamp_ns != mapped * 1000) return false;
   return true;
+}
+inline bool frame_valid(const gdp_ros_frame *f, uint32_t width, uint32_t height) {
+  return frame_valid_timestamped(f, width, height, 0, 1);
 }
 } // namespace gdp_ros

@@ -1,7 +1,7 @@
 //! Synchronous owned-message ROS bridge. The SDK stays in Rust; a thin C++
 //! rclcpp library copies validated payloads before returning. No zero-copy or
-//! cross-process atomicity is claimed. Only explicit SDK-system Unix stamps and
-//! little-endian millimetre depth are supported by this initial adapter.
+//! cross-process atomicity is claimed. Explicit SDK system/global Unix mappings
+//! and little-endian millimetre depth are supported.
 use anyhow::{Context, Result, bail, ensure};
 use frame_core::{FrameEncoding, PacketMetadata, StampGuard, UnixStamp};
 use serde_json::Value;
@@ -18,6 +18,12 @@ mod auxiliary;
 pub use auxiliary::{AuxBinding, RosAuxPublisher, StaticTransform};
 
 pub const ABI_VERSION: u32 = 1;
+/// The caller declares the mapped host clock; unavailable global never falls back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimestampSource {
+    System,
+    Global,
+}
 const MAX_PAYLOAD: usize = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
@@ -494,6 +500,15 @@ impl Publisher {
         payload: &[u8],
         stamp_ns: u64,
     ) -> Result<()> {
+        self.publish_with_timestamp_source(metadata, payload, stamp_ns, TimestampSource::System)
+    }
+    pub fn publish_with_timestamp_source(
+        &mut self,
+        metadata: &PacketMetadata,
+        payload: &[u8],
+        stamp_ns: u64,
+        source: TimestampSource,
+    ) -> Result<()> {
         metadata.validate(payload.len())?;
         ensure!(
             payload.len() <= MAX_PAYLOAD,
@@ -517,10 +532,61 @@ impl Publisher {
         let system = metadata
             .system_timestamp_us
             .context("explicit SDK system timestamp required")?;
+        let mapped = match source {
+            TimestampSource::System => system,
+            TimestampSource::Global => metadata
+                .global_timestamp_us
+                .context("SDK global timestamp unavailable")?,
+        };
+        ensure!(system > 0, "SDK system timestamp unavailable");
         ensure!(
-            system > 0 && system.checked_mul(1000) == Some(stamp_ns),
-            "stamp must exactly map SDK system Unix time"
+            mapped > 0 && mapped.checked_mul(1000) == Some(stamp_ns),
+            "stamp must exactly map selected SDK Unix time"
         );
+        // Resolve before native publication: old bridges remain usable for legacy
+        // system stamps, while explicit global requests cannot silently downgrade.
+        let extension = if source == TimestampSource::Global
+            || metadata.global_timestamp_us.is_some()
+        {
+            let name = b"gdp_ros_publish_timestamped\0";
+            let raw = unsafe { libc::dlsym(self.library.handle.as_ptr(), name.as_ptr().cast()) };
+            ensure!(!raw.is_null(), "bridge timestamp extension unavailable");
+            Some(unsafe {
+                mem::transmute::<
+                    *mut c_void,
+                    unsafe extern "C" fn(*mut c_void, *const FrameRaw, u64, u32) -> i32,
+                >(raw)
+            })
+        } else {
+            None
+        };
+        let observed = if let Some(returned) = metadata.sdk_return_unix_ns {
+            ensure!(returned > 0, "SDK return Unix timestamp unavailable");
+            let name = b"gdp_ros_publish_observed\0";
+            let raw = unsafe { libc::dlsym(self.library.handle.as_ptr(), name.as_ptr().cast()) };
+            ensure!(
+                !raw.is_null(),
+                "bridge pipeline observation extension unavailable"
+            );
+            Some((
+                unsafe {
+                    mem::transmute::<
+                        *mut c_void,
+                        unsafe extern "C" fn(
+                            *mut c_void,
+                            *const FrameRaw,
+                            u64,
+                            u32,
+                            u64,
+                            u32,
+                        ) -> i32,
+                    >(raw)
+                },
+                returned,
+            ))
+        } else {
+            None
+        };
         let stamp = UnixStamp {
             sec: i32::try_from(stamp_ns / 1_000_000_000)?,
             nanosec: (stamp_ns % 1_000_000_000) as u32,
@@ -555,7 +621,35 @@ impl Publisher {
             data: payload.as_ptr(),
             data_len: u64::try_from(payload.len())?,
         };
-        let code = unsafe { (self.library.publish)(self.handle.as_ptr(), &raw) };
+        let source_code = match source {
+            TimestampSource::System => 1,
+            TimestampSource::Global => 2,
+        };
+        let code = unsafe {
+            if let Some((publish, returned)) = observed {
+                publish(
+                    self.handle.as_ptr(),
+                    &raw,
+                    metadata.global_timestamp_us.unwrap_or(0),
+                    source_code,
+                    returned,
+                    u32::from(metadata.sdk_system_clock_verified),
+                )
+            } else {
+                match extension {
+                    Some(publish) => publish(
+                        self.handle.as_ptr(),
+                        &raw,
+                        metadata.global_timestamp_us.unwrap_or(0),
+                        match source {
+                            TimestampSource::System => 1,
+                            TimestampSource::Global => 2,
+                        },
+                    ),
+                    None => (self.library.publish)(self.handle.as_ptr(), &raw),
+                }
+            }
+        };
         ensure!(code == 0, "ROS bridge publication failed (code {code})");
         self.stamps.accept(stamp)?;
         self.sequence = Some(metadata.sequence);

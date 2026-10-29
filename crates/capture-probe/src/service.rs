@@ -175,6 +175,10 @@ impl ServiceConfig {
             );
             capture.configuration["quality_runtime"] = serde_json::to_value(policy)?;
         }
+        ensure!(
+            !(capture.preserve_images() && raw_settings.is_some()),
+            "complete acquisition requires a stream recorder; native V2 records complete pairs only"
+        );
         if let Some(raw) = raw_value {
             ensure!(
                 quality_runtime.is_some(),
@@ -354,6 +358,7 @@ struct ServiceQuality {
     receipts: std::collections::BTreeMap<String, u64>,
     unbound: std::collections::BTreeMap<String, u64>,
     last_observed: std::collections::BTreeMap<String, Value>,
+    globals: std::collections::BTreeMap<String, u64>,
     finalized: bool,
     publication_calls: u64,
     publication_failures: u64,
@@ -393,6 +398,7 @@ impl ServiceQuality {
             receipts: std::collections::BTreeMap::from([("color".into(), 0), ("depth".into(), 0)]),
             unbound: std::collections::BTreeMap::from([("color".into(), 0), ("depth".into(), 0)]),
             last_observed: std::collections::BTreeMap::new(),
+            globals: std::collections::BTreeMap::new(),
             finalized: false,
             publication_calls: 0,
             publication_failures: 0,
@@ -535,7 +541,7 @@ impl ServiceQuality {
                 })
                 .or_insert((metadata.index, metadata.timestamp_us));
         }
-        self.last_observed.insert(stream.into(),json!({"sequence":metadata.index,"device_timestamp_us":metadata.timestamp_us,"system_timestamp_us":metadata.system_timestamp_us,"width":metadata.width,"height":metadata.height,"format":format!("{:?}",metadata.format),"payload_bytes":metadata.data_size,"depth_scale_mm":metadata.depth_scale_mm,"received_mono_offset_ns":self.at(received).offset_ns,"received_unix_ns":received_unix_ns,"contract_valid":contract_valid}));
+        self.last_observed.insert(stream.into(),json!({"sequence":metadata.index,"device_timestamp_us":metadata.timestamp_us,"system_timestamp_us":metadata.system_timestamp_us,"global_timestamp_us":self.globals.get(stream),"width":metadata.width,"height":metadata.height,"format":format!("{:?}",metadata.format),"payload_bytes":metadata.data_size,"depth_scale_mm":metadata.depth_scale_mm,"received_mono_offset_ns":self.at(received).offset_ns,"received_unix_ns":received_unix_ns,"contract_valid":contract_valid}));
         let Some(snapshot) = &self.snapshot else {
             if !contract_valid {
                 self.engine
@@ -561,6 +567,7 @@ impl ServiceQuality {
             sequence: Some(metadata.index),
             device_timestamp_us: Some(metadata.timestamp_us),
             system_timestamp_us: Some(metadata.system_timestamp_us),
+            global_timestamp_us: self.globals.get(stream).copied(),
             received_mono_offset_ns: self.at(received).offset_ns,
         };
         self.contexts.insert(stream.into(), context.clone());
@@ -764,6 +771,10 @@ struct Status<'a> {
     quality: Option<ServiceQuality>,
     raw: Option<crate::raw_recording::RawRecorder>,
     usb_recovery: Option<Value>,
+    persistence: capture_contract::timing::StageStats,
+    persistence_errors: u64,
+    coalesced_partial_status: u64,
+    last_write: Option<(String, Instant)>,
 }
 impl Status<'_> {
     fn observe_raw_quality(&mut self) -> Result<()> {
@@ -790,6 +801,24 @@ impl Status<'_> {
         }
         Ok(())
     }
+    fn partial_write(
+        &mut self,
+        state: &str,
+        reason: &'static str,
+        metrics: &Metrics,
+        last_pair: Option<Instant>,
+    ) -> Result<()> {
+        if self.config.capture.preserve_images()
+            && self.last_write.as_ref().is_some_and(|(old, at)| {
+                old == state
+                    && at.elapsed() < Duration::from_millis(self.config.settings.heartbeat_ms)
+            })
+        {
+            self.coalesced_partial_status = self.coalesced_partial_status.saturating_add(1);
+            return Ok(());
+        }
+        self.write(state, Some(reason), metrics, last_pair)
+    }
     fn write(
         &mut self,
         state: &str,
@@ -797,18 +826,28 @@ impl Status<'_> {
         metrics: &Metrics,
         last_pair: Option<Instant>,
     ) -> Result<()> {
-        self.observe_raw_quality()?;
-        self.heartbeat += 1;
-        if reason.is_some() && reason != Some("SESSION_FAILED") {
-            self.last_failure = reason;
+        let started = Instant::now();
+        let result = (|| -> Result<()> {
+            self.observe_raw_quality()?;
+            self.heartbeat += 1;
+            if reason.is_some() && reason != Some("SESSION_FAILED") {
+                self.last_failure = reason;
+            }
+            if let Some(quality) = &mut self.quality {
+                quality.persist()?;
+            }
+            let persistence = json!({"wall":self.persistence.report(),"errors":self.persistence_errors,"coalesced_partial_updates":self.coalesced_partial_status,"scope":"completed status persistence calls preceding this snapshot, including quality persistence and status fsync"});
+            let mut value = json!({"version":1,"kind":"capture-service-status","state":state,"ready":state=="ready","reason":reason,"last_failure_reason":self.last_failure,"session_id":self.session,"instance_id":self.instance,"snapshot_id":self.snapshot.as_ref().map(|s|&s.0),"snapshot_path":self.snapshot.as_ref().map(|s|&s.1),"quality":self.quality.as_ref().map(ServiceQuality::references),"usb_recovery":self.usb_recovery,"raw_recording":self.raw.as_ref().map(crate::raw_recording::RawRecorder::status),"generation":self.config.settings.generation,"config_sha256":self.config.hash,"pid":std::process::id(),"heartbeat_sequence":self.heartbeat,"updated_unix_ms":unix_ms(),"uptime_ms":self.started.elapsed().as_millis(),"restart_attempt":self.restarts,"last_pair_age_ms":last_pair.map(|v|v.elapsed().as_millis()),"pairs_accepted":metrics.accepted,"pairs_rejected":metrics.rejected,"rejection_reasons":metrics.reasons,"pairs_published":metrics.published_pairs,"individual_publish_calls":metrics.publish_calls,"unpaired_images_published":metrics.unpaired_images_published,"publish_failures":metrics.publish_failures,"stamp_failures":metrics.stamp_failures,"framesets_observed":metrics.framesets,"missing_pairs":metrics.missing,"skew_rejections":metrics.skew,"monotonic_rejections":metrics.monotonic,"poll_timeouts":metrics.timeouts,"pipeline_timing":metrics.timing_report(),"acquisition_effective":self.config.capture.acquisition,"message_timestamp":self.config.capture.message_timestamp(),"readiness_basis":if self.config.capture.preserve_images() {"both-streams-published"} else {"accepted-rgbd-pairs"},"native_recording_scope":"complete-rgbd-pairs-only","physical_sync_verified":false,"delivery_verified":false});
+            value["status_persistence"] = persistence;
+            atomic_status(&self.config.settings.status_path, &value)
+        })();
+        self.persistence.observe(started.elapsed());
+        if result.is_err() {
+            self.persistence_errors = self.persistence_errors.saturating_add(1);
+        } else {
+            self.last_write = Some((state.into(), Instant::now()));
         }
-        if let Some(quality) = &mut self.quality {
-            quality.persist()?;
-        }
-        atomic_status(
-            &self.config.settings.status_path,
-            &json!({"version":1,"kind":"capture-service-status","state":state,"ready":state=="ready","reason":reason,"last_failure_reason":self.last_failure,"session_id":self.session,"instance_id":self.instance,"snapshot_id":self.snapshot.as_ref().map(|s|&s.0),"snapshot_path":self.snapshot.as_ref().map(|s|&s.1),"quality":self.quality.as_ref().map(ServiceQuality::references),"usb_recovery":self.usb_recovery,"raw_recording":self.raw.as_ref().map(crate::raw_recording::RawRecorder::status),"generation":self.config.settings.generation,"config_sha256":self.config.hash,"pid":std::process::id(),"heartbeat_sequence":self.heartbeat,"updated_unix_ms":unix_ms(),"uptime_ms":self.started.elapsed().as_millis(),"restart_attempt":self.restarts,"last_pair_age_ms":last_pair.map(|v|v.elapsed().as_millis()),"pairs_accepted":metrics.accepted,"pairs_rejected":metrics.rejected,"pairs_published":metrics.published_pairs,"individual_publish_calls":metrics.publish_calls,"unpaired_images_published":metrics.unpaired_images_published,"publish_failures":metrics.publish_failures,"stamp_failures":metrics.stamp_failures,"framesets_observed":metrics.framesets,"missing_pairs":metrics.missing,"skew_rejections":metrics.skew,"monotonic_rejections":metrics.monotonic,"poll_timeouts":metrics.timeouts,"physical_sync_verified":false,"delivery_verified":false}),
-        )
+        result
     }
 }
 fn arm_parent_death(expected_parent: u32) -> Result<()> {
@@ -845,6 +884,10 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
         quality: None,
         raw: None,
         usb_recovery: None,
+        persistence: Default::default(),
+        persistence_errors: 0,
+        coalesced_partial_status: 0,
+        last_write: None,
     };
     status.quality = config
         .quality_runtime
@@ -906,10 +949,11 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                 return Err(error.into());
             }
         };
-        let mut pipeline = match sdk.open(
+        let mut pipeline = match sdk.open_with_options(
             &config.capture.serial,
             Some(config.capture.color.profile),
             Some(config.capture.depth.profile),
+            config.capture.sdk_options(),
         ) {
             Ok(pipeline) => pipeline,
             Err(error) => {
@@ -932,10 +976,17 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
         let mut consecutive = 0_u64;
         let mut had_ready = false;
         let mut sequence = 0_u64;
+        metrics.queue(queue.stats());
+        let mut stream_counts = [0_u64; 2];
+        let mut stream_progress = [None::<Instant>; 2];
+        let mut observed_depth_scale = None;
         let result = (|| -> Result<()> {
             while !STOP.load(Ordering::Relaxed) {
                 if let Some(quality) = &mut status.quality {
-                    quality.tick()?;
+                    let tick_started = Instant::now();
+                    let result = quality.tick();
+                    metrics.quality_tick.observe(tick_started.elapsed());
+                    result?;
                 }
                 let startup = opened.elapsed() < warmup;
                 let mut state = if had_ready && consecutive >= config.settings.ready_min_pairs {
@@ -963,13 +1014,21 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                     status.write("degraded", Some("STREAM_TIMEOUT"), &metrics, last_pair)?;
                     anyhow::bail!("stream timeout");
                 }
-                let set = match pipeline.wait(config.capture.poll_ms) {
+                let wait_started = Instant::now();
+                metrics.before_sdk_wait(wait_started);
+                let wait_result = pipeline.wait(config.capture.poll_ms);
+                let returned_at = Instant::now();
+                let returned_unix = rgbd::unix_ns();
+                metrics.sdk_wait_finished(wait_started, returned_at);
+                let set = match wait_result {
                     Ok(Some(set)) => set,
                     Ok(None) => {
+                        metrics.sdk_wait_timeouts += 1;
                         metrics.timeouts += 1;
                         continue;
                     }
                     Err(error) => {
+                        metrics.sdk_wait_errors += 1;
                         if let Some(quality) = &mut status.quality {
                             quality.evaluate(
                                 quality_core::FrameViolation::DeviceDisconnected,
@@ -981,20 +1040,67 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                 };
                 sequence += 1;
                 metrics.framesets += 1;
-                let received = Instant::now();
+                let received = returned_at;
+                metrics.sdk_clock_verified = config.capture.acquisition.is_some();
+                metrics.sdk_return(returned_at, returned_unix);
                 if startup {
                     if let Some(raw) = &status.raw {
                         raw.observe_excluded(true);
                     }
                 }
-                let color = set.color()?;
-                let depth = set.depth()?;
+                let mut color = set.color()?;
+                let mut depth = set.depth()?;
+                if let Some(frame) = color.as_ref() {
+                    metrics.sdk_frame(frame, false);
+                }
+                if let Some(frame) = depth.as_ref() {
+                    metrics.sdk_frame(frame, true);
+                }
+                if config.capture.message_timestamp() == capture_contract::MessageTimestamp::Global
+                {
+                    let mut unavailable = false;
+                    for frame in [&mut color, &mut depth] {
+                        if frame.is_some()
+                            && frame
+                                .as_ref()
+                                .context("available frame")?
+                                .global_timestamp_us()?
+                                .is_none()
+                        {
+                            unavailable = true;
+                            if config.capture.preserve_images() && !had_ready {
+                                *frame = None;
+                            }
+                        }
+                    }
+                    if unavailable {
+                        metrics.reject("GLOBAL_TIMESTAMP_UNAVAILABLE");
+                        ensure!(
+                            !had_ready,
+                            "global timestamp became unavailable after readiness"
+                        );
+                        if !config.capture.preserve_images() {
+                            continue;
+                        }
+                    }
+                }
                 let received_unix_ns = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .ok()
                     .and_then(|d| u64::try_from(d.as_nanos()).ok());
                 let color_metadata = color.as_ref().and_then(|f| f.metadata().ok());
                 let depth_metadata = depth.as_ref().and_then(|f| f.metadata().ok());
+                if let Some(metadata) = depth_metadata.as_ref().filter(|m| {
+                    m.format == orbbec_safe::Format::Depth16
+                        && m.width == config.capture.depth.profile.width
+                        && m.height == config.capture.depth.profile.height
+                }) {
+                    if let Some(scale) =
+                        metadata.depth_scale_mm.filter(|v| v.is_finite() && *v > 0.)
+                    {
+                        observed_depth_scale = Some(scale);
+                    }
+                }
                 if let Some(quality) = &mut status.quality {
                     quality.source_progress_invalid = false;
                     quality.binding_invalid = quality.snapshot.as_ref().is_some_and(|snapshot| {
@@ -1039,7 +1145,7 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                             orbbec_safe::Format::Depth16,
                         ),
                     ] {
-                        if frame.is_some() {
+                        if let Some(frame) = frame {
                             let valid = metadata.is_some_and(|m| {
                                 m.format == format
                                     && m.width == profile.width
@@ -1052,6 +1158,13 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                                         || m.depth_scale_mm
                                             .is_some_and(|v| v.is_finite() && v > 0.))
                             });
+                            if config.capture.message_timestamp()
+                                == capture_contract::MessageTimestamp::Global
+                            {
+                                if let Some(global) = frame.global_timestamp_us()? {
+                                    quality.globals.insert(stream.into(), global);
+                                }
+                            }
                             quality.receipt(stream, metadata, received, received_unix_ns, valid)?;
                         }
                     }
@@ -1102,12 +1215,59 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                                 }
                             }
                         }
-                        quality.evaluate(
-                            quality_core::FrameViolation::FrameContractInvalid,
-                            quality_core::Condition::Violated,
-                        )?;
+                        if !config.capture.preserve_images() {
+                            quality.evaluate(
+                                quality_core::FrameViolation::FrameContractInvalid,
+                                quality_core::Condition::Violated,
+                            )?;
+                        }
                     }
-                    if !startup {
+                    if !startup && config.capture.publish_partial() {
+                        if config.capture.preserve_images()
+                            && bound_guard.is_none()
+                            && config.capture.quality_policy.is_some()
+                        {
+                            if let Some(scale) = observed_depth_scale {
+                                let instance = std::env::var("GDP_CAPTURE_INSTANCE_ID").context(
+                                    "explicit runtime instance required for pair evidence",
+                                )?;
+                                let snapshot = crate::capture_snapshot::build(
+                                    &config.capture,
+                                    &pipeline.calibration()?,
+                                    crate::capture_snapshot::RuntimeBinding {
+                                        generation: &config.settings.generation,
+                                        session: &status.session,
+                                        instance: &instance,
+                                        runtime_sha: &config.hash,
+                                        runtime_contract: config.runtime_contract.as_ref(),
+                                    },
+                                    scale,
+                                )?;
+                                let directory = config
+                                    .settings
+                                    .status_path
+                                    .parent()
+                                    .context("status directory")?
+                                    .join("snapshots");
+                                let store =
+                                    capture_contract::store::SnapshotStore::open(&directory)?;
+                                let id = store.publish(&snapshot)?;
+                                status.snapshot = Some((
+                                    id.to_string(),
+                                    directory
+                                        .join(format!("{id}.json"))
+                                        .to_string_lossy()
+                                        .into(),
+                                ));
+                                if let Some(quality) = &mut status.quality {
+                                    quality.bind(&snapshot)?;
+                                }
+                                bound_guard = Some(frame_core::BoundPairGuard::new(
+                                    snapshot,
+                                    status.started,
+                                )?);
+                            }
+                        }
                         if config.capture.ros.is_some() && ros.is_none() {
                             ros = rgbd::setup_ros(&config.capture, &pipeline.calibration()?)?;
                             if let Some(output) = &mut ros {
@@ -1117,10 +1277,13 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                             }
                         }
                         rgbd::drain(&mut queue, &mut ros, &mut metrics)?;
-                        for (frame, stream, is_depth) in [
+                        for (index, (frame, stream, is_depth)) in [
                             (color, &config.capture.color, false),
                             (depth, &config.capture.depth, true),
-                        ] {
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
                             if let Some(frame) = frame {
                                 rgbd::publish_unpaired(
                                     frame,
@@ -1130,13 +1293,35 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                                     received,
                                     &mut ros,
                                     &mut metrics,
+                                    config.capture.message_timestamp(),
                                 )?;
+                                stream_counts[index] += 1;
+                                stream_progress[index] = Some(Instant::now());
                             }
                         }
                     }
-                    consecutive = 0;
+                    if config.capture.preserve_images() {
+                        consecutive = stream_counts[0].min(stream_counts[1]);
+                        last_pair = stream_progress[0]
+                            .zip(stream_progress[1])
+                            .map(|(a, b)| a.min(b));
+                        had_ready |= consecutive >= config.settings.ready_min_pairs
+                            && (config.capture.quality_policy.is_none()
+                                || status.snapshot.is_some());
+                    } else {
+                        consecutive = 0;
+                    }
                     if !startup {
-                        status.write("degraded", Some(missing_reason), &metrics, last_pair)?;
+                        status.partial_write(
+                            if config.capture.preserve_images() && had_ready {
+                                "ready"
+                            } else {
+                                "degraded"
+                            },
+                            missing_reason,
+                            &metrics,
+                            last_pair,
+                        )?;
                     }
                     continue;
                 }
@@ -1239,27 +1424,56 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                     }
                 }
                 status.observe_raw_quality()?;
-                let packets = (|| -> Result<_> {
-                    Ok((
-                        rgbd::packet(
-                            color.unwrap(),
-                            &config.capture.color,
-                            false,
-                            false,
-                            received,
-                            &mut metrics,
-                        )?,
-                        rgbd::packet_measured(
-                            depth.unwrap(),
-                            &config.capture.depth,
-                            true,
-                            config.capture.normalize,
-                            received,
-                            &mut metrics,
-                            status.quality.is_some(),
-                        )?,
-                    ))
-                })();
+                let color_packet = rgbd::packet_measured_with_timestamp(
+                    color.unwrap(),
+                    &config.capture.color,
+                    false,
+                    false,
+                    received,
+                    &mut metrics,
+                    false,
+                    config.capture.message_timestamp(),
+                )
+                .map(|p| p.packet);
+                let depth_packet = rgbd::packet_measured_with_timestamp(
+                    depth.unwrap(),
+                    &config.capture.depth,
+                    true,
+                    config.capture.normalize,
+                    received,
+                    &mut metrics,
+                    status.quality.is_some(),
+                    config.capture.message_timestamp(),
+                );
+                if !startup && config.capture.preserve_images() {
+                    rgbd::drain(&mut queue, &mut ros, &mut metrics)?;
+                    for (index, packet) in [
+                        color_packet.as_ref().ok(),
+                        depth_packet.as_ref().ok().map(|p| &p.packet),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        if let Some(packet) = packet {
+                            rgbd::publish_packet(
+                                packet,
+                                index == 1,
+                                &mut ros,
+                                &mut metrics,
+                                false,
+                            )?;
+                            stream_counts[index] += 1;
+                            stream_progress[index] = Some(Instant::now());
+                        }
+                    }
+                    consecutive = stream_counts[0].min(stream_counts[1]);
+                    last_pair = stream_progress[0]
+                        .zip(stream_progress[1])
+                        .map(|(a, b)| a.min(b));
+                    had_ready |= consecutive >= config.settings.ready_min_pairs
+                        && (config.capture.quality_policy.is_none() || status.snapshot.is_some());
+                }
+                let packets = (|| -> Result<_> { Ok((color_packet?, depth_packet?)) })();
                 let (color, depth) = match packets {
                     Ok((color, measured)) => {
                         if let Some(quality) = &mut status.quality {
@@ -1382,10 +1596,16 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                                 )?;
                             }
                         }
-                        consecutive = 0;
+                        if !config.capture.preserve_images() {
+                            consecutive = 0;
+                        }
                         if !startup {
                             status.write(
-                                "degraded",
+                                if config.capture.preserve_images() && had_ready {
+                                    "ready"
+                                } else {
+                                    "degraded"
+                                },
                                 Some("PAIR_CONTRACT_REJECTED"),
                                 &metrics,
                                 last_pair,
@@ -1412,9 +1632,11 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                 }
                 let evicted = queue.push(QueuedPair {
                     bound_evidence,
+                    images_published: config.capture.preserve_images(),
                     pair,
                     enqueued_at: Instant::now(),
                 });
+                metrics.queue(queue.stats());
                 if let Some(quality) = &mut status.quality {
                     if evicted.is_some() {
                         quality.diagnostic(quality_core::DiagnosticKind::QueueOverflow)?;
@@ -1432,8 +1654,10 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                 drain_with_quality(status.quality.as_mut(), &mut metrics, |metrics| {
                     rgbd::drain(&mut queue, &mut ros, metrics)
                 })?;
-                last_pair = Some(Instant::now());
-                consecutive += 1;
+                if !config.capture.preserve_images() {
+                    last_pair = Some(Instant::now());
+                    consecutive += 1;
+                }
                 if consecutive >= config.settings.ready_min_pairs {
                     state = "ready";
                     had_ready = true;
@@ -1446,6 +1670,7 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
             Ok(())
         })();
         while queue.pop().is_some() {}
+        metrics.queue(queue.stats());
         // This native stop can hang; the parent supervisor enforces shutdown deadline.
         let stopped = pipeline.stop();
         result?;
@@ -2605,6 +2830,88 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
     #[test]
+    fn complete_partial_status_coalesces_disk_writes_without_losing_counters_or_final_state() {
+        let dir = std::env::temp_dir().join(format!(
+            "capture-coalesced-status-{}",
+            random_session().unwrap()
+        ));
+        let mut value = config();
+        value["acquisition"] =
+            json!({"preset":"complete","advanced":{"message_timestamp":"system"}});
+        value["service"]["status_path"] = json!(dir.join("status.json"));
+        let parsed = ServiceConfig::parse(&value.to_string()).unwrap();
+        let mut status = Status {
+            config: &parsed,
+            session: random_session().unwrap(),
+            instance: "c".repeat(64),
+            snapshot: None,
+            heartbeat: 0,
+            started: Instant::now(),
+            restarts: 0,
+            last_failure: None,
+            quality: None,
+            raw: None,
+            usb_recovery: None,
+            persistence: Default::default(),
+            persistence_errors: 0,
+            coalesced_partial_status: 0,
+            last_write: None,
+        };
+        let mut metrics = Metrics::default();
+        for n in 0..45 {
+            metrics.framesets += 1;
+            metrics.missing += 1;
+            let reason = if n % 2 == 0 {
+                "MISSING_COLOR"
+            } else {
+                "MISSING_DEPTH"
+            };
+            metrics.reject(reason);
+            status
+                .partial_write("ready", reason, &metrics, None)
+                .unwrap();
+        }
+        assert_eq!(status.heartbeat, 1);
+        assert_eq!(status.coalesced_partial_status, 44);
+        status
+            .write("stopped", Some("SIGNAL"), &metrics, None)
+            .unwrap();
+        let saved: Value =
+            serde_json::from_slice(&fs::read(&parsed.settings.status_path).unwrap()).unwrap();
+        assert_eq!(saved["state"], "stopped");
+        assert_eq!(saved["missing_pairs"], 45);
+        assert_eq!(saved["rejection_reasons"]["MISSING_COLOR"], 23);
+        assert_eq!(saved["rejection_reasons"]["MISSING_DEPTH"], 22);
+        assert_eq!(saved["status_persistence"]["coalesced_partial_updates"], 44);
+        assert_eq!(saved["status_persistence"]["wall"]["samples"], 1);
+        status
+            .partial_write("ready", "MISSING_DEPTH", &metrics, None)
+            .unwrap();
+        assert_eq!(status.heartbeat, 3); // state change is never delayed
+        status.last_write.as_mut().unwrap().1 =
+            Instant::now() - Duration::from_millis(parsed.settings.heartbeat_ms + 1);
+        status
+            .partial_write("ready", "MISSING_DEPTH", &metrics, None)
+            .unwrap();
+        assert_eq!(status.heartbeat, 4);
+        // Error and protection-related updates use write directly, irrespective
+        // of the previous state or heartbeat deadline.
+        status
+            .write("ready", Some("RECORDING_PROTECTED"), &metrics, None)
+            .unwrap();
+        assert_eq!(status.heartbeat, 5);
+        fs::remove_file(&parsed.settings.status_path).unwrap();
+        fs::create_dir(&parsed.settings.status_path).unwrap();
+        assert!(
+            status
+                .write("failed", Some("SESSION_FAILED"), &metrics, None)
+                .is_err()
+        );
+        assert_eq!(status.persistence_errors, 1);
+        assert_eq!(status.persistence.samples(), 6);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
     fn status_is_atomic_private_and_redacted() {
         let dir =
             std::env::temp_dir().join(format!("capture-status-test-{}", random_session().unwrap()));
@@ -2623,6 +2930,10 @@ mod tests {
             quality: None,
             raw: None,
             usb_recovery: None,
+            persistence: Default::default(),
+            persistence_errors: 0,
+            coalesced_partial_status: 0,
+            last_write: None,
         };
         status
             .write(

@@ -145,7 +145,12 @@ an unlimited list; session counters remain independent of window eviction.
 No hardware, scale, long-duration or performance validation is implied by the
 synthetic measurement/phase/diagnostic tests.
 
-## Available images in incomplete framesets
+## Compatibility behavior without an acquisition preset
+
+The following behavior applies when `acquisition` is omitted. Explicit presets
+override its publication and readiness rules as described below.
+
+### Available images in incomplete framesets
 
 After startup discovery, `capture-service` and `rgbd-probe` publish an available
 color or depth image even when the other SDK frameset route is missing. Payload,
@@ -169,3 +174,45 @@ recording is never presented as complete. That recorder is not an independent
 stream archive. Hardware exposure synchronization and elimination of SDK pairing
 slips require separate hardware validation; a shared device clock alone does not
 establish exposure synchronization.
+
+
+## Explicit acquisition presets
+
+`acquisition` is an optional, strictly validated shared policy. Its requested and
+resolved values are included in capture configuration binding. The management
+workbench exposes the presets and clock/aggregation overrides; changing shared
+policy invalidates every camera confirmation. Old configurations are not silently
+migrated. See [configuration](../guides/configuration.md#rust-采集预设).
+
+`complete` defaults to software sync off, ANY aggregation and global message
+stamps. Each valid stream is published before pair acceptance. A missing, invalid
+or skew-rejected peer does not suppress that image, and later pair evidence does
+not republish it. Partial framesets are pair-availability diagnostics rather than
+an image contract violation. Pair evidence still requires the same SDK frameset
+and valid existing device/system tolerance; no cross-frameset pair is fabricated.
+
+Readiness requires both streams to reach the configured minimum independently,
+with idle progress determined by the older stream. When quality binding is enabled,
+a snapshot of actual active SDK profiles and observed depth scale must exist before
+readiness, including when DISABLED aggregation yields only independent streams.
+Discovery frames remain excluded. Global zero is counted during bounded startup;
+a valid peer may still publish. Global loss after readiness terminates the session,
+without replacing the message clock with system. Duplicate/regressing stamps remain
+invalid. Explicit policies check and apply the SDK realtime host clock before stream
+startup; global capture semantics do not establish hardware exposure synchronization.
+
+`strict-rgbd` defaults to software sync on, ANY aggregation and global stamps. Only
+accepted complete pairs publish images. DISABLED aggregation is rejected for this
+preset because it cannot satisfy its pair-readiness contract. ALL is an explicit
+advanced choice that filters incomplete framesets inside the SDK and prevents GDP
+from accounting for those filtered images.
+
+`hardware-sync` is reserved and rejected: hardware role/trigger configuration and
+physical synchronization validation are not implemented. The UI does not allow its
+activation and no policy sets hardware sync verified.
+
+The native V2 recorder remains a whole-pair format. `complete` with native recording
+is rejected before acquisition; independent images require a ROS stream recorder.
+The strict RGB-D acceptance observer remains a pair consumer and is not the service's
+independent-stream health check. All publication counters describe local calls, not
+downstream receipt, USB integrity, or elimination of SDK queue drops.

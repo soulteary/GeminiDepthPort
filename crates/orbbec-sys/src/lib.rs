@@ -163,7 +163,55 @@ api! {
     ob_delete_error: unsafe extern "C" fn(*mut Error),
 }
 
+/// Optional synchronization and clock APIs are resolved only on explicit request.
+/// This preserves acquisition compatibility with SDKs exposing the original subset.
+pub type HostClockGetFn = unsafe extern "C" fn(*const Handle, ErrorOut) -> c_int;
+pub type HostClockSetFn = unsafe extern "C" fn(*mut Handle, c_int, ErrorOut);
+pub type PipelineSyncFn = unsafe extern "C" fn(*mut Handle, ErrorOut);
+pub type AggregateFn = unsafe extern "C" fn(*mut Handle, c_int, ErrorOut);
+pub type GlobalSupportedFn = unsafe extern "C" fn(*const Handle, ErrorOut) -> bool;
+pub type GlobalEnableFn = unsafe extern "C" fn(*mut Handle, bool, ErrorOut);
+pub type GlobalTimestampFn = unsafe extern "C" fn(*const Handle, ErrorOut) -> u64;
+
 impl Api {
+    pub fn host_clock_api(&self) -> Result<(HostClockGetFn, HostClockSetFn), String> {
+        unsafe {
+            Ok((
+                self._library
+                    .symbol(b"ob_context_get_timestamp_clock_type\0")?,
+                self._library
+                    .symbol(b"ob_context_set_timestamp_clock_type\0")?,
+            ))
+        }
+    }
+    pub fn frame_sync_api(&self, enabled: bool) -> Result<PipelineSyncFn, String> {
+        unsafe {
+            self._library.symbol(if enabled {
+                b"ob_pipeline_enable_frame_sync\0"
+            } else {
+                b"ob_pipeline_disable_frame_sync\0"
+            })
+        }
+    }
+    pub fn aggregate_api(&self) -> Result<AggregateFn, String> {
+        unsafe {
+            self._library
+                .symbol(b"ob_config_set_frame_aggregate_output_mode\0")
+        }
+    }
+    pub fn global_timestamp_api(&self) -> Result<GlobalTimestampFn, String> {
+        unsafe { self._library.symbol(b"ob_frame_get_global_timestamp_us\0") }
+    }
+    pub fn global_device_api(&self) -> Result<(GlobalSupportedFn, GlobalEnableFn), String> {
+        unsafe {
+            Ok((
+                self._library
+                    .symbol(b"ob_device_is_global_timestamp_supported\0")?,
+                self._library
+                    .symbol(b"ob_device_enable_global_timestamp\0")?,
+            ))
+        }
+    }
     pub fn calibration_api(&self) -> Result<CalibrationApi, String> {
         macro_rules! get {
             ($name:literal) => {

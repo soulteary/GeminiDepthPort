@@ -90,3 +90,27 @@ extern "C" int32_t gdp_ros_aux_publish_evidence(void *handle,const char *json,si
   if(p.last.pair_sequence==2){event("evidence-failed");return 2;}
   event("evidence-copied");return 0;
 }
+
+#ifndef MOCK_NO_TIMESTAMP_EXTENSION
+extern "C" int32_t gdp_ros_publish_timestamped(void *handle, const gdp_ros_frame *frame, uint64_t global_timestamp_us, uint32_t source) {
+  if (!handle) return 1;
+  auto &p = *static_cast<Mock *>(handle);
+  if (!gdp_ros::frame_valid_timestamped(frame, p.width, p.height, global_timestamp_us, source)) return 1;
+  if (frame->sequence == 999) return 2;
+  p.owned.assign(frame->data, frame->data + frame->data_len);
+  event(source == 2 ? "publish-global" : "publish-system-with-global");
+  return 0;
+}
+#endif
+
+#if !defined(MOCK_NO_OBSERVATION_EXTENSION) && !defined(MOCK_NO_TIMESTAMP_EXTENSION)
+extern "C" int32_t gdp_ros_publish_observed(void *handle, const gdp_ros_frame *frame, uint64_t global_timestamp_us, uint32_t source, uint64_t sdk_return_unix_ns, uint32_t sdk_system_clock_verified) {
+  if (!sdk_return_unix_ns || sdk_system_clock_verified>1) return 1;
+#ifdef MOCK_EXPECT_CLOCK_VERIFIED
+  if (sdk_system_clock_verified!=MOCK_EXPECT_CLOCK_VERIFIED) return 1;
+#endif
+  event("sdk-return-observed");
+  event(sdk_system_clock_verified ? "sdk-system-clock-verified" : "sdk-system-clock-unverified");
+  return source==1 && !global_timestamp_us ? gdp_ros_publish(handle, frame) : gdp_ros_publish_timestamped(handle, frame, global_timestamp_us, source);
+}
+#endif

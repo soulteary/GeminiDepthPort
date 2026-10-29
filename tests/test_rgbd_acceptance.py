@@ -96,6 +96,22 @@ class RgbdConsumerTests(unittest.TestCase):
             self.assertFalse(report['physical_scale_verified'])
             self.assertNotIn('synthetic', json.dumps(report))
 
+    def test_age_scope_follows_actual_global_or_system_mapping(self):
+        s = spec()
+        report = self.run_events(events(s), s).summary()
+        self.assertIn('sdk-system-receive', report['streams']['color']['age_ms']['scope'])
+        data = events(s)
+        for kind, role, value, received in data:
+            if kind == 'metadata':
+                value['global_timestamp_us'] = value['system_timestamp_us']
+                value['system_timestamp_us'] += 1000
+                value['stamp_mapping'] = 'sdk-global-unix'
+        report = self.run_events(data, s).summary()
+        self.assertTrue(report['ok'], report)
+        self.assertIn('sdk-global-capture', report['streams']['color']['age_ms']['scope'])
+        report = self.run_events(events(s, True), s, True).summary()
+        self.assertIn('unspecified-or-mixed', report['streams']['color']['age_ms']['scope'])
+
     def test_mismatch_and_unsupported_claims_fail(self):
         s = spec()
         for kind, field, value in [('pair', 'depth_sequence', 999), ('pair', 'hardware_sync_verified', True),
@@ -105,6 +121,28 @@ class RgbdConsumerTests(unittest.TestCase):
             target = next(event for event in data if event[0] == kind and (kind == 'pair' or event[1] == 'depth'))
             target[2][field] = value
             self.assertFalse(self.run_events(data, s).summary()['ok'], (kind, field))
+
+    def test_global_stamps_preserve_system_receipt_and_validate_selected_clock(self):
+        s = spec()
+        for stream in s['streams'].values():
+            stream['timestamp_source'] = 'global'
+        data = events(s)
+        for kind, _, value, _ in data:
+            if kind == 'metadata':
+                value['global_timestamp_us'] = value['system_timestamp_us']
+                value['system_timestamp_us'] += 5000
+                value['stamp_mapping'] = 'sdk-global-unix'
+        self.assertTrue(self.run_events(data, s).summary()['ok'])
+        for field, invalid in [('global_timestamp_us', None), ('global_timestamp_us', 0),
+                               ('global_timestamp_us', 17), ('system_timestamp_us', 0),
+                               ('stamp_mapping', 'sdk-system-unix'), ('stamp_mapping', 'unknown')]:
+            broken = copy.deepcopy(data)
+            metadata = next(e[2] for e in broken if e[0] == 'metadata')
+            metadata[field] = invalid
+            self.assertFalse(self.run_events(broken, s).summary()['ok'], (field, invalid))
+        # Explicit global metadata cannot satisfy a system-configured observer.
+        s['streams']['color']['timestamp_source'] = 'host'
+        self.assertFalse(self.run_events(data, s).summary()['ok'])
 
     def test_missing_session_and_sequence_regression_fail(self):
         s = spec()

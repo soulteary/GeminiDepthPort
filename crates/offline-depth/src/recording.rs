@@ -1,9 +1,14 @@
 //! Versioned recording boundary. Observed associations never become SDK framesets.
 use super::*;
+use capture_contract::timing::StageStats;
 use capture_contract::{DepthRepresentation, QuantizationPolicy};
 use capture_observer::{DecodedCameraInfo, MetadataProvenance, ObservedAssociation};
 use quality_core::{ClockMapper, SourceClock, SourceStamp, map_source_time};
-use std::io::{BufRead, BufReader};
+use std::{
+    io::{BufRead, BufReader},
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -632,6 +637,52 @@ pub fn process(
     Ok(report)
 }
 
+/// Runtime-only IO diagnostics, excluded from recording files and content IDs.
+#[derive(Clone, Default)]
+pub struct RawRecordingDiagnostics(Arc<Mutex<RawIoStats>>);
+#[derive(Default)]
+struct RawIoStats {
+    write: StageStats,
+    fsync: StageStats,
+    rename: StageStats,
+    verification: StageStats,
+    append: StageStats,
+    finish: StageStats,
+    failures: std::collections::BTreeMap<&'static str, u64>,
+}
+impl RawRecordingDiagnostics {
+    fn measure<T, E>(
+        &self,
+        stage: &'static str,
+        run: impl FnOnce() -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E> {
+        let start = Instant::now();
+        let result = run();
+        let elapsed = start.elapsed();
+        let mut stats = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        match stage {
+            "write" => &mut stats.write,
+            "fsync" => &mut stats.fsync,
+            "rename" => &mut stats.rename,
+            "verification" => &mut stats.verification,
+            "append" => &mut stats.append,
+            _ => &mut stats.finish,
+        }
+        .observe(elapsed);
+        if result.is_err() {
+            *stats.failures.entry(stage).or_default() += 1;
+        }
+        result
+    }
+    pub fn report(&self) -> serde_json::Value {
+        let stats = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        serde_json::json!({"clock":"monotonic-duration","scope":"native-v2-writer-only; write-success-is-not-durability",
+            "write":stats.write.report(),"fsync":stats.fsync.report(),"rename":stats.rename.report(),
+            "verification":stats.verification.report(),"append":stats.append.report(),"finish_total":stats.finish.report(),
+            "failed_calls":stats.failures})
+    }
+}
+
 /// Optional native SDK sink. No SDK handles cross this API; caller owns both
 /// copied pixel buffers. Bounded acquisition queues remain the caller's policy.
 pub struct RawRecordingWriter {
@@ -645,6 +696,7 @@ pub struct RawRecordingWriter {
     completed: bool,
     max_bytes: u64,
     used_bytes: u64,
+    diagnostics: RawRecordingDiagnostics,
 }
 impl RawRecordingWriter {
     pub fn begin(parent: &Path, name: &str, snapshot: SnapshotEnvelope) -> Result<Self> {
@@ -655,6 +707,21 @@ impl RawRecordingWriter {
         name: &str,
         snapshot: SnapshotEnvelope,
         max_bytes: u64,
+    ) -> Result<Self> {
+        Self::begin_with_diagnostics(
+            parent,
+            name,
+            snapshot,
+            max_bytes,
+            RawRecordingDiagnostics::default(),
+        )
+    }
+    pub fn begin_with_diagnostics(
+        parent: &Path,
+        name: &str,
+        snapshot: SnapshotEnvelope,
+        max_bytes: u64,
+        diagnostics: RawRecordingDiagnostics,
     ) -> Result<Self> {
         snapshot.verify(&snapshot.content.binding)?;
         require(
@@ -679,7 +746,7 @@ impl RawRecordingWriter {
             max_bytes > 0 && snapshot_bytes.len() as u64 <= max_bytes,
             "RECORDING_BYTE_LIMIT",
         )?;
-        write_private(&stage.join("snapshot.json"), &snapshot_bytes)?;
+        write_private_observed(&stage.join("snapshot.json"), &snapshot_bytes, &diagnostics)?;
         let records = new_private(&stage.join("records.jsonl"))?;
         Ok(Self {
             stage,
@@ -692,7 +759,11 @@ impl RawRecordingWriter {
             completed: false,
             max_bytes,
             used_bytes: snapshot_bytes.len() as u64,
+            diagnostics,
         })
+    }
+    pub fn diagnostics(&self) -> RawRecordingDiagnostics {
+        self.diagnostics.clone()
     }
     /// Persist the original ROS/mm snapshot link before any native pair. It is
     /// public provenance, not a claim that mm can recover original SDK counts.
@@ -723,7 +794,9 @@ impl RawRecordingWriter {
         endian: StorageEndian,
     ) -> Result<()> {
         require(!self.failed, "RECORDING_ALREADY_FAILED")?;
-        let result = self.append_inner(pair, color, depth, endian);
+        let diagnostics = self.diagnostics.clone();
+        let result =
+            diagnostics.measure("append", || self.append_inner(pair, color, depth, endian));
         if result.is_err() {
             self.failed = true;
         }
@@ -816,7 +889,8 @@ impl RawRecordingWriter {
         raw.push(b'\n');
         require(raw.len() <= 65536, "RECORDING_INDEX_LINE_LIMIT")?;
         self.reserve_bytes(raw.len())?;
-        self.records.write_all(&raw)?;
+        self.diagnostics
+            .measure("write", || self.records.write_all(&raw))?;
         self.digest.update(&raw);
         self.count += 1;
         Ok(())
@@ -833,7 +907,7 @@ impl RawRecordingWriter {
     }
     fn write_budgeted(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
         self.reserve_bytes(bytes.len())?;
-        write_private(&self.stage.join(name), bytes)?;
+        write_private_observed(&self.stage.join(name), bytes, &self.diagnostics)?;
         Ok(())
     }
     pub fn finish(self) -> Result<PathBuf> {
@@ -842,8 +916,13 @@ impl RawRecordingWriter {
     /// Acquire an application RAII commit guard only after full disk validation.
     /// The guard stays held through no-replace publication, COMPLETE and fsync.
     pub fn finish_guarded<G>(mut self, acquire: impl FnOnce() -> Result<G>) -> Result<PathBuf> {
+        let diagnostics = self.diagnostics.clone();
+        diagnostics.measure("finish", || self.finish_inner(acquire))
+    }
+    fn finish_inner<G>(&mut self, acquire: impl FnOnce() -> Result<G>) -> Result<PathBuf> {
         require(!self.failed && self.count > 0, "RECORDING_INCOMPLETE")?;
-        self.records.sync_all()?;
+        self.diagnostics
+            .measure("fsync", || self.records.sync_all())?;
         let records_sha256 = lower_hex(self.digest.clone().finish().as_ref());
         let manifest = RecordingManifest {
             version: 2,
@@ -855,34 +934,47 @@ impl RawRecordingWriter {
             record_count: self.count,
         };
         self.write_budgeted("manifest.json", &serde_json::to_vec(&manifest)?)?;
-        let mut verify = RecordingDirectorySource::open(&self.stage)?;
-        while verify.next_frame()?.is_some() {}
+        self.diagnostics.measure("verification", || -> Result<()> {
+            let mut verify = RecordingDirectorySource::open(&self.stage)?;
+            while verify.next_frame()?.is_some() {}
+            Ok(())
+        })?;
         let _commit_guard = acquire()?;
-        fs::File::open(&self.stage)?.sync_all()?;
+        self.diagnostics
+            .measure("fsync", || fs::File::open(&self.stage)?.sync_all())?;
         // No prepared COMPLETE marker survives a failed no-replace commit.
-        depth_output::rename_directory_no_replace(&self.stage, &self.final_path)?;
+        self.diagnostics.measure("rename", || {
+            depth_output::rename_directory_no_replace(&self.stage, &self.final_path)
+        })?;
         self.completed = true;
         let final_path = self.final_path.clone();
         let completed = (|| -> Result<()> {
             self.reserve_bytes(b"recording-directory-v2; no business validity decision\n".len())?;
-            write_private(
+            write_private_observed(
                 &final_path.join("COMPLETE"),
                 b"recording-directory-v2; no business validity decision\n",
+                &self.diagnostics,
             )?;
-            fs::File::open(&final_path)?.sync_all()?;
-            fs::File::open(
-                final_path
-                    .parent()
-                    .ok_or(OfflineError::Invalid("RECORDING_PARENT"))?,
-            )?
-            .sync_all()?;
+            self.diagnostics
+                .measure("fsync", || fs::File::open(&final_path)?.sync_all())?;
+            let parent = final_path
+                .parent()
+                .ok_or(OfflineError::Invalid("RECORDING_PARENT"))?;
+            self.diagnostics
+                .measure("fsync", || fs::File::open(parent)?.sync_all())?;
             Ok(())
         })();
         if let Err(error) = completed {
             // Keep publication failure visibly partial where possible. Never
             // overwrite a concurrently-created stage when rolling back.
             let _ = fs::remove_file(final_path.join("COMPLETE"));
-            if depth_output::rename_directory_no_replace(&final_path, &self.stage).is_ok() {
+            if self
+                .diagnostics
+                .measure("rename", || {
+                    depth_output::rename_directory_no_replace(&final_path, &self.stage)
+                })
+                .is_ok()
+            {
                 self.completed = false;
             }
             return Err(error);
@@ -910,9 +1002,16 @@ fn new_private(path: &Path) -> std::io::Result<fs::File> {
     }
     options.open(path)
 }
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+fn write_private_observed(
+    path: &Path,
+    bytes: &[u8],
+    diagnostics: &RawRecordingDiagnostics,
+) -> std::io::Result<()> {
     use std::io::Write;
-    let mut file = new_private(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
+    let file = diagnostics.measure("write", || -> std::io::Result<fs::File> {
+        let mut file = new_private(path)?;
+        file.write_all(bytes)?;
+        Ok(file)
+    })?;
+    diagnostics.measure("fsync", || file.sync_all())
 }

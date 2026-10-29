@@ -7,6 +7,7 @@
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <algorithm>
+#include <chrono>
 #include <iomanip>
 #include <limits>
 #include <locale>
@@ -17,6 +18,11 @@
 #include <string>
 
 namespace {
+uint64_t unix_now_ns() {
+  const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  return ns > 0 ? static_cast<uint64_t>(ns) : 0;
+}
 struct Publisher {
   std::shared_ptr<rclcpp::Context> context;
   std::shared_ptr<rclcpp::Node> node;
@@ -32,7 +38,7 @@ struct Publisher {
     if (context && context->is_valid()) { try { context->shutdown("bridge destroyed"); } catch (...) {} }
   }
 };
-std::string frame_metadata(const gdp_ros_frame &f, const std::string &frame_id, const std::string &session_id) {
+std::string frame_metadata(const gdp_ros_frame &f, const std::string &frame_id, const std::string &session_id, uint64_t global_timestamp_us, uint32_t source, uint64_t sdk_return_unix_ns, uint64_t publication_start_unix_ns, uint64_t image_publish_finished_unix_ns, uint64_t image_publish_wall_ns, bool sdk_system_clock_verified) {
   std::ostringstream out;
   out.imbue(std::locale::classic());
   out << std::setprecision(std::numeric_limits<float>::max_digits10)
@@ -43,12 +49,22 @@ std::string frame_metadata(const gdp_ros_frame &f, const std::string &frame_id, 
       << ",\"device_timestamp_us\":";
   if (f.has_device_timestamp) out << f.device_timestamp_us; else out << "null";
   out << ",\"system_timestamp_us\":" << f.system_timestamp_us
-      << ",\"stamp_mapping\":\"sdk-system-unix\",\"publisher_qos_verified\":true,\"normalized\":" << (f.normalized ? "true" : "false")
+      << ",\"global_timestamp_us\":";
+  if (global_timestamp_us) out << global_timestamp_us; else out << "null";
+  out << ",\"stamp_mapping\":\"" << (source == 2 ? "sdk-global-unix" : "sdk-system-unix")
+      << "\",\"publisher_qos_verified\":true,\"normalized\":" << (f.normalized ? "true" : "false")
       << ",\"source_depth_scale_mm\":";
   if (f.has_depth_scale) out << f.source_depth_scale_mm; else out << "null";
   out << ",\"output_depth_scale_mm\":";
   if (f.has_depth_scale) out << f.output_depth_scale_mm; else out << "null";
   if (!session_id.empty()) out << ",\"session_id\":\"" << session_id << "\"";
+  out << ",\"sdk_return_unix_ns\":";
+  if (sdk_return_unix_ns) out << sdk_return_unix_ns; else out << "null";
+  out << ",\"publication_start_unix_ns\":" << publication_start_unix_ns
+      << ",\"image_publish_finished_unix_ns\":" << image_publish_finished_unix_ns
+      << ",\"image_publish_wall_ns\":" << image_publish_wall_ns
+      << ",\"sdk_system_clock_verified\":" << (sdk_system_clock_verified ? "true" : "false")
+      << ",\"timing_clock\":\"host-realtime-unix-ns\",\"metadata_available_after_image_publish\":true";
   out << '}';
   return out.str();
 }
@@ -100,11 +116,12 @@ extern "C" int32_t gdp_ros_set_session_id(void *handle, const char *id) {
     p.session_id=id;return 0;
   } catch (...) {return 2;}
 }
-extern "C" int32_t gdp_ros_publish(void *handle, const gdp_ros_frame *f) {
-  if (!handle) return 1;
+extern "C" int32_t gdp_ros_publish_observed(void *handle, const gdp_ros_frame *f, uint64_t global_timestamp_us, uint32_t source, uint64_t sdk_return_unix_ns, uint32_t sdk_system_clock_verified) {
+  if (!handle || sdk_system_clock_verified > 1) return 1;
   try {
+    const auto publication_start_unix_ns = unix_now_ns();
     auto &p = *static_cast<Publisher *>(handle);
-    if (!gdp_ros::frame_valid(f, p.calibration.width, p.calibration.height)) return 1;
+    if (!gdp_ros::frame_valid_timestamped(f, p.calibration.width, p.calibration.height, global_timestamp_us, source)) return 1;
     const uint64_t stamp = uint64_t(f->stamp_sec) * 1000000000 + f->stamp_nanosec;
     if (p.published && (stamp <= p.last_stamp || f->sequence <= p.last_sequence)) return 1;
     sensor_msgs::msg::Image image;
@@ -117,15 +134,29 @@ extern "C" int32_t gdp_ros_publish(void *handle, const gdp_ros_frame *f) {
     // from the caller's payload or metadata is retained after this function.
     image.data.assign(f->data, f->data + static_cast<size_t>(f->data_len));
     auto info = p.calibration; info.header = image.header;
-    std_msgs::msg::String metadata;
-    metadata.data = frame_metadata(*f, image.header.frame_id, p.session_id);
-    if (metadata.data.size() > 4096) return 1;
+    // Capture callback/transport timing without claiming delivery completion.
+    // The subscriber may run before this publish call returns.
+    const auto frame_id = image.header.frame_id;
+    const auto image_publish_started = std::chrono::steady_clock::now();
     p.image->publish(std::move(image));
+    const auto image_publish_wall_ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - image_publish_started).count());
+    const auto image_publish_finished_unix_ns = unix_now_ns();
     p.info->publish(std::move(info));
+    std_msgs::msg::String metadata;
+    metadata.data = frame_metadata(*f, frame_id, p.session_id, global_timestamp_us, source,
+        sdk_return_unix_ns, publication_start_unix_ns, image_publish_finished_unix_ns, image_publish_wall_ns, sdk_system_clock_verified == 1);
+    if (metadata.data.size() > 4096) return 1;
     p.metadata->publish(std::move(metadata));
     p.published = true; p.last_stamp = stamp; p.last_sequence = f->sequence;
     return 0;
   } catch (const std::bad_alloc &) { return 3; } catch (...) { return 2; }
+}
+extern "C" int32_t gdp_ros_publish_timestamped(void *handle, const gdp_ros_frame *f, uint64_t global_timestamp_us, uint32_t source) {
+  return gdp_ros_publish_observed(handle, f, global_timestamp_us, source, 0, 0);
+}
+extern "C" int32_t gdp_ros_publish(void *handle, const gdp_ros_frame *f) {
+  return gdp_ros_publish_timestamped(handle, f, 0, 1);
 }
 extern "C" void gdp_ros_destroy(void *handle) {
   try { delete static_cast<Publisher *>(handle); } catch (...) {}

@@ -60,6 +60,15 @@ int32_t gdp_ros_create(const gdp_ros_config *config, void **out_handle);
 // Optional session extension: bind exactly once before the first publish.
 int32_t gdp_ros_set_session_id(void *handle, const char *session_id);
 int32_t gdp_ros_publish(void *handle, const gdp_ros_frame *frame);
+/* Optional extension, retaining ABI v1 frame layout. source: 1=system, 2=global.
+ * global_timestamp_us=0 means unavailable; source=global then fails closed. */
+int32_t gdp_ros_publish_timestamped(void *handle, const gdp_ros_frame *frame,
+                                  uint64_t global_timestamp_us, uint32_t source);
+/* Optional timing extension: sdk_return_unix_ns is sampled by the SDK waiter.
+ * 0 means unavailable. It does not change the frame's timestamp mapping. */
+int32_t gdp_ros_publish_observed(void *handle, const gdp_ros_frame *frame,
+                               uint64_t global_timestamp_us, uint32_t source,
+                               uint64_t sdk_return_unix_ns, uint32_t sdk_system_clock_verified);
 void gdp_ros_destroy(void *handle);
 #ifdef __cplusplus
 }
