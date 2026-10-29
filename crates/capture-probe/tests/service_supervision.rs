@@ -1076,6 +1076,11 @@ fn faults_after_readiness_abort_raw_output_and_never_publish_invalid_frames() {
     ] {
         let f = fixture();
         configure_runtime_quality(&f, 1_000_000, 100_000_000);
+        // This test measures frame rejection, not scheduler latency during
+        // snapshot initialization on a shared CI runner.
+        let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+        config["service"]["heartbeat_timeout_ms"] = json!(3000);
+        fs::write(&f.config, config.to_string()).unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_capture-service"))
             .args(["--config", f.config.to_str().unwrap()])
             .env(key, if key == "GDP_MOCK_SCALE" { "0" } else { "1" })
