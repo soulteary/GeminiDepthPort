@@ -22,6 +22,7 @@ use std::{
 };
 #[derive(Clone)]
 pub(crate) struct RawSettings {
+    pub chunked: bool,
     pub directory: PathBuf,
     pub name: String,
     pub queue_capacity: usize,
@@ -32,7 +33,15 @@ impl RawSettings {
     pub fn parse(value: &Value) -> Result<Self> {
         let m = value.as_object().context("raw recording object")?;
         ensure!(
-            m.len() == 5
+            m.keys().all(|k| [
+                "directory",
+                "name",
+                "queue_capacity",
+                "max_pairs",
+                "max_bytes",
+                "storage_format"
+            ]
+            .contains(&k.as_str()))
                 && [
                     "directory",
                     "name",
@@ -44,6 +53,12 @@ impl RawSettings {
                 .all(|k| m.contains_key(*k)),
             "explicit raw recording fields required"
         );
+        let chunked = match m.get("storage_format") {
+            None => false,
+            Some(Value::String(format)) if format == "chunked-v3" => true,
+            Some(Value::String(format)) if format == "files-v2" => false,
+            _ => anyhow::bail!("raw storage format invalid"),
+        };
         let directory = PathBuf::from(value["directory"].as_str().context("raw directory")?);
         ensure!(
             directory.is_absolute()
@@ -81,6 +96,7 @@ impl RawSettings {
             .filter(|v| *v > 0)
             .context("raw byte limit")?;
         Ok(Self {
+            chunked,
             directory,
             name,
             queue_capacity,
@@ -406,13 +422,23 @@ impl RawRecorder {
                         .unwrap_or_else(|e| e.into_inner())
                         .disk
                         .clone();
-                    let mut writer = RawRecordingWriter::begin_with_diagnostics(
-                        &settings.directory,
-                        &name,
-                        native,
-                        settings.max_bytes,
-                        disk,
-                    )?;
+                    let mut writer = if settings.chunked {
+                        RawRecordingWriter::begin_chunked_with_diagnostics(
+                            &settings.directory,
+                            &name,
+                            native,
+                            settings.max_bytes,
+                            disk,
+                        )
+                    } else {
+                        RawRecordingWriter::begin_with_diagnostics(
+                            &settings.directory,
+                            &name,
+                            native,
+                            settings.max_bytes,
+                            disk,
+                        )
+                    }?;
                     shared.lock().unwrap_or_else(|e| e.into_inner()).disk = writer.diagnostics();
                     #[cfg(test)]
                     if let Some(gate) = test_gate {
@@ -631,7 +657,7 @@ impl RawRecorder {
     }
     pub fn status(&self) -> Value {
         let s = self.lock();
-        json!({"version":1,"state":s.state.as_str(),"reason":s.reason,"session_id":self.session,"max_pairs":self.settings.max_pairs,"max_bytes":self.settings.max_bytes,"queue_capacity":self.settings.queue_capacity,"submitted_pairs":s.submitted,"written_pairs":s.written,"payload_bytes_submitted":s.payload_bytes,"whole_pair_queue_overflows":s.overflows,"writer_queue":self.queue.as_ref().map(|q| q.report()),"disk_stages":s.disk.report(),"startup_framesets_excluded":s.excluded_startup,"waiting_framesets_excluded":s.waiting_framesets,"native_snapshot_id":s.native_snapshot,"ros_snapshot_id":s.ros_snapshot,"job_path":self.settings.directory.join(&self.name),"partial_path":self.settings.directory.join(format!("{}.partial",self.name)),"business_validity":null,"recording_protection_released":false})
+        json!({"version":1,"state":s.state.as_str(),"reason":s.reason,"session_id":self.session,"max_pairs":self.settings.max_pairs,"max_bytes":self.settings.max_bytes,"queue_capacity":self.settings.queue_capacity,"submitted_pairs":s.submitted,"written_pairs":s.written,"payload_bytes_submitted":s.payload_bytes,"whole_pair_queue_overflows":s.overflows,"writer_queue":self.queue.as_ref().map(|q| q.report()),"disk_stages":s.disk.report(),"startup_framesets_excluded":s.excluded_startup,"waiting_framesets_excluded":s.waiting_framesets,"storage_format":if self.settings.chunked {"recording-directory-v3"}else{"recording-directory-v2"},"native_snapshot_id":s.native_snapshot,"ros_snapshot_id":s.ros_snapshot,"job_path":self.settings.directory.join(&self.name),"partial_path":self.settings.directory.join(format!("{}.partial",self.name)),"business_validity":null,"recording_protection_released":false})
     }
 }
 impl Drop for RawRecorder {
@@ -785,6 +811,7 @@ mod tests {
     }
     fn settings(directory: &Path, max_pairs: u64, max_bytes: u64) -> RawSettings {
         RawSettings {
+            chunked: true,
             directory: directory.into(),
             name: "native".into(),
             queue_capacity: 2,
@@ -1223,7 +1250,7 @@ mod tests {
         );
         assert_eq!(after["disk_stages"]["append"]["samples"], 2);
         assert_eq!(after["disk_stages"]["finish_total"]["samples"], 1);
-        assert_eq!(after["disk_stages"]["rename"]["samples"], 1);
+        assert_eq!(after["disk_stages"]["rename"]["samples"], 2); // checkpoint + final publication
         assert!(after["disk_stages"]["fsync"]["samples"].as_u64().unwrap() > 0);
         assert!(after["disk_stages"]["write"]["samples"].as_u64().unwrap() > 0);
         std::fs::remove_dir_all(dir).unwrap();
@@ -1237,8 +1264,8 @@ mod tests {
         for (case, operation, suffix) in [
             ("commit-delay", "fsync", "/COMPLETE"),
             ("commit-failure", "fsync", "/COMPLETE"),
-            ("append-fsync", "fsync", "/depth-00000000000000000001.raw"),
-            ("append-write", "write", "/depth-00000000000000000001.raw"),
+            ("chunk-fsync", "fsync", "/payload-00000000000000000001.bin"),
+            ("append-write", "write", "/payload-00000000000000000001.bin"),
         ] {
             let delayed = case != "commit-failure";
             let marker = dir.join(case);
@@ -1307,6 +1334,9 @@ mod tests {
                 assert_eq!(status["writer_queue"]["queued_pairs"], 1);
                 assert_eq!(status["writer_queue"]["queued_payload_bytes"], 8);
                 assert_eq!(status["written_pairs"], 0);
+            } else if case == "chunk-fsync" {
+                assert_eq!(status["state"], "draining");
+                assert_eq!(status["disk_stages"]["durable_pairs"], 0);
             } else {
                 assert_eq!(status["state"], "committing");
                 // A post-gate SDK failure cannot undo the accepted transaction.
@@ -1338,6 +1368,45 @@ mod tests {
             assert!(!dir.join(&sink.name).join("COMPLETE").exists());
         }
         std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn explicit_legacy_storage_keeps_v2_files_and_target_completion() {
+        let dir = directory();
+        let ros = snapshot();
+        let mut config = settings(&dir, 1, 1_000_000);
+        config.chunked = false;
+        let mut sink = RawRecorder::new(config, ros.content.binding.session_id.as_str());
+        sink.initialize(&ros, Instant::now(), 0.1).unwrap();
+        sink.submit_owned(
+            packet(false, 1, Instant::now()),
+            packet(true, 1, Instant::now()),
+            1,
+            policy(),
+        )
+        .unwrap();
+        sink.finish_session(true).unwrap();
+        assert_eq!(sink.status()["state"], "complete");
+        assert_eq!(sink.status()["storage_format"], "recording-directory-v2");
+        assert!(
+            dir.join(&sink.name)
+                .join("depth-00000000000000000001.raw")
+                .exists()
+        );
+        assert_eq!(sink.status()["disk_stages"]["durable_pairs"], 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn chunked_storage_requires_an_explicit_format_and_keeps_legacy_default() {
+        let mut v = json!({"directory":"/private/raw","name":"sample","queue_capacity":2,"max_pairs":30,"max_bytes":1_000_000});
+        assert!(!RawSettings::parse(&v).unwrap().chunked);
+        v["storage_format"] = json!("files-v2");
+        assert!(!RawSettings::parse(&v).unwrap().chunked);
+        v["storage_format"] = json!("chunked-v3");
+        assert!(RawSettings::parse(&v).unwrap().chunked);
+        for bad in [json!("automatic"), json!(false), Value::Null] {
+            v["storage_format"] = bad;
+            assert!(RawSettings::parse(&v).is_err());
+        }
     }
 }
 

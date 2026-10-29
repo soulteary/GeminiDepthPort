@@ -35,6 +35,37 @@ fn main() {
         }
         return;
     }
+    if args
+        .first()
+        .is_some_and(|a| a == "--recover-recording-prefix")
+    {
+        let result = (|| -> Result<serde_json::Value> {
+            if args.len() != 2 || !Path::new(&args[1]).is_absolute() {
+                return Err(OfflineError::Invalid("RECOVERY_ARGUMENT"));
+            }
+            let mut source =
+                recording::RecordingDirectorySource::open_recovered(Path::new(&args[1]))?;
+            let mut pairs = 0u64;
+            while source.next_frame()?.is_some() {
+                pairs += 1;
+            }
+            Ok(
+                serde_json::json!({"version":1,"complete":false,"recovered_prefix_valid":true,
+                "validated_pairs":pairs,"business_validity":null,"source_modified":false}),
+            )
+        })();
+        match result {
+            Ok(report) => println!("{report}"),
+            Err(error) => {
+                println!(
+                    "{}",
+                    serde_json::json!({"complete":false,"recovered_prefix_valid":false,"code":error.code()})
+                );
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     let progress = args
         .iter()
         .position(|v| v == "--progress")
@@ -133,7 +164,7 @@ fn execute() -> Result<RunReport> {
             "--validate-only" => validate_only = true,
             "--d2c" => d2c = true,
             "--normalize-mm" => normalize_mm = true,
-            "--recording-v2" => recording_v2 = true,
+            "--recording-v2" | "--recording" => recording_v2 = true,
             "--preserve-counts" => preserve_counts = true,
             _ => return Err(OfflineError::Invalid("UNKNOWN_ARGUMENT")),
         }

@@ -14,7 +14,8 @@
 }
 ```
 
-All five fields are explicit. The directory must be absolute and cannot be `/`,
+All five fields are explicit. Optional `storage_format` is `files-v2` (default, unchanged legacy layout)
+or `chunked-v3` (explicit group commit); other values are rejected. The directory must be absolute and cannot be `/`,
 `/tmp` or contain parent traversal. Names use 1–64 ASCII alphanumeric, underscore
 or hyphen characters. Queue capacity is 1–16; both limits are positive u64.
 Enabling this feature requires an explicit matching `quality_policy` and
@@ -40,7 +41,7 @@ calibration remain the original observation. The native SnapshotId differs
 because representation differs; it is not substituted into ROS packets.
 
 `ros-snapshot.json` preserves the original ROS envelope and
-`snapshot-association.json` explicitly links both IDs. The v2 reader independently
+`snapshot-association.json` explicitly links both IDs. The versioned reader independently
 verifies that they differ only in depth representation. The recorder does not
 rewrite ROS topics, frames, packet evidence, source indices, either raw SDK
 clock, calibration, exposure or device properties. All physical accuracy flags
@@ -72,7 +73,7 @@ budget. `payload_bytes_submitted` is separately named and is not advertised as
 all on-disk bytes. Limit failure is terminal even if all target pairs were queued.
 
 Reaching `max_pairs` closes only the raw producer. The camera and ordinary ROS
-publication continue; the disk worker drains accepted pairs, validates the v2
+publication continue; the disk worker drains accepted pairs, validates the versioned
 recording from disk, and performs an atomic no-replace commit. It never releases
 recording protection or assigns business validity. Signal/session exit before
 the explicit target leaves an unfinished `.partial` job. Missing source metadata
@@ -82,7 +83,7 @@ Finalization uses a cancellation/commit guard after full disk verification.
 Recorder failures before that gate prevent COMPLETE/rename. The short final
 commit gate linearizes the finished target transaction; an SDK error after that
 boundary cannot undo an already-committed, earlier capture. File/directory/parent
-sync and no-replace behavior come from the common v2 writer. Failed jobs retain
+sync and no-replace behavior come from the common transactional writer. Failed jobs retain
 `.partial` without a completion marker. Hard process kills cannot invent a
 final summary; the existing process supervisor bounds shutdown/native-I/O hangs.
 This adapter does not expand supervisor restart limits or recovery permissions.
@@ -117,3 +118,12 @@ jobs have no final directory/COMPLETE. A real service subprocess with missing SD
 verifies failed raw status and Recorder-scope events without starting a device.
 All fixtures are synthetic and physical accuracy is false. No hardware, scale,
 30-minute, publication, performance or physical-accuracy acceptance is claimed.
+
+## Chunked native storage
+
+The service uses V3 chunked storage when `storage_format` is `chunked-v3`. Source identity, whole-pair
+semantics, bounds and target completion above remain unchanged. The new durable
+checkpoint distinguishes appended from committed pairs and enables read-only
+recovery of a verified prefix without claiming a complete target. See
+[Native recording V3](native-recording-v3.md) for exact fsync ordering, range
+checks, byte budgets, bounded uncommitted-tail loss and recovery commands.

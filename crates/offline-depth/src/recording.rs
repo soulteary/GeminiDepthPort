@@ -1,8 +1,10 @@
 //! Versioned recording boundary. Observed associations never become SDK framesets.
 use super::*;
+mod chunked;
 use capture_contract::timing::StageStats;
 use capture_contract::{DepthRepresentation, QuantizationPolicy};
 use capture_observer::{DecodedCameraInfo, MetadataProvenance, ObservedAssociation};
+use chunked::Chunked;
 use quality_core::{ClockMapper, SourceClock, SourceStamp, map_source_time};
 use std::{
     io::{BufRead, BufReader},
@@ -12,7 +14,15 @@ use std::{
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct FileRange {
+    pub offset: u64,
+    pub length: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileRef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<FileRange>,
     pub path: String,
     pub sha256: String,
 }
@@ -101,6 +111,7 @@ fn lower_hex(bytes: &[u8]) -> String {
     }
     result
 }
+#[derive(Clone)]
 struct Progress {
     sequence: u64,
     color: u64,
@@ -115,7 +126,11 @@ pub struct RecordingDirectorySource {
     root: PathBuf,
     manifest: RecordingManifest,
     snapshot: SnapshotEnvelope,
-    reader: BufReader<fs::File>,
+    reader: BufReader<std::io::Take<fs::File>>,
+    recovered: bool,
+    recovered_chunks: Option<u64>,
+    chunk_position: Option<(u64, u64)>,
+    chunk_reader: Mutex<Option<chunked::CachedChunk>>,
     digest: ring::digest::Context,
     seen: u64,
     previous: Option<Progress>,
@@ -135,13 +150,24 @@ impl RecordingDirectorySource {
             4 * 1024 * 1024,
         )?)?;
         require(
-            manifest.version == 2 && manifest.source_kind == "recording-directory-v2",
+            matches!(
+                (manifest.version, manifest.source_kind.as_str()),
+                (2, "recording-directory-v2") | (3, "recording-directory-v3")
+            ),
             "RECORDING_VERSION",
         )?;
         require(
             manifest.record_count > 0 && digest_valid(&manifest.records_sha256),
             "RECORDING_INDEX",
         )?;
+        Self::open_manifest(root, manifest, u64::MAX, false)
+    }
+    fn open_manifest(
+        root: PathBuf,
+        manifest: RecordingManifest,
+        index_limit: u64,
+        recovered: bool,
+    ) -> Result<Self> {
         let snapshot = SnapshotEnvelope::parse(
             &read_bounded(&member(&root, &manifest.snapshot)?, 4 * 1024 * 1024)?,
             &manifest.binding,
@@ -167,7 +193,11 @@ impl RecordingDirectorySource {
             root,
             manifest,
             snapshot,
-            reader: BufReader::new(file),
+            reader: BufReader::new(file.take(index_limit)),
+            recovered,
+            recovered_chunks: None,
+            chunk_position: None,
+            chunk_reader: Mutex::new(None),
             digest: ring::digest::Context::new(&ring::digest::SHA256),
             seen: 0,
             previous: None,
@@ -177,9 +207,26 @@ impl RecordingDirectorySource {
     pub fn snapshot(&self) -> &SnapshotEnvelope {
         &self.snapshot
     }
+    fn has_complete_marker(&self) -> Result<bool> {
+        if !self.root.join("COMPLETE").try_exists()? {
+            return Ok(false);
+        }
+        let bytes = read_bounded(&member(&self.root, "COMPLETE")?, 256)?;
+        require(
+            bytes == b"recording-directory-v3; no business validity decision\n",
+            "RECORDING_COMPLETE_MARKER",
+        )?;
+        Ok(true)
+    }
+
     fn file(&self, file: &FileRef, max: usize) -> Result<Vec<u8>> {
         require(digest_valid(&file.sha256), "RECORDING_DIGEST_FORMAT")?;
-        let bytes = read_bounded(&member(&self.root, &file.path)?, max)?;
+        let bytes = if let Some(range) = &file.range {
+            require(self.manifest.version == 3, "RECORDING_RANGE_VERSION")?;
+            chunked::read_range(&self.root, file, range, max, &self.chunk_reader)?
+        } else {
+            read_bounded(&member(&self.root, &file.path)?, max)?
+        };
         require(sha256(&bytes) == file.sha256, "RECORDING_DIGEST")?;
         Ok(bytes)
     }
@@ -276,6 +323,13 @@ impl RecordingDirectorySource {
             .read_until(b'\n', &mut line)?;
         require(n <= 65536, "RECORDING_INDEX_LINE_LIMIT")?;
         if n == 0 {
+            self.finish_chunk()?;
+            if let Some(chunks) = self.recovered_chunks {
+                require(
+                    self.chunk_position.map(|c| c.0) == Some(chunks),
+                    "RECOVERY_CHUNK_COUNT",
+                )?;
+            }
             let actual = lower_hex(self.digest.clone().finish().as_ref());
             require(
                 self.seen == self.manifest.record_count && actual == self.manifest.records_sha256,
@@ -290,9 +344,25 @@ impl RecordingDirectorySource {
             "RECORDING_INDEX_COUNT",
         )?;
         let record: RecordingRecord = parse(&line)?;
+        self.check_ranges(&record)?;
         record.storage_representation.validate()?;
         let evidence_json = self.file(&record.evidence, 4 * 1024 * 1024)?;
         let evidence: TaggedEvidence = parse(&evidence_json)?;
+        if self.manifest.version == 3 {
+            require(
+                matches!(
+                    &evidence,
+                    TaggedEvidence::SdkBoundPair {
+                        source_json: None,
+                        ..
+                    }
+                ) && record.color.camera_info.is_none()
+                    && record.depth.camera_info.is_none()
+                    && record.color.metadata.is_none()
+                    && record.depth.metadata.is_none(),
+                "RECORDING_V3_NATIVE_ONLY",
+            )?;
+        }
         let (color, depth, color_time, depth_time, kind) = match &evidence {
             TaggedEvidence::SdkBoundPair { pair, source_json } => {
                 if let Some(file) = source_json {
@@ -518,10 +588,12 @@ pub fn process(
 ) -> Result<RunReport> {
     if output.is_some() {
         require(
-            !source
-                .root
-                .file_name()
-                .is_some_and(|v| v.to_string_lossy().ends_with(".partial"))
+            !source.recovered
+                && (source.manifest.version == 2 || source.has_complete_marker()?)
+                && !source
+                    .root
+                    .file_name()
+                    .is_some_and(|v| v.to_string_lossy().ends_with(".partial"))
                 && !source.root.join("INTERRUPTED.json").exists()
                 && !source.root.join("FAILED.json").exists(),
             "INCOMPLETE_RECORDING_INPUT",
@@ -633,7 +705,8 @@ pub fn process(
         job.finish()?;
         report.written_frames = report.validated_pairs;
     }
-    report.complete = true;
+    report.complete =
+        !source.recovered && (source.manifest.version == 2 || source.has_complete_marker()?);
     Ok(report)
 }
 
@@ -648,6 +721,9 @@ struct RawIoStats {
     verification: StageStats,
     append: StageStats,
     finish: StageStats,
+    durable_pairs: u64,
+    checkpoints: u64,
+    payload_files: u64,
     failures: std::collections::BTreeMap<&'static str, u64>,
 }
 impl RawRecordingDiagnostics {
@@ -676,16 +752,17 @@ impl RawRecordingDiagnostics {
     }
     pub fn report(&self) -> serde_json::Value {
         let stats = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        serde_json::json!({"clock":"monotonic-duration","scope":"native-v2-writer-only; write-success-is-not-durability",
+        serde_json::json!({"clock":"monotonic-duration","scope":"native-writer-only; write-success-is-not-durability",
             "write":stats.write.report(),"fsync":stats.fsync.report(),"rename":stats.rename.report(),
             "verification":stats.verification.report(),"append":stats.append.report(),"finish_total":stats.finish.report(),
-            "failed_calls":stats.failures})
+            "failed_calls":stats.failures,"durable_pairs":stats.durable_pairs,"checkpoints":stats.checkpoints,"payload_files":stats.payload_files})
     }
 }
 
 /// Optional native SDK sink. No SDK handles cross this API; caller owns both
 /// copied pixel buffers. Bounded acquisition queues remain the caller's policy.
 pub struct RawRecordingWriter {
+    chunked: Option<Chunked>,
     stage: PathBuf,
     final_path: PathBuf,
     snapshot: SnapshotEnvelope,
@@ -749,6 +826,7 @@ impl RawRecordingWriter {
         write_private_observed(&stage.join("snapshot.json"), &snapshot_bytes, &diagnostics)?;
         let records = new_private(&stage.join("records.jsonl"))?;
         Ok(Self {
+            chunked: None,
             stage,
             final_path,
             snapshot,
@@ -823,6 +901,12 @@ impl RawRecordingWriter {
             "PAIR_SNAPSHOT_BINDING",
         )?;
         let sequence = pair.pair_sequence;
+        let evidence = TaggedEvidence::SdkBoundPair {
+            pair: pair.clone(),
+            source_json: None,
+        };
+        let raw_evidence = serde_json::to_vec(&evidence)?;
+        self.prepare_chunk(color.len(), depth.len(), raw_evidence.len())?;
         let mut store =
             |role: &str, frame: &frame_core::FrameEvidence, pixels: &[u8]| -> Result<StoredImage> {
                 let length = frame
@@ -834,7 +918,7 @@ impl RawRecordingWriter {
                     "RECORDING_PAYLOAD_LENGTH",
                 )?;
                 let path = format!("{role}-{sequence:020}.raw");
-                self.write_budgeted(&path, pixels)?;
+                let file = self.store_blob(&path, pixels)?;
                 let model = self
                     .snapshot
                     .content
@@ -843,10 +927,7 @@ impl RawRecordingWriter {
                     .get(role)
                     .ok_or(OfflineError::Invalid("CALIBRATION_STREAM_MISSING"))?;
                 Ok(StoredImage {
-                    file: FileRef {
-                        path,
-                        sha256: sha256(pixels),
-                    },
+                    file,
                     topic: None,
                     record_timestamp_ns: None,
                     header_timestamp_ns: None,
@@ -862,19 +943,11 @@ impl RawRecordingWriter {
             };
         let color = store("color", &pair.color, color)?;
         let depth = store("depth", &pair.depth, depth)?;
-        let evidence = TaggedEvidence::SdkBoundPair {
-            pair: pair.clone(),
-            source_json: None,
-        };
-        let raw = serde_json::to_vec(&evidence)?;
         let path = format!("evidence-{sequence:020}.json");
-        self.write_budgeted(&path, &raw)?;
+        let evidence = self.store_blob(&path, &raw_evidence)?;
         let record = RecordingRecord {
             sequence,
-            evidence: FileRef {
-                path,
-                sha256: sha256(&raw),
-            },
+            evidence,
             color,
             depth,
             storage_representation: DepthRepresentation::SdkCounts {
@@ -893,6 +966,17 @@ impl RawRecordingWriter {
             .measure("write", || self.records.write_all(&raw))?;
         self.digest.update(&raw);
         self.count += 1;
+        if let Some(chunked) = &mut self.chunked {
+            chunked.index_bytes += raw.len() as u64;
+            chunked.active.as_mut().unwrap().pairs += 1;
+            if chunked
+                .active
+                .as_ref()
+                .is_some_and(|c| c.pairs >= chunked::CHUNK_PAIRS || c.bytes >= chunked::CHUNK_BYTES)
+            {
+                self.checkpoint()?;
+            }
+        }
         Ok(())
     }
     fn reserve_bytes(&mut self, len: usize) -> Result<()> {
@@ -917,16 +1001,26 @@ impl RawRecordingWriter {
     /// The guard stays held through no-replace publication, COMPLETE and fsync.
     pub fn finish_guarded<G>(mut self, acquire: impl FnOnce() -> Result<G>) -> Result<PathBuf> {
         let diagnostics = self.diagnostics.clone();
-        diagnostics.measure("finish", || self.finish_inner(acquire))
+        let result = diagnostics.measure("finish", || self.finish_inner(acquire));
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
     }
     fn finish_inner<G>(&mut self, acquire: impl FnOnce() -> Result<G>) -> Result<PathBuf> {
         require(!self.failed && self.count > 0, "RECORDING_INCOMPLETE")?;
-        self.diagnostics
-            .measure("fsync", || self.records.sync_all())?;
+        if self.chunked.is_some() {
+            // The checkpoint already synced this exact index prefix.
+            self.checkpoint()?;
+        } else {
+            self.diagnostics
+                .measure("fsync", || self.records.sync_all())?;
+        }
+        let version = if self.chunked.is_some() { 3 } else { 2 };
         let records_sha256 = lower_hex(self.digest.clone().finish().as_ref());
         let manifest = RecordingManifest {
-            version: 2,
-            source_kind: "recording-directory-v2".into(),
+            version,
+            source_kind: format!("recording-directory-v{version}"),
             snapshot: "snapshot.json".into(),
             binding: self.snapshot.content.binding.clone(),
             records: "records.jsonl".into(),
@@ -949,10 +1043,11 @@ impl RawRecordingWriter {
         self.completed = true;
         let final_path = self.final_path.clone();
         let completed = (|| -> Result<()> {
-            self.reserve_bytes(b"recording-directory-v2; no business validity decision\n".len())?;
+            let marker = format!("recording-directory-v{version}; no business validity decision\n");
+            self.reserve_bytes(marker.len())?;
             write_private_observed(
                 &final_path.join("COMPLETE"),
-                b"recording-directory-v2; no business validity decision\n",
+                marker.as_bytes(),
                 &self.diagnostics,
             )?;
             self.diagnostics
@@ -979,12 +1074,20 @@ impl RawRecordingWriter {
             }
             return Err(error);
         }
+        self.diagnostics
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .durable_pairs = self.count;
         Ok(final_path)
     }
 }
 impl Drop for RawRecordingWriter {
     fn drop(&mut self) {
         if !self.completed {
+            if !self.failed && self.chunked.is_some() {
+                let _ = self.checkpoint();
+            }
             let _ = self.write_budgeted(
                 "INTERRUPTED.json",
                 br#"{"version":1,"complete":false,"business_validity":null}"#,

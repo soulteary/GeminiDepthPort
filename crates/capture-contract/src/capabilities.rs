@@ -31,7 +31,7 @@ pub fn build_info(component: &str, version: &str) -> Value {
 pub fn describe(component: &str, version: &str) -> Value {
     json!({"version":1,"kind":"capabilities","build":build_info(component,version),
         "protocols":{"snapshot":[1],"bound_pair_evidence":[1],"recording_context":[1],
-            "quality_query":[1],"quality_batch":[1],"quality_window":[1],"offline_input":[1,2],
+            "quality_query":[1],"quality_batch":[1],"quality_window":[1],"offline_input":[1,2,3],
             "offline_report":[1,2],"offline_progress":[1],"offline_diagnostics":[1]},
         "capture":{"maximum_configured_cameras":3,"backends":["official","rust"],
             "strong_session_protection_backend":"rust","active_protection_verified":false},

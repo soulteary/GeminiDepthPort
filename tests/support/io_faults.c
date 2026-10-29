@@ -99,3 +99,8 @@ int mkdir(const char *path,mode_t mode) {
     if(fail("mkdir",path))return -1;
     int (*real)(const char*,mode_t)=dlsym(RTLD_NEXT,"mkdir");return real(path,mode);
 }
+int rename(const char *oldpath,const char *newpath) {
+    if(fail("rename",newpath))return -1;
+    int (*real)(const char*,const char*)=dlsym(RTLD_NEXT,"rename");
+    return real(oldpath,newpath);
+}

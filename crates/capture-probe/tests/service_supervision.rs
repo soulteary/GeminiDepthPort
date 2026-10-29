@@ -938,7 +938,7 @@ fn configure_runtime_quality(f: &Fixture, raw_pairs: u64, max_bytes: u64) {
     let mut value: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
     value["quality_policy"] = serde_json::to_value(quality).unwrap();
     value["quality_runtime"] = serde_json::to_value(policy).unwrap();
-    value["raw_recording"] = json!({"directory":f.root.join("raw"),"name":"session","queue_capacity":4,"max_pairs":raw_pairs,"max_bytes":max_bytes});
+    value["raw_recording"] = json!({"directory":f.root.join("raw"),"name":"session","queue_capacity":4,"max_pairs":raw_pairs,"max_bytes":max_bytes,"storage_format":"chunked-v3"});
     value["service"]["generation"] = json!("d".repeat(32));
     value["service"]["max_restarts"] = json!(0);
     fs::write(&f.config, value.to_string()).unwrap();

@@ -7,6 +7,7 @@ use support::*;
 fn reference(root: &Path, name: &str, bytes: &[u8]) -> FileRef {
     fs::write(root.join(name), bytes).unwrap();
     FileRef {
+        range: None,
         path: name.into(),
         sha256: sha256(bytes),
     }
@@ -38,6 +39,7 @@ fn fixture_v2(root: &Path, observed: bool, counts: bool) -> RecordingRecord {
     let make = |stream: &str| StoredImage {
         file: if stream == "depth" {
             FileRef {
+                range: None,
                 path: "depth.raw16".into(),
                 sha256: legacy.pairs[0].depth_sha256.clone(),
             }
