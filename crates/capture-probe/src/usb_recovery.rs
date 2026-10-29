@@ -141,7 +141,24 @@ mod tests {
         ));
         fs::create_dir(&root).unwrap();
         let path = root.join("helper");
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        // Other parallel tests fork helpers while this fixture is created. A
+        // writable fd opened in this process can transiently survive in those
+        // children and make execve fail with ETXTBSY even after fs::write closes.
+        // An isolated writer owns the only writable fd; waiting for it proves
+        // the executable is closed before Recovery exercises the real spawn.
+        let mut writer = Command::new("/bin/sh")
+            .args(["-c", "cat > \"$1\"", "--"])
+            .arg(&path)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        writer
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(format!("#!/bin/sh\n{body}\n").as_bytes())
+            .unwrap();
+        assert!(writer.wait().unwrap().success());
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
         let mut sha = String::with_capacity(64);
         for byte in digest::digest(&digest::SHA256, &fs::read(&path).unwrap()).as_ref() {
