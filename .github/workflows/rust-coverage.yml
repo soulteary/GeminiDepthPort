@@ -11,6 +11,9 @@ jobs:
     timeout-minutes: 20
     env:
       CARGO_TERM_COLOR: never
+      # Instrumented supervision tests spawn SDK/bridge fixtures and compilers;
+      # keep shared-runner contention within their existing timing contracts.
+      RUST_TEST_THREADS: '2'
       GDP_COVERAGE_REAL_COMPOSE: '1'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
