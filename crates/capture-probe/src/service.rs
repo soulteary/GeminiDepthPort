@@ -21,6 +21,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+mod persistence;
+
 static STOP: AtomicBool = AtomicBool::new(false);
 extern "C" fn stop_signal(_: libc::c_int) {
     STOP.store(true, Ordering::Relaxed);
@@ -650,7 +652,7 @@ impl ServiceQuality {
     fn references(&self) -> Value {
         json!({"version":1,"state":self.engine.snapshot().state,"latest_event_sequence":self.engine.snapshot().latest_event_sequence,"current_path":self.directory.join("current.json"),"events_path":self.directory.join("events.json"),"query_path":self.directory.join("query.json"),"summary_path":self.finalized.then(||self.directory.join("summary.json"))})
     }
-    fn persist(&mut self) -> Result<()> {
+    fn persistence_batch(&mut self) -> Result<persistence::Batch> {
         let query = self
             .engine
             .query(quality_core::QualityQueryRequest {
@@ -658,23 +660,29 @@ impl ServiceQuality {
                 query: quality_core::QualityQuery::Snapshot,
             })
             .map_err(anyhow::Error::msg)?;
-        atomic_status(
-            &self.directory.join("query.json"),
-            &serde_json::to_value(query)?,
-        )?;
         let current = self.engine.snapshot();
-        atomic_status(
-            &self.directory.join("current.json"),
-            &json!({"version":1,"kind":"capture-service-quality","instance_id":self.instance,"session_id":self.session,"snapshot_id":self.snapshot.as_ref().map(|s|&s.snapshot_id),"source_age_mapping":"declared-sdk-system-unix","quality":current,"received_counts":self.receipts,"pre_snapshot_received_counts":self.unbound,"publication_calls":self.publication_calls,"publication_failures":self.publication_failures,"partial_publications":self.partial_publications,"last_observed":self.last_observed}),
-        )?;
         let events = self
             .engine
             .events(None, self.policy.event_capacity)
             .map_err(anyhow::Error::msg)?;
-        atomic_status(
-            &self.directory.join("events.json"),
-            &serde_json::to_value(events)?,
-        )
+        Ok(vec![
+            (
+                self.directory.join("query.json"),
+                serde_json::to_value(query)?,
+            ),
+            (
+                self.directory.join("current.json"),
+                json!({"version":1,"kind":"capture-service-quality","instance_id":self.instance,"session_id":self.session,"snapshot_id":self.snapshot.as_ref().map(|s|&s.snapshot_id),"source_age_mapping":"declared-sdk-system-unix","quality":current,"received_counts":self.receipts,"pre_snapshot_received_counts":self.unbound,"publication_calls":self.publication_calls,"publication_failures":self.publication_failures,"partial_publications":self.partial_publications,"last_observed":self.last_observed}),
+            ),
+            (
+                self.directory.join("events.json"),
+                serde_json::to_value(events)?,
+            ),
+        ])
+    }
+    #[cfg(test)]
+    fn persist(&mut self) -> Result<()> {
+        persistence::Persistence::new()?.submit(self.persistence_batch()?, true)
     }
     fn finalize(&mut self) -> Result<()> {
         if !self.finalized {
@@ -771,10 +779,12 @@ struct Status<'a> {
     quality: Option<ServiceQuality>,
     raw: Option<crate::raw_recording::RawRecorder>,
     usb_recovery: Option<Value>,
+    writer: persistence::Persistence,
     persistence: capture_contract::timing::StageStats,
     persistence_errors: u64,
     coalesced_partial_status: u64,
     last_write: Option<(String, Instant)>,
+    last_health: Option<Value>,
 }
 impl Status<'_> {
     fn observe_raw_quality(&mut self) -> Result<()> {
@@ -833,13 +843,30 @@ impl Status<'_> {
             if reason.is_some() && reason != Some("SESSION_FAILED") {
                 self.last_failure = reason;
             }
-            if let Some(quality) = &mut self.quality {
-                quality.persist()?;
-            }
-            let persistence = json!({"wall":self.persistence.report(),"errors":self.persistence_errors,"coalesced_partial_updates":self.coalesced_partial_status,"scope":"completed status persistence calls preceding this snapshot, including quality persistence and status fsync"});
+            let mut batch = match &mut self.quality {
+                Some(quality) => quality.persistence_batch()?,
+                None => Vec::new(),
+            };
+            let mut persistence = self.writer.report();
+            persistence["submission_wall"] = self.persistence.report();
+            persistence["submission_errors"] = json!(self.persistence_errors);
+            persistence["coalesced_partial_updates"] = json!(self.coalesced_partial_status);
             let mut value = json!({"version":1,"kind":"capture-service-status","state":state,"ready":state=="ready","reason":reason,"last_failure_reason":self.last_failure,"session_id":self.session,"instance_id":self.instance,"snapshot_id":self.snapshot.as_ref().map(|s|&s.0),"snapshot_path":self.snapshot.as_ref().map(|s|&s.1),"quality":self.quality.as_ref().map(ServiceQuality::references),"usb_recovery":self.usb_recovery,"raw_recording":self.raw.as_ref().map(crate::raw_recording::RawRecorder::status),"generation":self.config.settings.generation,"config_sha256":self.config.hash,"pid":std::process::id(),"heartbeat_sequence":self.heartbeat,"updated_unix_ms":unix_ms(),"uptime_ms":self.started.elapsed().as_millis(),"restart_attempt":self.restarts,"last_pair_age_ms":last_pair.map(|v|v.elapsed().as_millis()),"pairs_accepted":metrics.accepted,"pairs_rejected":metrics.rejected,"rejection_reasons":metrics.reasons,"pairs_published":metrics.published_pairs,"individual_publish_calls":metrics.publish_calls,"unpaired_images_published":metrics.unpaired_images_published,"publish_failures":metrics.publish_failures,"stamp_failures":metrics.stamp_failures,"framesets_observed":metrics.framesets,"missing_pairs":metrics.missing,"skew_rejections":metrics.skew,"monotonic_rejections":metrics.monotonic,"poll_timeouts":metrics.timeouts,"pipeline_timing":metrics.timing_report(),"acquisition_effective":self.config.capture.acquisition,"message_timestamp":self.config.capture.message_timestamp(),"readiness_basis":if self.config.capture.preserve_images() {"both-streams-published"} else {"accepted-rgbd-pairs"},"native_recording_scope":"complete-rgbd-pairs-only","physical_sync_verified":false,"delivery_verified":false});
             value["status_persistence"] = persistence;
-            atomic_status(&self.config.settings.status_path, &value)
+            let health = json!({"quality":value["quality"]["state"],
+                "raw_state":value["raw_recording"]["state"],"raw_reason":value["raw_recording"]["reason"]});
+            batch.push((self.config.settings.status_path.clone(), value));
+            let critical = self.last_health.as_ref() != Some(&health)
+                || self
+                    .last_write
+                    .as_ref()
+                    .is_none_or(|(previous, _)| previous != state)
+                || reason.is_some_and(|reason| {
+                    !matches!(reason, "MISSING_COLOR" | "MISSING_DEPTH" | "MISSING_BOTH")
+                });
+            self.writer.submit(batch, critical)?;
+            self.last_health = Some(health);
+            Ok(())
         })();
         self.persistence.observe(started.elapsed());
         if result.is_err() {
@@ -884,10 +911,12 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
         quality: None,
         raw: None,
         usb_recovery: None,
+        writer: persistence::Persistence::new()?,
         persistence: Default::default(),
         persistence_errors: 0,
         coalesced_partial_status: 0,
         last_write: None,
+        last_health: None,
     };
     status.quality = config
         .quality_runtime
@@ -982,6 +1011,7 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
         let mut observed_depth_scale = None;
         let result = (|| -> Result<()> {
             while !STOP.load(Ordering::Relaxed) {
+                status.writer.check()?;
                 if let Some(quality) = &mut status.quality {
                     let tick_started = Instant::now();
                     let result = quality.tick();
@@ -2852,10 +2882,12 @@ mod tests {
             quality: None,
             raw: None,
             usb_recovery: None,
+            writer: persistence::Persistence::new().unwrap(),
             persistence: Default::default(),
             persistence_errors: 0,
             coalesced_partial_status: 0,
             last_write: None,
+            last_health: None,
         };
         let mut metrics = Metrics::default();
         for n in 0..45 {
@@ -2930,10 +2962,12 @@ mod tests {
             quality: None,
             raw: None,
             usb_recovery: None,
+            writer: persistence::Persistence::new().unwrap(),
             persistence: Default::default(),
             persistence_errors: 0,
             coalesced_partial_status: 0,
             last_write: None,
+            last_health: None,
         };
         status
             .write(
@@ -3261,5 +3295,70 @@ mod tests {
             .unwrap();
         assert!(child.wait().unwrap().success());
         assert!(reap_worker_exit(&mut child, Duration::from_millis(100)).is_err());
+    }
+    #[test]
+    fn quality_failure_is_durable_even_when_capture_state_is_unchanged() {
+        let dir = std::env::temp_dir().join(format!(
+            "capture-quality-barrier-{}",
+            random_session().unwrap()
+        ));
+        let mut value = config();
+        value["service"]["status_path"] = json!(dir.join("status.json"));
+        let parsed = ServiceConfig::parse(&value.to_string()).unwrap();
+        let session = "a".repeat(32);
+        let instance = "b".repeat(64);
+        let quality = ServiceQuality::new(
+            runtime_policy(),
+            &session,
+            &instance,
+            Instant::now(),
+            &parsed.settings.status_path,
+        )
+        .unwrap();
+        let mut status = Status {
+            config: &parsed,
+            session,
+            instance,
+            snapshot: None,
+            heartbeat: 0,
+            started: Instant::now(),
+            restarts: 0,
+            last_failure: None,
+            quality: Some(quality),
+            raw: None,
+            usb_recovery: None,
+            writer: persistence::Persistence::new().unwrap(),
+            persistence: Default::default(),
+            persistence_errors: 0,
+            coalesced_partial_status: 0,
+            last_write: None,
+            last_health: None,
+        };
+        status
+            .write("ready", None, &Metrics::default(), None)
+            .unwrap();
+        status
+            .quality
+            .as_mut()
+            .unwrap()
+            .evaluate(
+                quality_core::FrameViolation::FrameContractInvalid,
+                quality_core::Condition::Violated,
+            )
+            .unwrap();
+        status
+            .write("ready", None, &Metrics::default(), None)
+            .unwrap();
+        assert_eq!(status.writer.report()["completed_sequence"], 2);
+        let saved: Value =
+            serde_json::from_slice(&fs::read(&parsed.settings.status_path).unwrap()).unwrap();
+        assert_eq!(saved["quality"]["state"], "degraded");
+        let current: Value = serde_json::from_slice(
+            &fs::read(saved["quality"]["current_path"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(current["quality"]["state"], "degraded");
+        drop(status);
+        fs::remove_dir_all(dir).unwrap();
     }
 }

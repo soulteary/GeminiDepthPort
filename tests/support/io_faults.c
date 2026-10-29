@@ -24,7 +24,7 @@ static int fail(const char *op, const char *path) {
     if(suffix) {size_t n=strlen(path),m=strlen(suffix);if(n<m || strcmp(path+n-m,suffix))return 0;}
     if(contains && !strstr(path,contains))return 0;
     const char *nth=getenv("GDP_IO_FAIL_NTH");
-    if(atomic_fetch_add(&count,1)+1 != (nth?(unsigned)atoi(nth):1))return 0;
+    if(atomic_fetch_add(&count,1)+1 != (nth?(unsigned)atoi(nth):1) && !getenv("GDP_IO_REPEAT"))return 0;
     const char *marker=getenv("GDP_IO_FAULT_MARKER");
     if(marker) {
         int fd=open(marker,O_WRONLY|O_CREAT|O_EXCL,0600);

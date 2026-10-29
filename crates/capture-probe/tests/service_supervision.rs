@@ -1569,6 +1569,10 @@ fn native_recording_reports_thread_exhaustion_queue_backpressure_and_snapshot_li
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         io_faults::inject(&mut command, &library, op, suffix, &marker);
+        if op == "pthread_create" {
+            // The status writer is created first; target the native raw writer.
+            command.env("GDP_IO_FAIL_NTH", "2");
+        }
         if delay {
             command.env("GDP_IO_DELAY_MS", "1500");
         }
@@ -2262,4 +2266,214 @@ fn alternating_partial_diagnostics_accumulate_without_per_frame_status_fsync() {
     assert!(observed["pipeline_timing"]["quality_tick_wall"]["samples"].is_number());
     stop(&mut child);
     assert_eq!(status(&f).unwrap()["state"], "stopped");
+}
+
+fn status_io_fixture(f: &Fixture) {
+    quality_only(f);
+    acquisition(f, "complete", false);
+    let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    config["service"]["max_restarts"] = json!(0);
+    config["service"]["shutdown_timeout_ms"] = json!(3000);
+    fs::write(&f.config, config.to_string()).unwrap();
+}
+fn status_io_command(f: &Fixture, binary: &Path, library: &Path, marker: &Path) -> Command {
+    let mut command = Command::new(binary);
+    command
+        .args(["--config", f.config.to_str().unwrap()])
+        .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+        .env("GDP_ROS_MOCK_EVENTS", &f.events)
+        .env("GDP_IO_ARMED", f.root.join("armed"))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    io_faults::inject(
+        &mut command,
+        library,
+        "fsync",
+        f.root.to_str().unwrap(),
+        marker,
+    );
+    command
+}
+#[test]
+fn stalled_status_fsync_keeps_images_advancing_and_shutdown_persists_final_quality() {
+    let f = fixture();
+    status_io_fixture(&f);
+    let library = io_faults::compile(&f.root);
+    let marker = f.root.join("injected");
+    let mut command = status_io_command(
+        &f,
+        Path::new(env!("CARGO_BIN_EXE_capture-service")),
+        &library,
+        &marker,
+    );
+    command.env("GDP_IO_DELAY_MS", "500");
+    let mut child = command.spawn().unwrap();
+    wait_status(&f, &mut child, |v| v["ready"] == true);
+    fs::write(f.root.join("armed"), b"1").unwrap();
+    let started = Instant::now();
+    while !marker.exists() {
+        assert!(started.elapsed() < Duration::from_secs(3));
+        thread::sleep(Duration::from_millis(5));
+    }
+    let count = || {
+        fs::read_to_string(&f.events)
+            .unwrap()
+            .lines()
+            .filter(|l| l.starts_with("image:depth_optical:"))
+            .count()
+    };
+    let before = count();
+    let started = Instant::now();
+    while count() <= before {
+        assert!(
+            started.elapsed() < Duration::from_millis(350),
+            "capture blocked behind status fsync"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    stop(&mut child);
+    io_faults::assert_injected(&marker, "fsync");
+    let final_status = status(&f).unwrap();
+    assert_eq!(final_status["state"], "stopped");
+    assert_eq!(final_status["ready"], false);
+    assert!(final_status["quality"]["summary_path"].is_string());
+    let summary: Value = serde_json::from_slice(
+        &fs::read(final_status["quality"]["summary_path"].as_str().unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert!(summary["summary"].is_object());
+    let current: Value = serde_json::from_slice(
+        &fs::read(final_status["quality"]["current_path"].as_str().unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(current["session_id"], final_status["session_id"]);
+    assert!(
+        final_status["status_persistence"]["pending_snapshots"]
+            .as_u64()
+            .unwrap()
+            <= 1
+    );
+}
+#[test]
+fn background_status_fsync_failure_terminates_without_false_readiness() {
+    let f = fixture();
+    status_io_fixture(&f);
+    let library = io_faults::compile(&f.root);
+    let marker = f.root.join("injected");
+    let mut child = status_io_command(
+        &f,
+        Path::new(env!("CARGO_BIN_EXE_capture-service")),
+        &library,
+        &marker,
+    )
+    .spawn()
+    .unwrap();
+    wait_status(&f, &mut child, |v| v["ready"] == true);
+    fs::write(f.root.join("armed"), b"1").unwrap();
+    let started = Instant::now();
+    let exit = loop {
+        if let Some(exit) = child.try_wait().unwrap() {
+            break exit;
+        }
+        assert!(started.elapsed() < Duration::from_secs(5));
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert!(!exit.success());
+    io_faults::assert_injected(&marker, "fsync");
+    assert_eq!(status(&f).unwrap()["ready"], false);
+    assert_eq!(status(&f).unwrap()["restart_attempt"], 0);
+}
+
+/// Explicit paired A/B experiment. Both binaries use identical ABI fixtures and
+/// configs; delays apply only to status-directory fsync after readiness.
+#[test]
+#[ignore = "run explicitly with GDP_STATUS_BENCH_BEFORE and GDP_STATUS_BENCH_AFTER release binaries"]
+fn status_persistence_ab_benchmark() {
+    let before = std::env::var("GDP_STATUS_BENCH_BEFORE").unwrap();
+    let after = std::env::var("GDP_STATUS_BENCH_AFTER").unwrap();
+    let mut rows = Vec::new();
+    for repeat in 0..3 {
+        for delay in [0, 25, 100] {
+            // Alternate order to reduce build/thermal/order effects.
+            let binaries = if repeat % 2 == 0 {
+                [("before", &before), ("after", &after)]
+            } else {
+                [("after", &after), ("before", &before)]
+            };
+            for (variant, binary) in binaries {
+                let f = fixture();
+                status_io_fixture(&f);
+                let library = io_faults::compile(&f.root);
+                let marker = f.root.join("injected");
+                let mut command = status_io_command(&f, Path::new(binary), &library, &marker);
+                command
+                    .env("GDP_IO_DELAY_MS", delay.to_string())
+                    .env("GDP_IO_REPEAT", "1");
+                let mut child = command.spawn().unwrap();
+                wait_status(&f, &mut child, |v| v["ready"] == true);
+                let count = || {
+                    fs::read_to_string(&f.events)
+                        .unwrap()
+                        .lines()
+                        .filter(|l| l.starts_with("image:depth_optical:"))
+                        .count()
+                };
+                let initial = count();
+                fs::write(f.root.join("armed"), b"1").unwrap();
+                let started = Instant::now();
+                thread::sleep(Duration::from_secs(2));
+                let images = count() - initial;
+                let elapsed = started.elapsed().as_secs_f64();
+                stop(&mut child);
+                io_faults::assert_injected(&marker, "fsync");
+                let final_status = status(&f).unwrap();
+                assert_eq!(final_status["state"], "stopped");
+                rows.push(json!({"variant":variant,"repeat":repeat,"delay_ms":delay,"elapsed_seconds":elapsed,
+                    "images_in_window":images,"images_per_second":images as f64/elapsed,
+                    "pipeline_timing":final_status["pipeline_timing"],"status_persistence":final_status["status_persistence"]}));
+            }
+        }
+    }
+    let report = json!({"kind":"status-persistence-ab","sdk":"synthetic 2x2 ABI fixture, 10ms wait; not hardware FPS",
+        "build":"release","heartbeat_ms":50,"window_seconds":2,"repeats":3,
+        "injection":"status-directory fsync delay only; enabled after readiness; no USB/ROS/disk-throughput claim", "rows":rows});
+    fs::write(
+        std::env::var("GDP_STATUS_BENCH_OUTPUT").unwrap(),
+        serde_json::to_vec_pretty(&report).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn status_writer_thread_exhaustion_fails_before_sdk_access() {
+    let f = fixture();
+    let library = io_faults::compile(&f.root);
+    let marker = f.root.join("injected");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_capture-service"));
+    command
+        .args(["--config", f.config.to_str().unwrap()])
+        .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    io_faults::inject(
+        &mut command,
+        &library,
+        "pthread_create",
+        "raw-writer",
+        &marker,
+    );
+    let mut child = command.spawn().unwrap();
+    let started = Instant::now();
+    let exit = loop {
+        if let Some(exit) = child.try_wait().unwrap() {
+            break exit;
+        }
+        assert!(started.elapsed() < Duration::from_secs(5));
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert!(!exit.success());
+    io_faults::assert_injected(&marker, "pthread_create");
+    assert_eq!(status(&f).unwrap()["ready"], false);
+    let events = fs::read_to_string(&f.events).unwrap_or_default();
+    assert!(!events.lines().any(|line| line == "start"));
 }
