@@ -45,12 +45,14 @@ struct Docker {
     snapshot_read_failure: bool,
     quality_read_failure: bool,
     probe_failure: bool,
+    probe_failure_camera: Option<String>,
+    stop_failure: bool,
 }
-struct Fixture {
+pub(crate) struct Fixture {
     _temp: tempfile::TempDir,
-    ctl: Controller,
-    inventory: Value,
-    generation: Value,
+    pub(crate) ctl: Controller,
+    pub(crate) inventory: Value,
+    pub(crate) generation: Value,
     docker: Arc<Mutex<Docker>>,
 }
 fn snapshot(name: &str, config_hash: &str, official: bool, index: usize) -> SnapshotEnvelope {
@@ -125,7 +127,7 @@ fn snapshot(name: &str, config_hash: &str, official: bool, index: usize) -> Snap
     .unwrap()
 }
 impl Fixture {
-    fn new(official: bool, count: usize) -> Self {
+    pub(crate) fn new(official: bool, count: usize) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let mut inventory: Value =
@@ -195,7 +197,7 @@ impl Fixture {
             let status = json!({"version":1,"kind":if official{"official-observer-status"}else{"capture-service-status"},"instance_id":binding.instance_id,"session_id":binding.session_id,"generation":"d".repeat(32),"config_sha256":config_hash,"snapshot_id":snapshot.snapshot_id,"snapshot_path":format!("{base}/snapshots/{}.json",snapshot.snapshot_id),"pid":42+i,"ready":true,"state":"ready","updated_unix_ms":now()*1000.,"last_pair_age_ms":1,"session_kind":if official{"observer"}else{"sdk-worker"},"native_session_verified":!official,"received_counts":{"color":3,"depth":3}});
             let quality = json!({"version":1,"session_id":binding.session_id,"origin_session_id":binding.session_id,"at":{"session_id":binding.session_id,"offset_ns":10},"active_episodes":[],"finalized_sessions":[],"current_session_finalized":false,"latest_event_sequence":1});
             let bundle = json!({"status":status,"processes_alive":true,"current":{"version":1,"instance_id":binding.instance_id,"session_id":binding.session_id,"snapshot_id":snapshot.snapshot_id,"quality":quality},"events":{"version":1,"origin_session_id":binding.session_id,"latest_sequence":1,"gap":null,"events":[{"version":1,"sequence":1,"scope":{"kind":"recorder"},"fact":"synthetic"}],"has_more":false,"next_cursor":{"origin_session_id":binding.session_id,"after_sequence":1}},"summary":null});
-            let container = json!({"Id":format!("{:064x}",i+100),"Config":{"Labels":{"com.docker.compose.project":"orbbec-multicam","com.docker.compose.oneoff":"False","orbbec.role":"camera","orbbec.generation":"d".repeat(32),"orbbec.camera":name}},"State":{"Running":true},"Mounts":[{"Destination":"/recording","Source":gate,"RW":true}]});
+            let container = json!({"Id":format!("{:064x}",i+100),"Config":{"Labels":{"com.docker.compose.project":"orbbec-multicam","com.docker.compose.oneoff":"False","orbbec.role":"camera","orbbec.generation":"d".repeat(32),"orbbec.camera":name}},"State":{"Running":true,"Status":"running","Health":{"Status":"healthy"}},"Mounts":[{"Destination":"/recording","Source":gate,"RW":true}]});
             summaries.push(json!({"name":name,"service":format!("camera_{name}")}));
             cameras.push(Camera {
                 name,
@@ -223,6 +225,10 @@ impl Fixture {
             cameras,
             ..Default::default()
         }));
+        let patch: Value =
+            serde_json::from_str(include_str!("../patches/public-orbbec/manifest.json")).unwrap();
+        atomic_json(&root.join("patches/public-orbbec/manifest.json"), &patch).unwrap();
+        let image = json!([{"Config":{"Labels":{"org.opencontainers.image.revision":inventory["upstream_commit"],"org.geminidepthport.explicit-bindings":"1","org.geminidepthport.native-yuyv":"1","org.geminidepthport.native-yuyv-patch":patch["patch_sha256"],"org.geminidepthport.communication-profile":config::COMMUNICATION,"org.geminidepthport.official-observer":"v1"}}}]);
         let state = docker.clone();
         let command_root = root.clone();
         let mut ctl = Controller::new(&root).unwrap();
@@ -230,6 +236,13 @@ impl Fixture {
             let mut d = state.lock().unwrap();
             d.calls.push(args.to_vec());
             match args.get(1).map(String::as_str) {
+                Some("ps")
+                    if args
+                        .iter()
+                        .any(|a| a.contains("orbbec.web.preview") || a == "--format") =>
+                {
+                    Ok(String::new())
+                }
                 Some("ps") => Ok(d
                     .cameras
                     .iter()
@@ -237,11 +250,54 @@ impl Fixture {
                     .collect::<Vec<_>>()
                     .join("\n")),
                 Some("inspect") => Ok(serde_json::to_string(
-                    &d.cameras.iter().map(|c| &c.container).collect::<Vec<_>>(),
+                    &d.cameras
+                        .iter()
+                        .filter(|c| args[2..].iter().any(|id| c.container["Id"] == *id))
+                        .map(|c| &c.container)
+                        .collect::<Vec<_>>(),
                 )?),
+                Some("image") => Ok(image.to_string()),
+                Some("info") | Some("build") | Some("run") => Ok("synthetic success".into()),
+                Some("logs") => Ok("synthetic log".into()),
+                Some("stop") => {
+                    if d.stop_failure {
+                        bail!("SYNTHETIC_STOP_FAILURE");
+                    }
+                    for c in &mut d.cameras {
+                        if args.last().is_some_and(|id| c.container["Id"] == *id) {
+                            c.container["State"]["Running"] = json!(false);
+                        }
+                    }
+                    Ok(String::new())
+                }
+                Some("rm") => {
+                    d.cameras
+                        .retain(|c| !args.last().is_some_and(|id| c.container["Id"] == *id));
+                    Ok(String::new())
+                }
                 Some("compose") if args.iter().any(|a| a == "/app/health.py") => {
-                    if d.probe_failure {
+                    if d.probe_failure
+                        || d.probe_failure_camera
+                            .as_ref()
+                            .is_some_and(|name| args.iter().any(|a| a == &format!("camera_{name}")))
+                    {
                         bail!("SYNTHETIC_PROBE_FAILURE");
+                    }
+                    Ok(String::new())
+                }
+                Some("compose") => {
+                    let i = d
+                        .cameras
+                        .iter()
+                        .position(|c| args.iter().any(|a| a == &format!("camera_{}", c.name)));
+                    if args.iter().any(|a| a == "ps") {
+                        return Ok(i
+                            .map(|i| text(&d.cameras[i].container["Id"]).to_string())
+                            .unwrap_or_default());
+                    }
+                    if args.iter().any(|a| a == "up") {
+                        d.cameras[i.expect("known service")].container["State"]["Running"] =
+                            json!(true);
                     }
                     Ok(String::new())
                 }
@@ -302,6 +358,32 @@ impl Fixture {
             generation,
             docker,
         }
+    }
+    pub(crate) fn prepare_host(&mut self) {
+        let host = self.ctl.root.join("host");
+        for path in ["dev/bus/usb", "run/udev", "etc/udev/rules.d"] {
+            private_dir(&host.join(path)).unwrap();
+        }
+        atomic(
+            &host.join("etc/udev/rules.d/99-obsensor-libusb.rules"),
+            b"# synthetic",
+        )
+        .unwrap();
+        for (i, camera) in config::active(&self.inventory).iter().enumerate() {
+            let path = host.join("sys/bus/usb/devices").join(format!("1-{i}"));
+            private_dir(&path).unwrap();
+            for (key, value) in [
+                ("idVendor", "2bc5"),
+                ("serial", text(&camera["serial_number"])),
+                (
+                    "product",
+                    text(&config::resolved(&self.inventory, camera)["model"]),
+                ),
+            ] {
+                atomic(&path.join(key), value.as_bytes()).unwrap();
+            }
+        }
+        self.ctl.host_root = Some(host);
     }
     fn edit(&self, f: impl FnOnce(&mut Docker)) {
         f(&mut self.docker.lock().unwrap());
@@ -855,4 +937,173 @@ fn protection_rechecks_inventory_after_active_ack_before_persisting_active_guard
 #[test]
 fn protection_rechecks_session_after_active_ack_before_persisting_active_guard() {
     failed_handshake(AckMode::ChangeSessionOnActive);
+}
+
+#[test]
+fn controlled_stop_finishes_every_owned_instance_and_persists_partial_failures() {
+    let f = Fixture::new(false, 2);
+    assert_eq!(f.ctl.stop("camera", true).unwrap()["status"], "stopped");
+    assert!(f.docker.lock().unwrap().cameras.is_empty());
+    let f = Fixture::new(false, 2);
+    f.edit(|d| d.stop_failure = true);
+    error(f.ctl.stop("camera", false), "STOP_FAILED");
+    let state = read_json(&f.ctl.root.join("state/lifecycle.json")).unwrap();
+    assert_eq!(state["status"], "failed");
+    assert_eq!(
+        f.docker
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|a| a.get(1).is_some_and(|v| v == "stop"))
+            .count(),
+        2
+    );
+}
+#[test]
+fn health_checks_require_a_real_owned_running_healthy_instance() {
+    let f = Fixture::new(false, 1);
+    f.ctl.healthy("camera_camera_a", 1).unwrap();
+    f.edit(|d| {
+        d.cameras[0].container["State"]["Status"] = json!("exited");
+        d.cameras[0].container["State"]["Running"] = json!(false);
+    });
+    error(f.ctl.healthy("camera_camera_a", 1), "CAMERA_HEALTH_FAILED");
+    error(f.ctl.healthy("camera_missing", 1), "CAMERA_MISSING");
+}
+#[test]
+fn migration_requires_exact_plan_and_preserves_a_private_byte_identical_backup() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ctl = Controller::new(temp.path()).unwrap();
+    let original = include_str!("../tests/fixtures/inventory.v1.json");
+    atomic(&ctl.root.join("inventory.json"), original.as_bytes()).unwrap();
+    ctl.command_runner = Some(Arc::new(|a| {
+        assert_eq!(a[1], "ps");
+        Ok(String::new())
+    }));
+    let plan = ctl.migrate(&Value::Null, false, "").unwrap();
+    assert_eq!(plan["applied"], false);
+    assert_eq!(
+        fs::read(ctl.root.join("inventory.json")).unwrap(),
+        original.as_bytes()
+    );
+    error(ctl.migrate(&Value::Null, true, "wrong"), "MIGRATION_STALE");
+    let applied = ctl
+        .migrate(&Value::Null, true, text(&plan["plan_digest"]))
+        .unwrap();
+    assert_eq!(applied["backup_created"], true);
+    assert_eq!(ctl.load().unwrap()["schema_version"], 2);
+    let backup = fs::read_dir(ctl.root.join("state/migrations"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert_eq!(fs::read(backup).unwrap(), original.as_bytes());
+}
+#[test]
+fn image_contract_rejects_revision_binding_and_builds_without_device_access() {
+    let f = Fixture::new(true, 1);
+    f.ctl.image_contract(&f.inventory).unwrap();
+    let mut wrong = f.inventory.clone();
+    wrong["upstream_commit"] = json!("0".repeat(40));
+    error(f.ctl.image_contract(&wrong), "IMAGE_REVISION");
+    let mut rust = f.inventory.clone();
+    rust["capture_backend"] = json!("rust");
+    error(f.ctl.image_contract(&rust), "IMAGE_CONTRACT_UNSUPPORTED");
+    assert_eq!(
+        f.ctl.build(&f.inventory).unwrap()["log"],
+        "synthetic success"
+    );
+}
+#[cfg(target_os = "linux")]
+#[test]
+fn group_start_is_sequential_reuses_healthy_instances_and_protects_the_observed_session() {
+    let mut f = Fixture::new(true, 3);
+    f.prepare_host();
+    f.edit(|d| {
+        for c in &mut d.cameras {
+            c.container["State"]["Running"] = json!(false)
+        }
+    });
+    assert_eq!(f.ctl.scan().unwrap().as_array().unwrap().len(), 3);
+    let started = f.ctl.start(&f.inventory).unwrap();
+    assert_eq!(started["ready"], true);
+    assert_eq!(started["reused"], false);
+    let calls = f.docker.lock().unwrap().calls.clone();
+    let ups = calls
+        .iter()
+        .filter(|a| a.iter().any(|v| v == "up"))
+        .collect::<Vec<_>>();
+    assert_eq!(ups.len(), 3);
+    for (i, call) in ups.iter().enumerate() {
+        assert_eq!(
+            call.last().unwrap(),
+            &format!("camera_camera_{}", char::from(b'a' + i as u8))
+        );
+    }
+    assert_eq!(f.ctl.ensure_started(&f.inventory).unwrap()["reused"], true);
+    assert_eq!(
+        f.docker
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|a| a.iter().any(|v| v == "up"))
+            .count(),
+        3
+    );
+    let protection = f.ctl.protect().unwrap();
+    assert_eq!(protection["native_restart_gate"], false);
+    assert_eq!(protection["guard_version"], 1);
+    f.ctl.release(text(&protection["token"])).unwrap();
+}
+#[cfg(target_os = "linux")]
+#[test]
+fn failed_middle_camera_never_starts_later_camera_or_clears_diagnostic_instances() {
+    let mut f = Fixture::new(true, 3);
+    f.prepare_host();
+    f.edit(|d| {
+        for c in &mut d.cameras {
+            c.container["State"]["Running"] = json!(false)
+        }
+        d.probe_failure_camera = Some("camera_b".into());
+    });
+    assert!(f.ctl.start(&f.inventory).is_err());
+    let state = read_json(&f.ctl.root.join("state/lifecycle.json")).unwrap();
+    assert_eq!(state["ready"], false);
+    assert_eq!(state["status"], "failed");
+    assert_eq!(state["cameras"][0]["status"], "healthy");
+    assert_eq!(state["cameras"][1]["status"], "failed");
+    assert_eq!(state["cameras"][2]["status"], "not_started");
+    let d = f.docker.lock().unwrap();
+    assert_eq!(d.cameras[0].container["State"]["Running"], true);
+    assert_eq!(d.cameras[1].container["State"]["Running"], true);
+    assert_eq!(d.cameras[2].container["State"]["Running"], false);
+}
+#[cfg(target_os = "linux")]
+#[test]
+fn preflight_refuses_missing_udev_rules_and_missing_bound_device() {
+    let mut f = Fixture::new(true, 1);
+    f.prepare_host();
+    fs::remove_file(
+        f.ctl
+            .host_root
+            .as_ref()
+            .unwrap()
+            .join("etc/udev/rules.d/99-obsensor-libusb.rules"),
+    )
+    .unwrap();
+    error(f.ctl.preflight(&f.inventory), "DEVICE_ACCESS");
+    let mut f = Fixture::new(true, 1);
+    f.prepare_host();
+    fs::remove_dir_all(
+        f.ctl
+            .host_root
+            .as_ref()
+            .unwrap()
+            .join("sys/bus/usb/devices"),
+    )
+    .unwrap();
+    error(f.ctl.preflight(&f.inventory), "DEVICE_UNAVAILABLE");
 }

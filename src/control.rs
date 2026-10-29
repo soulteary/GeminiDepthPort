@@ -23,6 +23,8 @@ pub struct Controller {
     pub root: PathBuf,
     #[cfg(test)]
     pub(crate) command_runner: Option<TestCommandRunner>,
+    #[cfg(test)]
+    pub(crate) host_root: Option<PathBuf>,
 }
 #[cfg(test)]
 pub(crate) type TestCommandRunner =
@@ -41,6 +43,8 @@ impl Controller {
             root: root.as_ref().canonicalize()?,
             #[cfg(test)]
             command_runner: None,
+            #[cfg(test)]
+            host_root: None,
         })
     }
     /// Acquire the nonblocking deployment lock; retain the guard for the operation.
@@ -202,9 +206,16 @@ impl Controller {
             )
         })
     }
+    fn host_path(&self, path: &str) -> PathBuf {
+        #[cfg(test)]
+        if let Some(root) = &self.host_root {
+            return root.join(path.trim_start_matches('/'));
+        }
+        PathBuf::from(path)
+    }
     pub fn scan(&self) -> Result<Value> {
         let mut result = vec![];
-        if let Ok(entries) = fs::read_dir("/sys/bus/usb/devices") {
+        if let Ok(entries) = fs::read_dir(self.host_path("/sys/bus/usb/devices")) {
             let mut paths: Vec<_> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
             paths.sort();
             for p in paths {
@@ -385,10 +396,14 @@ impl Controller {
             "Deployment requires native Linux",
         )?;
         require(
-            Path::new("/dev/bus/usb").is_dir()
-                && Path::new("/run/udev").is_dir()
-                && (Path::new("/etc/udev/rules.d/99-obsensor-libusb.rules").is_file()
-                    || Path::new("/lib/udev/rules.d/99-obsensor-libusb.rules").is_file()),
+            self.host_path("/dev/bus/usb").is_dir()
+                && self.host_path("/run/udev").is_dir()
+                && (self
+                    .host_path("/etc/udev/rules.d/99-obsensor-libusb.rules")
+                    .is_file()
+                    || self
+                        .host_path("/lib/udev/rules.d/99-obsensor-libusb.rules")
+                        .is_file()),
             "DEVICE_ACCESS",
             "Device access or host rules unavailable",
         )?;

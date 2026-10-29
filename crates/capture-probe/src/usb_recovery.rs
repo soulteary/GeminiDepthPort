@@ -74,7 +74,9 @@ impl Recovery {
                     .ok()
                     .and_then(|v| v["code"].as_str().map(str::to_owned))
                     .filter(|s| {
-                        s.len() <= 64 && s.bytes().all(|b| b.is_ascii_uppercase() || b == b'_')
+                        !s.is_empty()
+                            && s.len() <= 64
+                            && s.bytes().all(|b| b.is_ascii_uppercase() || b == b'_')
                     })
                     .unwrap_or_else(|| "USB_RECOVERY_FAILED".into());
                 anyhow::bail!("USB stream recovery failed: {code}");
@@ -117,5 +119,96 @@ mod tests {
         let path = std::env::current_exe().unwrap();
         let policy = Recovery::parse(&json!({"helper":path,"sha256":"a".repeat(64)})).unwrap();
         assert!(policy.verify().is_err());
+    }
+    struct Helper(std::path::PathBuf);
+    impl Drop for Helper {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+    fn helper(body: &str) -> (Helper, Recovery) {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "gdp-usb-helper-{}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("helper");
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        let sha = digest::digest(&digest::SHA256, &fs::read(&path).unwrap())
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let policy = Recovery::parse(&json!({"helper":path,"sha256":sha})).unwrap();
+        (Helper(root), policy)
+    }
+    #[test]
+    fn recovery_helper_receives_private_stdin_and_returns_only_validated_counts() {
+        let (_dir, policy) = helper(
+            "[ \"$#\" = 2 ] && [ \"$1\" = --parent-pid ] || exit 2\ns=$(cat)\n[ \"$s\" = synthetic-private-serial ] || exit 3\nprintf '{\"version\":1,\"complete\":true,\"interfaces\":2,\"endpoints\":3}'",
+        );
+        let result = policy.execute("synthetic-private-serial").unwrap();
+        assert_eq!(result["state"], "complete");
+        assert_eq!(result["interfaces"], 2);
+        assert_eq!(result["endpoints"], 3);
+        assert!(!result.to_string().contains("serial"));
+    }
+    #[test]
+    fn recovery_errors_never_echo_untrusted_helper_diagnostics() {
+        for code in [
+            "USB_DEVICE_MISSING",
+            "private-serial-path",
+            "",
+            &"A".repeat(65),
+        ] {
+            let body = format!(
+                "cat >/dev/null\nprintf '%s' '{}'\nexit 1",
+                json!({"code":code})
+            );
+            let (_dir, policy) = helper(&body);
+            let error = policy
+                .execute("synthetic-private-serial")
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                error,
+                format!(
+                    "USB stream recovery failed: {}",
+                    if code == "USB_DEVICE_MISSING" {
+                        code
+                    } else {
+                        "USB_RECOVERY_FAILED"
+                    }
+                )
+            );
+        }
+    }
+    #[test]
+    fn recovery_rejects_oversized_malformed_or_unbounded_success_records() {
+        for value in [
+            json!({"version":1,"complete":false,"interfaces":2,"endpoints":2}),
+            json!({"version":1,"complete":true,"interfaces":0,"endpoints":2}),
+            json!({"version":1,"complete":true,"interfaces":2,"endpoints":256}),
+            json!({"version":1,"complete":true,"interfaces":2,"endpoints":2,"extra":true}),
+        ] {
+            let (_dir, policy) = helper(&format!("cat >/dev/null\nprintf '%s' '{value}'"));
+            assert!(policy.execute("private").is_err());
+        }
+        for body in [
+            "cat >/dev/null\nprintf not-json",
+            "cat >/dev/null\nhead -c 4097 /dev/zero",
+        ] {
+            let (_dir, policy) = helper(body);
+            assert!(policy.execute("private").is_err());
+        }
     }
 }

@@ -830,4 +830,131 @@ mod tests {
         assert!(!temp.path().join("race.partial/COMPLETE").exists());
         assert_eq!(fs::read_dir(temp.path().join("race")).unwrap().count(), 0);
     }
+    #[test]
+    fn source_blob_reuse_and_digest_failure_poison_the_whole_output_transaction() {
+        let tmp = tempfile::tempdir().unwrap();
+        let frame = encoded();
+        let mut job = Job::create(
+            tmp.path(),
+            "blob",
+            Mode::Directory,
+            frame.record.context.snapshot_id.clone(),
+        )
+        .unwrap();
+        let bytes = b"original native source";
+        let sha = digest(bytes);
+        job.attach_source_blob(&sha, bytes).unwrap();
+        job.attach_source_blob(&sha, bytes).unwrap();
+        assert_eq!(
+            fs::read(job.stage.join("source-blobs").join(&sha)).unwrap(),
+            bytes
+        );
+        assert!(job.attach_source_blob(&sha, b"changed").is_err());
+        assert!(job.attach_source_blob(&sha, bytes).is_err());
+        assert!(job.attach_json("extra.json", b"{}").is_err());
+        assert!(job.finish().is_err());
+        assert!(tmp.path().join("blob.partial/FAILED").is_file());
+        assert!(!tmp.path().join("blob").exists());
+    }
+    #[test]
+    fn jobs_reject_mid_recording_context_drift_even_when_snapshot_id_is_unchanged() {
+        for key in [
+            "session_id",
+            "generation_id",
+            "configuration_id",
+            "calibration_id",
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let first = encoded();
+            let mut second = encoded();
+            second.record.ordinal = 1;
+            let mut context = serde_json::to_value(&second.record.context).unwrap();
+            context[key] = serde_json::json!("0".repeat(
+                if key == "session_id" || key == "generation_id" {
+                    32
+                } else {
+                    64
+                }
+            ));
+            second.record.context = serde_json::from_value(context).unwrap();
+            let mut job = Job::create(
+                tmp.path(),
+                "drift",
+                Mode::Both,
+                first.record.context.snapshot_id.clone(),
+            )
+            .unwrap();
+            job.append(&first).unwrap();
+            assert!(matches!(
+                job.append(&second),
+                Err(OutputError::Invalid("JOB_CONTEXT_CHANGED"))
+            ));
+            assert!(job.finish().is_err());
+            assert!(!tmp.path().join("drift").exists());
+        }
+    }
+    #[test]
+    fn depth_records_reject_invalid_scale_pair_binding_and_unbounded_queues() {
+        let view = || DepthView {
+            bytes: &[1, 0],
+            width: 1,
+            height: 1,
+            stride: 2,
+            endian: Endian::Little,
+        };
+        for scale in [0., -1., f64::NAN, f64::INFINITY] {
+            let mut r = record();
+            r.kind = DepthKind::OriginalSdkCounts { scale_mm: scale };
+            assert!(matches!(
+                encode(view(), r),
+                Err(OutputError::Invalid("DEPTH_SCALE"))
+            ));
+        }
+        for (pair, digest) in [
+            (0, "a".repeat(64)),
+            (1, "wrong".into()),
+            (1, "G".repeat(64)),
+        ] {
+            let mut r = record();
+            r.pair_sequence = pair;
+            r.pair_evidence_sha256 = digest;
+            assert!(matches!(
+                encode(view(), r),
+                Err(OutputError::Invalid("PAIR_EVIDENCE"))
+            ));
+        }
+        assert!(matches!(
+            bounded_queue(0),
+            Err(OutputError::Invalid("QUEUE_CAPACITY"))
+        ));
+    }
+    #[test]
+    fn encoded_public_metadata_matches_the_numeric_png_and_committed_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let frame = encoded();
+        assert_eq!(frame.dimensions(), (3, 1));
+        assert_eq!(frame.valid_pixels(), 2);
+        let mut job = Job::create(
+            tmp.path(),
+            "metadata",
+            Mode::Both,
+            frame.record().context.snapshot_id.clone(),
+        )
+        .unwrap();
+        job.append(&frame).unwrap();
+        let path = job.finish().unwrap();
+        let row: serde_json::Value =
+            serde_json::from_slice(&fs::read(path.join("manifest.jsonl")).unwrap()).unwrap();
+        assert_eq!(row["width"], frame.dimensions().0);
+        assert_eq!(row["height"], frame.dimensions().1);
+        assert_eq!(row["valid_pixels"], frame.valid_pixels());
+        let bytes = fs::read(path.join("frames/00000000000000000000.png")).unwrap();
+        assert_eq!(bytes, frame.png_bytes());
+        assert_eq!(row["png_sha256"], frame.png_sha256());
+        assert_eq!(row["pixel_sha256"], frame.pixel_sha256());
+        let mut decoder = png::Decoder::new(bytes.as_slice()).read_info().unwrap();
+        let mut pixels = vec![0; decoder.output_buffer_size()];
+        decoder.next_frame(&mut pixels).unwrap();
+        assert_eq!(pixels, [0, 0, 255, 255, 0, 1]);
+    }
 }

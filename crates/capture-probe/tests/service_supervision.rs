@@ -749,3 +749,118 @@ fn persistent_recording_gate_blocks_usb_recovery_before_any_device_access() {
     assert!(path.exists());
     stop(&mut supervisor);
 }
+
+fn configure_runtime_quality(f: &Fixture, raw_pairs: u64, max_bytes: u64) {
+    let quality = capture_contract::QualityPolicy {
+        version: 1,
+        max_source_age_ns: 1_000_000_000,
+        max_future_ns: 100_000_000,
+        max_pair_delta_us: 20_000,
+        min_valid_fraction: 0.,
+        max_zero_fraction: 1.,
+        action: capture_contract::QualityAction::ReportOnly,
+    };
+    let policy = quality_core::RuntimeQualityPolicy {
+        version: 1,
+        quality: quality.clone(),
+        stale_after_ns: 1_000_000_000,
+        event_capacity: 64,
+        window_capacity: 64,
+        window_horizon_ns: 10_000_000_000,
+        summary_capacity: 4,
+        max_sessions: 4,
+        rules: quality_core::FrameViolation::ALL
+            .into_iter()
+            .map(|v| {
+                (
+                    v,
+                    quality_core::RulePolicy {
+                        open_after: 1,
+                        recover_after: 2,
+                        severity: quality_core::QualityState::Degraded,
+                    },
+                )
+            })
+            .collect(),
+    };
+    let mut value: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    value["quality_policy"] = serde_json::to_value(quality).unwrap();
+    value["quality_runtime"] = serde_json::to_value(policy).unwrap();
+    value["raw_recording"] = json!({"directory":f.root.join("raw"),"name":"session","queue_capacity":4,"max_pairs":raw_pairs,"max_bytes":max_bytes});
+    value["service"]["generation"] = json!("d".repeat(32));
+    value["service"]["max_restarts"] = json!(0);
+    fs::write(&f.config, value.to_string()).unwrap();
+}
+#[test]
+fn quality_bound_worker_commits_native_recording_and_finalizes_observed_quality() {
+    let f = fixture();
+    configure_runtime_quality(&f, 3, 1_000_000);
+    let mut supervisor = launch(&f);
+    let ready = wait_status(&f, &mut supervisor, |v| {
+        v["ready"] == true && v["raw_recording"]["state"] == "complete"
+    });
+    assert_eq!(ready["raw_recording"]["written_pairs"], 3);
+    assert_ne!(
+        ready["raw_recording"]["native_snapshot_id"],
+        ready["raw_recording"]["ros_snapshot_id"]
+    );
+    assert_eq!(
+        ready["raw_recording"]["recording_protection_released"],
+        false
+    );
+    assert!(ready["raw_recording"]["business_validity"].is_null());
+    let job = PathBuf::from(ready["raw_recording"]["job_path"].as_str().unwrap());
+    assert!(job.is_dir());
+    assert!(!Path::new(ready["raw_recording"]["partial_path"].as_str().unwrap()).exists());
+    let mut recording = offline_depth::recording::RecordingDirectorySource::open(&job).unwrap();
+    assert!(
+        matches!(recording.snapshot().content.depth,capture_contract::DepthRepresentation::SdkCounts{scale_mm} if scale_mm==f64::from(0.1f32))
+    );
+    for _ in 0..3 {
+        let frame = recording.next_frame().unwrap().unwrap();
+        assert_eq!(frame.depth.len(), 8);
+        assert!(matches!(
+            frame.evidence,
+            offline_depth::recording::TaggedEvidence::SdkBoundPair { .. }
+        ));
+    }
+    assert!(recording.next_frame().unwrap().is_none());
+    let quality_path = PathBuf::from(ready["quality"]["current_path"].as_str().unwrap());
+    let current: Value = serde_json::from_slice(&fs::read(&quality_path).unwrap()).unwrap();
+    assert_eq!(current["session_id"], ready["session_id"]);
+    assert_eq!(current["snapshot_id"], ready["snapshot_id"]);
+    assert!(current["publication_calls"].as_u64().unwrap() > 0);
+    stop(&mut supervisor);
+    let summary: Value =
+        serde_json::from_slice(&fs::read(quality_path.with_file_name("summary.json")).unwrap())
+            .unwrap();
+    assert_eq!(summary["summary"]["finalized"], true);
+}
+#[test]
+fn bounded_raw_storage_failure_is_reported_without_claiming_completed_recording() {
+    let f = fixture();
+    configure_runtime_quality(&f, 3, 1);
+    let mut supervisor = launch(&f);
+    let failed = wait_status(&f, &mut supervisor, |v| {
+        v["raw_recording"]["state"] == "failed"
+    });
+    assert_eq!(failed["raw_recording"]["reason"], "RAW_BYTE_LIMIT");
+    assert!(!Path::new(failed["raw_recording"]["job_path"].as_str().unwrap()).exists());
+    assert!(failed["raw_recording"]["business_validity"].is_null());
+    stop(&mut supervisor);
+}
+#[test]
+fn interrupted_raw_capture_never_commits_an_incomplete_pair_target() {
+    let f = fixture();
+    configure_runtime_quality(&f, 1_000_000, 100_000_000);
+    let mut supervisor = launch(&f);
+    let ready = wait_status(&f, &mut supervisor, |v| {
+        v["ready"] == true
+            && v["raw_recording"]["written_pairs"]
+                .as_u64()
+                .is_some_and(|n| n > 0)
+    });
+    stop(&mut supervisor);
+    assert!(!Path::new(ready["raw_recording"]["job_path"].as_str().unwrap()).exists());
+    assert_eq!(status(&f).unwrap()["ready"], false);
+}

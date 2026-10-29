@@ -28,6 +28,18 @@ jobs:
         run: bash scripts/testing/rust_coverage.sh unit
       - name: Measure workspace and external Rust test coverage
         run: bash scripts/testing/rust_coverage.sh combined
+      - name: Require 90 percent production Rust line coverage
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('target/coverage-reports/combined/summary.json').read_text())
+          lines = report['lines']
+          hit, found = lines['hit'], lines['found']
+          if found <= 0 or hit * 100 < found * 90:
+              raise SystemExit(f'Production line coverage below 90%: {hit}/{found}')
+          print(f'Production line coverage: {hit}/{found} ({100 * hit / found:.4f}%) >= 90%')
+          PY
       - name: Upload production reports and raw LLVM evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

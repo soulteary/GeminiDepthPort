@@ -1003,3 +1003,7 @@ mod tests {
         assert!(m.last_seen.lock().unwrap().elapsed() < Duration::from_secs(1));
     }
 }
+
+#[cfg(test)]
+#[path = "server_tests.rs"]
+mod contract_tests;
