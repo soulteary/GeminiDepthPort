@@ -83,6 +83,41 @@ durability. Earlier acknowledged prefixes retain ordered fsync protection under
 a filesystem/device that honors fsync. The old V2 path syncs individual payloads
 but does not provide this explicit durable-index-prefix contract.
 
+## Optional checkpoint pipeline
+
+`raw_recording.checkpoint_pipeline: true` is accepted only with
+`storage_format: "chunked-v3"`. Omitted/false keeps synchronous checkpoints and
+all existing defaults. Library callers opt in with
+`RawRecordingWriter::enable_checkpoint_pipeline()` before the first append.
+
+The optional mode seals at 16 pairs or an 8 MiB target so a single verifier can
+read the previous immutable chunk while the writer appends the next chunk.
+Only one verification task is allowed. Before every append, pending plus active
+payload credits must remain within **32 pairs and 16 MiB combined**. A single
+indivisible larger pair is allowed up to the existing per-image/evidence limits;
+all earlier pending work must finish before it is written, and no following pair
+can overlap it. These are disk-tail credits, independent of the unchanged bounded
+acquisition queue and total recording byte budget. Diagnostics expose
+`uncommitted_pairs_peak` and `uncommitted_payload_bytes_peak`.
+
+Sealing still flushes the index and syncs payload, index and staging directory
+before starting readback. The verifier receives a fixed index length/digest and
+cached validated prefix; it never reads the new active chunk or commits anything.
+The writer joins it before installing its checkpoint, and advances durable pairs
+only after checkpoint file sync, rename and directory sync. Completed tasks are
+collected on subsequent appends; credits exhausted, the next seal, explicit
+`checkpoint()`, graceful Drop and finish all wait. Final full verification and the
+publication guard still run after all checkpoint work is joined. Failed append or
+checkpoint operations poison the writer; Drop joins any outstanding verifier
+without committing it. There is no detached verifier after directory publication.
+
+This trades smaller chunks, more fsyncs and thread overhead for potential append
+tail-latency improvement. It preserves the global unacknowledged payload window,
+but changes chunk counts and checkpoint cadence. It is deliberately opt-in;
+slow-sync storage can lose throughput. It does not affect capture with native
+recording disabled or external ROSbag2 recording. Recovery and COMPLETE semantics
+are identical for synchronous and pipelined V3 directories.
+
 ## Recovery is not completion
 
 ```

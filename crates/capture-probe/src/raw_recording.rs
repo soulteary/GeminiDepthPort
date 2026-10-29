@@ -23,6 +23,7 @@ use std::{
 #[derive(Clone)]
 pub(crate) struct RawSettings {
     pub chunked: bool,
+    pub checkpoint_pipeline: bool,
     pub directory: PathBuf,
     pub name: String,
     pub queue_capacity: usize,
@@ -39,6 +40,7 @@ impl RawSettings {
                 "queue_capacity",
                 "max_pairs",
                 "max_bytes",
+                "checkpoint_pipeline",
                 "storage_format"
             ]
             .contains(&k.as_str()))
@@ -59,6 +61,15 @@ impl RawSettings {
             Some(Value::String(format)) if format == "files-v2" => false,
             _ => anyhow::bail!("raw storage format invalid"),
         };
+        let checkpoint_pipeline = match m.get("checkpoint_pipeline") {
+            None => false,
+            Some(Value::Bool(v)) => *v,
+            _ => anyhow::bail!("checkpoint pipeline must be boolean"),
+        };
+        ensure!(
+            !checkpoint_pipeline || chunked,
+            "checkpoint pipeline requires chunked-v3"
+        );
         let directory = PathBuf::from(value["directory"].as_str().context("raw directory")?);
         ensure!(
             directory.is_absolute()
@@ -97,6 +108,7 @@ impl RawSettings {
             .context("raw byte limit")?;
         Ok(Self {
             chunked,
+            checkpoint_pipeline,
             directory,
             name,
             queue_capacity,
@@ -439,6 +451,9 @@ impl RawRecorder {
                             disk,
                         )
                     }?;
+                    if settings.checkpoint_pipeline {
+                        writer.enable_checkpoint_pipeline()?;
+                    }
                     shared.lock().unwrap_or_else(|e| e.into_inner()).disk = writer.diagnostics();
                     #[cfg(test)]
                     if let Some(gate) = test_gate {
@@ -657,7 +672,7 @@ impl RawRecorder {
     }
     pub fn status(&self) -> Value {
         let s = self.lock();
-        json!({"version":1,"state":s.state.as_str(),"reason":s.reason,"session_id":self.session,"max_pairs":self.settings.max_pairs,"max_bytes":self.settings.max_bytes,"queue_capacity":self.settings.queue_capacity,"submitted_pairs":s.submitted,"written_pairs":s.written,"payload_bytes_submitted":s.payload_bytes,"whole_pair_queue_overflows":s.overflows,"writer_queue":self.queue.as_ref().map(|q| q.report()),"disk_stages":s.disk.report(),"startup_framesets_excluded":s.excluded_startup,"waiting_framesets_excluded":s.waiting_framesets,"storage_format":if self.settings.chunked {"recording-directory-v3"}else{"recording-directory-v2"},"native_snapshot_id":s.native_snapshot,"ros_snapshot_id":s.ros_snapshot,"job_path":self.settings.directory.join(&self.name),"partial_path":self.settings.directory.join(format!("{}.partial",self.name)),"business_validity":null,"recording_protection_released":false})
+        json!({"version":1,"state":s.state.as_str(),"reason":s.reason,"session_id":self.session,"max_pairs":self.settings.max_pairs,"max_bytes":self.settings.max_bytes,"queue_capacity":self.settings.queue_capacity,"submitted_pairs":s.submitted,"written_pairs":s.written,"payload_bytes_submitted":s.payload_bytes,"whole_pair_queue_overflows":s.overflows,"writer_queue":self.queue.as_ref().map(|q| q.report()),"disk_stages":s.disk.report(),"startup_framesets_excluded":s.excluded_startup,"waiting_framesets_excluded":s.waiting_framesets,"checkpoint_pipeline":self.settings.checkpoint_pipeline,"storage_format":if self.settings.chunked {"recording-directory-v3"}else{"recording-directory-v2"},"native_snapshot_id":s.native_snapshot,"ros_snapshot_id":s.ros_snapshot,"job_path":self.settings.directory.join(&self.name),"partial_path":self.settings.directory.join(format!("{}.partial",self.name)),"business_validity":null,"recording_protection_released":false})
     }
 }
 impl Drop for RawRecorder {
@@ -812,6 +827,7 @@ mod tests {
     fn settings(directory: &Path, max_pairs: u64, max_bytes: u64) -> RawSettings {
         RawSettings {
             chunked: true,
+            checkpoint_pipeline: false,
             directory: directory.into(),
             name: "native".into(),
             queue_capacity: 2,
@@ -1400,6 +1416,30 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
+    fn pipelined_service_writer_finishes_and_exposes_configuration() {
+        let dir = directory();
+        let ros = snapshot();
+        let mut config = settings(&dir, 16, 1_000_000);
+        config.checkpoint_pipeline = true;
+        config.queue_capacity = 16;
+        let mut sink = RawRecorder::new(config, ros.content.binding.session_id.as_str());
+        sink.initialize(&ros, Instant::now(), 0.1).unwrap();
+        for n in 1..=16 {
+            sink.submit_owned(
+                packet(false, n, Instant::now()),
+                packet(true, n, Instant::now()),
+                n,
+                policy(),
+            )
+            .unwrap();
+        }
+        sink.finish_session(true).unwrap();
+        assert_eq!(sink.status()["state"], "complete");
+        assert_eq!(sink.status()["checkpoint_pipeline"], true);
+        assert_eq!(sink.status()["disk_stages"]["durable_pairs"], 16);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
     fn chunked_storage_requires_an_explicit_format_and_keeps_legacy_default() {
         let mut v = json!({"directory":"/private/raw","name":"sample","queue_capacity":2,"max_pairs":30,"max_bytes":1_000_000});
         assert!(!RawSettings::parse(&v).unwrap().chunked);
@@ -1407,6 +1447,17 @@ mod tests {
         assert!(!RawSettings::parse(&v).unwrap().chunked);
         v["storage_format"] = json!("chunked-v3");
         assert!(RawSettings::parse(&v).unwrap().chunked);
+        assert!(!RawSettings::parse(&v).unwrap().checkpoint_pipeline);
+        v["checkpoint_pipeline"] = json!(true);
+        assert!(RawSettings::parse(&v).unwrap().checkpoint_pipeline);
+        v["storage_format"] = json!("files-v2");
+        assert!(RawSettings::parse(&v).is_err());
+        v["storage_format"] = json!("chunked-v3");
+        for bad in [json!(1), json!("true"), Value::Null] {
+            v["checkpoint_pipeline"] = bad;
+            assert!(RawSettings::parse(&v).is_err());
+        }
+        v["checkpoint_pipeline"] = json!(false);
         for bad in [json!("automatic"), json!(false), Value::Null] {
             v["storage_format"] = bad;
             assert!(RawSettings::parse(&v).is_err());

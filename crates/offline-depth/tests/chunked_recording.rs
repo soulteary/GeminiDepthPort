@@ -881,3 +881,298 @@ fn index_staging_is_bounded_and_flushed_before_checkpoint_acknowledgement() {
         2 * 2 * (4 + pixels.len())
     );
 }
+
+#[test]
+fn pipeline_round_trip_explicit_checkpoint_drop_and_start_constraints() {
+    let (snapshot, pair, pixels) = fixture();
+    let root = tempfile::tempdir().unwrap();
+    let mut legacy = RawRecordingWriter::begin(root.path(), "legacy", snapshot.clone()).unwrap();
+    assert!(legacy.enable_checkpoint_pipeline().is_err());
+    drop(legacy);
+    let mut writer =
+        RawRecordingWriter::begin_chunked(root.path(), "capture", snapshot.clone(), 1_000_000)
+            .unwrap();
+    writer.enable_checkpoint_pipeline().unwrap();
+    let diagnostics = writer.diagnostics();
+    for n in 1..=65 {
+        append(&mut writer, &pair, &pixels, n);
+    }
+    assert!(writer.enable_checkpoint_pipeline().is_err());
+    writer.checkpoint().unwrap();
+    assert_eq!(diagnostics.report()["durable_pairs"], 65);
+    let path = writer.finish().unwrap();
+    assert_eq!(read_all(&path, false).len(), 65);
+    assert_eq!(
+        diagnostics.report()["validation_image_bytes"],
+        65 * (4 + pixels.len()) * 2
+    );
+    assert!(
+        diagnostics.report()["uncommitted_pairs_peak"]
+            .as_u64()
+            .unwrap()
+            <= 32
+    );
+    assert!(
+        diagnostics.report()["uncommitted_payload_bytes_peak"]
+            .as_u64()
+            .unwrap()
+            <= 16 * 1024 * 1024
+    );
+    let mut writer =
+        RawRecordingWriter::begin_chunked(root.path(), "partial", snapshot, 1_000_000).unwrap();
+    writer.enable_checkpoint_pipeline().unwrap();
+    for n in 1..=17 {
+        append(&mut writer, &pair, &pixels, n);
+    }
+    drop(writer);
+    assert_eq!(
+        read_all(&root.path().join("partial.partial"), true).len(),
+        17
+    );
+}
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "isolated pipeline readback fault child"]
+fn pipeline_readback_child() {
+    let root = std::path::PathBuf::from(std::env::var_os("GDP_PIPELINE_ROOT").unwrap());
+    let mode = std::env::var("GDP_PIPELINE_MODE").unwrap();
+    let (snapshot, pair, pixels) = fixture();
+    let mut writer =
+        RawRecordingWriter::begin_chunked(&root, "capture", snapshot, 1_000_000).unwrap();
+    writer.enable_checkpoint_pipeline().unwrap();
+    for n in 1..=16 {
+        append(&mut writer, &pair, &pixels, n);
+    }
+    writer.checkpoint().unwrap();
+    let diagnostics = writer.diagnostics();
+    fs::write(root.join("armed"), b"1").unwrap();
+    for n in 17..=32 {
+        append(&mut writer, &pair, &pixels, n);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while !root.join("injected").exists() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    // The verifier is blocked reading chunk 2; chunk 3 must still accept 15 pairs.
+    for n in 33..=47 {
+        append(&mut writer, &pair, &pixels, n);
+    }
+    assert_eq!(diagnostics.report()["durable_pairs"], 16);
+    assert_eq!(diagnostics.report()["uncommitted_pairs_peak"], 31);
+    assert_eq!(read_all(&root.join("capture.partial"), true).len(), 16);
+    fs::write(root.join("ready"), b"1").unwrap();
+    if mode == "kill" {
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    if mode == "corrupt" {
+        let path = root.join("capture.partial/payload-00000000000000000002.bin");
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[0] ^= 1;
+        fs::write(path, bytes).unwrap();
+    }
+    fs::write(root.join("release"), b"1").unwrap();
+    if mode == "success" {
+        writer.checkpoint().unwrap();
+        assert_eq!(diagnostics.report()["durable_pairs"], 47);
+        let path = writer.finish().unwrap();
+        assert_eq!(read_all(&path, false).len(), 47);
+    } else {
+        assert!(writer.checkpoint().is_err());
+        assert!(writer.finish().is_err());
+        assert_eq!(read_all(&root.join("capture.partial"), true).len(), 16);
+        assert!(!root.join("capture/COMPLETE").exists());
+    }
+}
+#[cfg(target_os = "linux")]
+#[test]
+fn pipeline_overlaps_reads_with_writes_and_retains_prefix_on_read_error_corruption_and_sigkill() {
+    for mode in ["success", "error", "corrupt", "kill"] {
+        let root = tempfile::tempdir().unwrap();
+        let library = io_faults::compile(root.path());
+        let marker = root.path().join("injected");
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "pipeline_readback_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("GDP_PIPELINE_ROOT", root.path())
+            .env("GDP_PIPELINE_MODE", mode)
+            .env("GDP_IO_ARMED", root.path().join("armed"))
+            .env("GDP_IO_RELEASE", root.path().join("release"));
+        if mode != "error" {
+            command.env("GDP_IO_DELAY_MS", "0");
+        }
+        io_faults::inject(
+            &mut command,
+            &library,
+            "read",
+            "/payload-00000000000000000002.bin",
+            &marker,
+        );
+        if mode == "kill" {
+            let mut child = command.spawn().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !root.path().join("ready").exists() {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            child.kill().unwrap();
+            assert!(!child.wait().unwrap().success());
+            assert_eq!(
+                read_all(&root.path().join("capture.partial"), true).len(),
+                16
+            );
+        } else {
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{mode}: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        io_faults::assert_injected(&marker, "read");
+    }
+}
+
+#[test]
+fn pipeline_byte_credits_wait_before_an_indivisible_oversized_pair() {
+    let (snapshot, mut pair, _) = fixture();
+    let mut content = snapshot.content;
+    let width = 2048;
+    let height = 4097;
+    let model = content.calibration.models.get_mut("depth").unwrap();
+    model.width = width;
+    model.height = height;
+    content.binding.calibration_id = content.calibration.id().unwrap();
+    let snapshot = content.seal().unwrap();
+    for f in [&mut pair.color, &mut pair.depth] {
+        f.context.snapshot_id = snapshot.snapshot_id.clone();
+        f.context.calibration_id = snapshot.content.binding.calibration_id.clone();
+    }
+    pair.depth.width = width;
+    pair.depth.height = height;
+    pair.depth.stride = width as usize * 2;
+    let pixels = vec![0; pair.depth.stride * height as usize];
+    assert!(pixels.len() > 16 * 1024 * 1024);
+    let root = tempfile::tempdir().unwrap();
+    let mut writer =
+        RawRecordingWriter::begin_chunked(root.path(), "capture", snapshot, 80 * 1024 * 1024)
+            .unwrap();
+    writer.enable_checkpoint_pipeline().unwrap();
+    let diagnostics = writer.diagnostics();
+    for n in 1..=3 {
+        append(&mut writer, &pair, &pixels, n);
+    }
+    let path = writer.finish().unwrap();
+    let mut source = RecordingDirectorySource::open(&path).unwrap();
+    for _ in 0..3 {
+        assert!(source.validate_next().unwrap());
+    }
+    assert!(!source.validate_next().unwrap());
+    // Peak can exceed 16 MiB only for this one whole pair, never two pairs.
+    assert_eq!(diagnostics.report()["uncommitted_pairs_peak"], 1);
+    assert!(
+        diagnostics.report()["uncommitted_payload_bytes_peak"]
+            .as_u64()
+            .unwrap()
+            < (pixels.len() + 65540) as u64
+    );
+}
+#[test]
+fn pipeline_budget_failure_never_publishes_complete() {
+    let (snapshot, pair, pixels) = fixture();
+    let root = tempfile::tempdir().unwrap();
+    let mut writer =
+        RawRecordingWriter::begin_chunked(root.path(), "capture", snapshot, 100_000).unwrap();
+    writer.enable_checkpoint_pipeline().unwrap();
+    let mut failed = false;
+    for n in 1..=100 {
+        if writer
+            .append(
+                &pair_at(&pair, n),
+                &[1, 2, 3, 4],
+                &pixels,
+                StorageEndian::Little,
+            )
+            .is_err()
+        {
+            failed = true;
+            break;
+        }
+    }
+    assert!(failed);
+    assert!(writer.finish().is_err());
+    assert!(!root.path().join("capture/COMPLETE").exists());
+    let mut source =
+        RecordingDirectorySource::open_recovered(&root.path().join("capture.partial")).unwrap();
+    let mut count = 0;
+    while source.validate_next().unwrap() {
+        count += 1;
+    }
+    assert!(count >= 16);
+}
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "isolated pending checkpoint commit failure child"]
+fn pipeline_commit_failure_child() {
+    let root = std::path::PathBuf::from(std::env::var_os("GDP_PIPELINE_ROOT").unwrap());
+    let (snapshot, pair, pixels) = fixture();
+    let mut writer =
+        RawRecordingWriter::begin_chunked(&root, "capture", snapshot, 1_000_000).unwrap();
+    writer.enable_checkpoint_pipeline().unwrap();
+    for n in 1..=16 {
+        append(&mut writer, &pair, &pixels, n);
+    }
+    writer.checkpoint().unwrap();
+    let diagnostics = writer.diagnostics();
+    for n in 17..=32 {
+        append(&mut writer, &pair, &pixels, n);
+    }
+    fs::write(root.join("armed"), b"1").unwrap();
+    assert!(writer.checkpoint().is_err());
+    assert_eq!(diagnostics.report()["durable_pairs"], 16);
+    assert!(writer.finish().is_err());
+    let recovered = read_all(&root.join("capture.partial"), true);
+    assert!(recovered.len() == 16 || recovered.len() == 32);
+    assert!(!root.join("capture/COMPLETE").exists());
+}
+#[cfg(target_os = "linux")]
+#[test]
+fn pending_checkpoint_write_sync_and_rename_failures_never_acknowledge_new_prefix() {
+    for (operation, suffix) in [
+        ("write", "/.checkpoint.tmp"),
+        ("fsync", "/.checkpoint.tmp"),
+        ("rename", "/checkpoint.json"),
+        ("fsync", "/capture.partial"),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let library = io_faults::compile(root.path());
+        let marker = root.path().join("injected");
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "pipeline_commit_failure_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("GDP_PIPELINE_ROOT", root.path())
+            .env("GDP_IO_ARMED", root.path().join("armed"));
+        io_faults::inject(&mut command, &library, operation, suffix, &marker);
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{operation} {suffix}: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        io_faults::assert_injected(&marker, operation);
+    }
+}

@@ -812,6 +812,8 @@ struct RawIoStats {
     verification: StageStats,
     append: StageStats,
     finish: StageStats,
+    uncommitted_pairs_peak: u64,
+    uncommitted_payload_bytes_peak: u64,
     payload_write_calls: u64,
     index_write_calls: u64,
     index_flushes: u64,
@@ -863,6 +865,7 @@ impl RawRecordingDiagnostics {
             "verification":stats.verification.report(),"append":stats.append.report(),"finish_total":stats.finish.report(),
             "failed_calls":stats.failures,"durable_pairs":stats.durable_pairs,"checkpoints":stats.checkpoints,"payload_files":stats.payload_files,"validation_image_bytes":stats.validation_image_bytes,
             "validation_buffer_peak_bytes":stats.validation_buffer_peak_bytes,
+            "uncommitted_pairs_peak":stats.uncommitted_pairs_peak,"uncommitted_payload_bytes_peak":stats.uncommitted_payload_bytes_peak,
             "payload_write_calls":stats.payload_write_calls,"index_write_calls":stats.index_write_calls,
             "index_flushes":stats.index_flushes})
     }
@@ -1084,15 +1087,23 @@ impl RawRecordingWriter {
         self.record_buffer = raw;
         self.evidence_buffer = raw_evidence;
         self.count += 1;
+        let (pair_limit, byte_limit) = self.chunk_limits();
         if let Some(chunked) = &mut self.chunked {
             chunked.index_bytes += index_bytes;
-            chunked.active.as_mut().unwrap().pairs += 1;
-            if chunked
-                .active
-                .as_ref()
-                .is_some_and(|c| c.pairs >= chunked::CHUNK_PAIRS || c.bytes >= chunked::CHUNK_BYTES)
-            {
-                self.checkpoint()?;
+            let active = chunked.active.as_mut().unwrap();
+            active.pairs += 1;
+            let pending = chunked.pending_credits();
+            let mut stats = self.diagnostics.0.lock().unwrap_or_else(|e| e.into_inner());
+            stats.uncommitted_pairs_peak = stats
+                .uncommitted_pairs_peak
+                .max(pending.0 + chunked.active.as_ref().unwrap().pairs);
+            stats.uncommitted_payload_bytes_peak = stats
+                .uncommitted_payload_bytes_peak
+                .max(pending.1 + chunked.active.as_ref().unwrap().bytes);
+            drop(stats);
+            let active = chunked.active.as_ref().unwrap();
+            if active.pairs >= pair_limit || active.bytes >= byte_limit {
+                self.automatic_checkpoint()?;
             }
         }
         Ok(())

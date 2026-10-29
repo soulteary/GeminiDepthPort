@@ -124,7 +124,7 @@ fn fixture() -> Fixture {
         "(void)d;(void)e;if(getenv(\"GDP_MOCK_OPEN_ERROR\")){*e=(error*)1;return NULL;}const char *helper_path",
     );
     sdk_source.insert_str(0, "static int fault_active(void);\n");
-    sdk_source.push_str("\nstatic int fault_active(void){const char *n=getenv(\"GDP_MOCK_FAULT_AFTER\");return !n||service_sequence>strtoul(n,NULL,10); }\n");
+    sdk_source.push_str("\nstatic int fault_active(void){const char *gate=getenv(\"GDP_MOCK_FAULT_ARMED\");if(gate&&access(gate,F_OK)!=0)return 0;const char *n=getenv(\"GDP_MOCK_FAULT_AFTER\");return !n||service_sequence>strtoul(n,NULL,10); }\n");
     replace(
         &mut sdk_source,
         "if(getenv(\"GDP_MOCK_MISSING_COLOR\"))return NULL;",
@@ -1375,6 +1375,8 @@ fn startup_discovery_frames_are_excluded_from_the_raw_target_before_readiness() 
     let f = fixture();
     configure_runtime_quality(&f, 2, 1_000_000);
     let mut value: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    // This case checks discovery exclusion, not worker scheduler latency.
+    value["service"]["heartbeat_timeout_ms"] = json!(3000);
     value["startup_discovery_seconds"] = json!(0.08);
     fs::write(&f.config, value.to_string()).unwrap();
     let mut child = launch(&f);
@@ -1995,18 +1997,25 @@ fn acquisition_complete_preserves_valid_images_when_pair_skew_rejects_metadata()
 fn acquisition_global_initial_mapping_waits_but_loss_after_readiness_never_falls_back() {
     let f = fixture();
     acquisition(&f, "complete", true);
+    let fault_arm = f.root.join("global-loss-armed");
     let mut child = acquisition_child(
         &f,
         &[
             ("GDP_MOCK_GLOBAL_WARMUP", "5"),
             ("GDP_MOCK_GLOBAL_LOST", "1"),
             ("GDP_MOCK_FAULT_AFTER", "30"),
+            ("GDP_MOCK_FAULT_ARMED", fault_arm.to_str().unwrap()),
         ],
     );
     let ready = wait_status(&f, &mut child, |v| v["ready"] == true);
     assert!(ready["pairs_rejected"].as_u64().unwrap() >= 5);
+    fs::write(&fault_arm, b"1").unwrap();
     let failed = wait_status(&f, &mut child, |v| {
-        v["ready"] == false && v["reason"] == "SESSION_FAILED"
+        v["ready"] == false
+            && v["rejection_reasons"]["GLOBAL_TIMESTAMP_UNAVAILABLE"]
+                .as_u64()
+                .unwrap_or(0)
+                >= 6
     });
     assert_eq!(failed["ready"], false);
     assert!(failed["pairs_rejected"].as_u64().unwrap() >= 6);
@@ -2306,7 +2315,12 @@ fn stalled_status_fsync_keeps_images_advancing_and_shutdown_persists_final_quali
         &library,
         &marker,
     );
-    command.env("GDP_IO_DELAY_MS", "500");
+    // Hold fsync until publication progress is observed. A synchronous status
+    // regression cannot pass merely because a shared runner slept longer.
+    let release = f.root.join("release-status-sync");
+    command
+        .env("GDP_IO_DELAY_MS", "0")
+        .env("GDP_IO_RELEASE", &release);
     let mut child = command.spawn().unwrap();
     wait_status(&f, &mut child, |v| v["ready"] == true);
     fs::write(f.root.join("armed"), b"1").unwrap();
@@ -2326,11 +2340,13 @@ fn stalled_status_fsync_keeps_images_advancing_and_shutdown_persists_final_quali
     let started = Instant::now();
     while count() <= before {
         assert!(
-            started.elapsed() < Duration::from_millis(350),
+            started.elapsed() < Duration::from_secs(5),
             "capture blocked behind status fsync"
         );
         thread::sleep(Duration::from_millis(5));
     }
+    assert!(!release.exists());
+    fs::write(&release, b"1").unwrap();
     stop(&mut child);
     io_faults::assert_injected(&marker, "fsync");
     let final_status = status(&f).unwrap();

@@ -31,6 +31,8 @@ static int fail(const char *op, const char *path) {
         int fd=open(marker,O_WRONLY|O_CREAT|O_EXCL,0600);
         if(fd>=0) {ssize_t (*real_write)(int,const void*,size_t)=dlsym(RTLD_NEXT,"write");(void)real_write(fd,op,strlen(op));close(fd);}
     }
+    const char *release=getenv("GDP_IO_RELEASE");
+    if(release) {unsigned waited=0;while(access(release,F_OK)!=0 && waited++<10000)usleep(1000);}
     const char *grow=getenv("GDP_IO_GROW_BYTES");
     if(grow) {
         int fd=open(path,O_WRONLY|O_NOFOLLOW);
