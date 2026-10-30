@@ -400,7 +400,7 @@ impl Metrics {
     }
     pub(crate) fn timing_report(&self) -> Value {
         json!({"version":1,"local_duration_clock":"monotonic","unix_clock_scope":"SDK realtime verified for explicit acquisition policies; legacy clock unverified",
-          "sdk_wait_call":self.sdk_wait.report(),"sdk_wait_scope":"all wait calls, including timeout and error","sdk_wait_timeouts":self.sdk_wait_timeouts,"sdk_wait_errors":self.sdk_wait_errors,"quality_tick_wall":self.quality_tick.report(),"sdk_success_return_interval":self.sdk_return_interval.report(),"between_sdk_polls":self.between_sdk_polls.report(),
+          "sdk_wait_call":self.sdk_wait.report(),"sdk_wait_scope":"pipeline.wait only, including timeout and error; excludes IMU drain/publish and recorder buffering","sdk_wait_timeouts":self.sdk_wait_timeouts,"sdk_wait_errors":self.sdk_wait_errors,"quality_tick_wall":self.quality_tick.report(),"sdk_success_return_interval":self.sdk_return_interval.report(),"between_sdk_polls":self.between_sdk_polls.report(),
           "streams": (["color","depth"].into_iter().enumerate().map(|(i,name)|(name,json!({"sdk_system_to_return":self.sdk_age[i].report(),"sdk_system_to_return_invalid_clock_samples":self.sdk_age_clock_regressions[i],"sdk_system_to_return_unavailable_samples":self.sdk_age_unavailable[i],"sdk_return_to_publish_start":self.processing[i].report(),"ros_image_publish_call":self.image_publish[i].report()}))).collect::<BTreeMap<_,_>>()),
           "derived_pair_queue":{"capacity":self.queue_capacity,"current":self.queue_current,"high_water":self.queue_high_water,"dropped_oldest":self.queue_dropped,"wait":self.queue_wait.report()},
           "sdk_internal_queue":{"current":null,"high_water":null,"drops":null,"scope":"not observable through the current SDK API; source sequence gaps are separate evidence"},
@@ -838,27 +838,25 @@ fn run(config: Config) -> Result<Value> {
                     .max(1)
                     .min(u32::MAX as u128) as u32,
             );
+            if let Some(imu) = &mut imu {
+                imu.tick(&mut metrics, started.elapsed() >= warmup)?;
+            }
+            let waiting_in_startup = started.elapsed() < warmup;
             let wait_started = Instant::now();
-            if started.elapsed() < warmup {
-                startup_metrics.before_sdk_wait(wait_started);
-            } else {
-                metrics.before_sdk_wait(wait_started);
-            }
-            if let Some(imu) = &mut imu {
-                imu.tick(&mut metrics, started.elapsed() >= warmup)?;
-            }
             let wait_result = pipeline.wait(poll);
-            if let Some(imu) = &mut imu {
-                imu.tick(&mut metrics, started.elapsed() >= warmup)?;
-            }
             let returned_at = Instant::now();
             let returned_unix = unix_ns();
-            if started.elapsed() < warmup {
+            if waiting_in_startup {
+                startup_metrics.before_sdk_wait(wait_started);
                 startup_metrics.sdk_wait_finished(wait_started, returned_at);
             } else {
+                metrics.before_sdk_wait(wait_started);
                 metrics.sdk_wait_finished(wait_started, returned_at);
             }
-            let wait_metrics = if started.elapsed() < warmup {
+            if let Some(imu) = &mut imu {
+                imu.tick(&mut metrics, started.elapsed() >= warmup)?;
+            }
+            let wait_metrics = if waiting_in_startup {
                 &mut startup_metrics
             } else {
                 &mut metrics

@@ -1050,24 +1050,24 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                     status.write("degraded", Some("STREAM_TIMEOUT"), &metrics, last_pair)?;
                     anyhow::bail!("stream timeout");
                 }
+                if let Some(imu) = &mut imu {
+                    let samples = imu.tick(&mut metrics, !startup)?;
+                    if let Some(raw) = &mut status.raw {
+                        raw.buffer_imu(samples)?;
+                    }
+                }
                 let wait_started = Instant::now();
-                metrics.before_sdk_wait(wait_started);
-                if let Some(imu) = &mut imu {
-                    let samples = imu.tick(&mut metrics, !startup)?;
-                    if let Some(raw) = &mut status.raw {
-                        raw.buffer_imu(samples)?;
-                    }
-                }
                 let wait_result = pipeline.wait(config.capture.poll_ms);
-                if let Some(imu) = &mut imu {
-                    let samples = imu.tick(&mut metrics, !startup)?;
-                    if let Some(raw) = &mut status.raw {
-                        raw.buffer_imu(samples)?;
-                    }
-                }
                 let returned_at = Instant::now();
                 let returned_unix = rgbd::unix_ns();
+                metrics.before_sdk_wait(wait_started);
                 metrics.sdk_wait_finished(wait_started, returned_at);
+                if let Some(imu) = &mut imu {
+                    let samples = imu.tick(&mut metrics, !startup)?;
+                    if let Some(raw) = &mut status.raw {
+                        raw.buffer_imu(samples)?;
+                    }
+                }
                 let set = match wait_result {
                     Ok(Some(set)) => set,
                     Ok(None) => {

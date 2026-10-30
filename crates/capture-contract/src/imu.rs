@@ -46,6 +46,19 @@ impl ImuConfig {
         )
     }
 }
+/// Immutable configuration validated at a trust boundary. The owned copy cannot
+/// be changed after validation; sample data must still be checked independently.
+#[derive(Debug, Clone)]
+pub struct ValidatedImuConfig(ImuConfig);
+impl ValidatedImuConfig {
+    pub fn new(config: ImuConfig) -> Result<Self> {
+        config.validate()?;
+        Ok(Self(config))
+    }
+    pub fn config(&self) -> &ImuConfig {
+        &self.0
+    }
+}
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ImuKind {
@@ -83,6 +96,13 @@ impl ImuProgress {
     }
     pub fn accept(&mut self, s: &ImuSample, c: &ImuConfig) -> Result<()> {
         c.validate()?;
+        self.accept_sample(s, c)
+    }
+    /// Validate every sample against an immutable, previously checked binding.
+    pub fn accept_validated(&mut self, s: &ImuSample, binding: &ValidatedImuConfig) -> Result<()> {
+        self.accept_sample(s, binding.config())
+    }
+    fn accept_sample(&mut self, s: &ImuSample, c: &ImuConfig) -> Result<()> {
         let slot = s.kind.slot();
         require(
             c.enabled

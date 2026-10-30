@@ -1,5 +1,5 @@
 use super::*;
-use capture_contract::imu::{ImuConfig, ImuKind, ImuProgress, ImuSample};
+use capture_contract::imu::{ImuConfig, ImuKind, ImuProgress, ImuSample, ValidatedImuConfig};
 use std::{collections::VecDeque, ffi::c_void, sync::Arc, time::Instant};
 struct Queue {
     samples: VecDeque<ImuSample>,
@@ -11,7 +11,7 @@ struct Queue {
 }
 struct CallbackState {
     queue: Arc<Mutex<Queue>>,
-    config: ImuConfig,
+    binding: ValidatedImuConfig,
     kind: ImuKind,
     imu: sys::ImuApi,
     index: unsafe extern "C" fn(*const sys::Handle, sys::ErrorOut) -> u64,
@@ -61,9 +61,9 @@ impl CallbackState {
             global_timestamp_us,
             xyz: [value.x.into(), value.y.into(), value.z.into()],
             frame_id: if self.kind == ImuKind::Accel {
-                self.config.accel_frame_id.clone()
+                self.binding.config().accel_frame_id.clone()
             } else {
-                self.config.gyro_frame_id.clone()
+                self.binding.config().gyro_frame_id.clone()
             },
         })
     }
@@ -83,8 +83,12 @@ unsafe extern "C" fn callback(frame: *mut sys::Handle, user: *mut c_void) {
             return;
         }
         match sample {
-            Some(sample) if queue.samples.len() < state.config.queue_capacity => {
-                if queue.progress.accept(&sample, &state.config).is_err() {
+            Some(sample) if queue.samples.len() < state.binding.config().queue_capacity => {
+                if queue
+                    .progress
+                    .accept_validated(&sample, &state.binding)
+                    .is_err()
+                {
                     queue.error = Some("IMU_INVALID_OR_REGRESSING");
                     return;
                 }
@@ -152,7 +156,7 @@ pub struct ImuCapture {
 }
 impl Pipeline {
     pub fn start_imu(&self, config: ImuConfig, global: bool) -> Result<ImuCapture> {
-        config.validate().map_err(|e| Error(e.to_string()))?;
+        let binding = ValidatedImuConfig::new(config.clone()).map_err(|e| Error(e.to_string()))?;
         if !config.enabled || !self.session.active.get() {
             return Err(Error(
                 "IMU requires enabled config and active pipeline".into(),
@@ -207,8 +211,8 @@ impl Pipeline {
             })?;
             let mut state = Box::new(CallbackState {
                 queue: queue.clone(),
-                config: config.clone(),
                 kind,
+                binding: binding.clone(),
                 imu: api,
                 index: a.ob_frame_get_index,
                 device: a.ob_frame_get_timestamp_us,

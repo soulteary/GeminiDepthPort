@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 #include <numeric>
+#include <thread>
+#include <chrono>
 #ifndef MOCK_ABI_VERSION
 #define MOCK_ABI_VERSION GDP_ROS_ABI_VERSION
 #endif
@@ -117,11 +119,13 @@ extern "C" int32_t gdp_ros_publish_observed(void *handle, const gdp_ros_frame *f
 
 #ifndef MOCK_NO_IMU
 #include "gdp_ros_imu.h"
-struct ImuMock {std::string accel,gyro;};
+struct ImuMock {std::string accel,gyro;bool delayed=false;};
 extern "C" int32_t gdp_ros_imu_create(const char*,const char*,const char*,const char*,const char *a,const char *g,void **out){
  *out=nullptr;if(std::getenv("GDP_ROS_IMU_CREATE_ERROR"))return 2;*out=new ImuMock{a,g};if(std::getenv("GDP_ROS_IMU_CREATE_WITH_HANDLE"))return 2;event("imu-create");return 0;}
 extern "C" int32_t gdp_ros_imu_publish(void *h,const gdp_ros_imu_frame *f){
  if(!h||!f||f->abi_version!=1||f->struct_size!=sizeof(*f)||f->kind<1||f->kind>2)return 1;
+ auto *publisher=static_cast<ImuMock*>(h);
+ if(!publisher->delayed){publisher->delayed=true;const auto *ms=std::getenv("GDP_ROS_IMU_FIRST_PUBLISH_DELAY_MS");if(ms)std::this_thread::sleep_for(std::chrono::milliseconds(std::strtoul(ms,nullptr,10)));}
  if(std::getenv("GDP_ROS_IMU_PUBLISH_ERROR"))return 2;
  event(f->kind==1?"imu-accel-publish":"imu-gyro-publish");return 0;}
 extern "C" void gdp_ros_imu_destroy(void *h){delete static_cast<ImuMock*>(h);event("imu-destroy");}

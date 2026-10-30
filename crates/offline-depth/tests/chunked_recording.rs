@@ -1321,3 +1321,126 @@ fn imu_recording_rejects_unbound_missing_and_regressing_samples_and_preserves_le
         .is_err()
     );
 }
+
+#[test]
+fn cached_imu_bindings_are_validated_at_writer_and_independent_reader_open() {
+    for fault in ["profile", "acquisition"] {
+        let (snapshot, pair, pixels, _) = imu_fixture();
+        let root = tempfile::tempdir().unwrap();
+        let mut writer =
+            RawRecordingWriter::begin_chunked(root.path(), "valid", snapshot.clone(), 1_000_000)
+                .unwrap();
+        writer
+            .append_with_imu(
+                &pair_at(&pair, 1),
+                &[1, 2, 3, 4],
+                &pixels,
+                StorageEndian::Little,
+                &imu_samples(1),
+            )
+            .unwrap();
+        let path = writer.finish().unwrap();
+        let mut content = snapshot.content;
+        if fault == "profile" {
+            content.configuration["imu"]["accel_rate_hz"] = json!(333);
+        } else {
+            content.configuration["acquisition"] = json!({"preset":"invalid"});
+        }
+        content.binding.configuration_id = capture_contract::ConfigurationId::parse(
+            capture_contract::content_digest(
+                capture_contract::ContentKind::Configuration,
+                &serde_json::to_vec(&content.configuration).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let invalid = content.seal().unwrap();
+        assert!(RawRecordingWriter::begin(root.path(), "invalid", invalid.clone()).is_err());
+        assert!(!root.path().join("invalid.partial").exists());
+        // A new reader must rebuild its own binding even if the snapshot and
+        // manifest have valid content hashes. The former writer's cache is irrelevant.
+        fs::write(path.join("snapshot.json"), invalid.to_bytes().unwrap()).unwrap();
+        let mut manifest: RecordingManifest =
+            serde_json::from_slice(&fs::read(path.join("manifest.json")).unwrap()).unwrap();
+        manifest.binding = invalid.content.binding;
+        fs::write(
+            path.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(RecordingDirectorySource::open(&path).is_err(), "{fault}");
+    }
+}
+
+#[test]
+fn cached_recording_binding_keeps_disabled_and_global_clock_policies() {
+    for policy in ["disabled", "global"] {
+        let (snapshot, mut pair, pixels, _) = imu_fixture();
+        let mut content = snapshot.content;
+        if policy == "disabled" {
+            content.configuration["imu"]["enabled"] = json!(false);
+            content
+                .configuration
+                .as_object_mut()
+                .unwrap()
+                .remove("acquisition");
+        } else {
+            content.configuration["acquisition"]["advanced"]["message_timestamp"] = json!("global");
+        }
+        content.binding.configuration_id = capture_contract::ConfigurationId::parse(
+            capture_contract::content_digest(
+                capture_contract::ContentKind::Configuration,
+                &serde_json::to_vec(&content.configuration).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let snapshot = content.seal().unwrap();
+        for frame in [&mut pair.color, &mut pair.depth] {
+            frame.context.configuration_id = snapshot.content.binding.configuration_id.clone();
+            frame.context.snapshot_id = snapshot.snapshot_id.clone();
+        }
+        let root = tempfile::tempdir().unwrap();
+        if policy == "global" {
+            let mut bad =
+                RawRecordingWriter::begin(root.path(), "missing-global", snapshot.clone()).unwrap();
+            assert!(
+                bad.append_with_imu(
+                    &pair_at(&pair, 1),
+                    &[1, 2, 3, 4],
+                    &pixels,
+                    StorageEndian::Little,
+                    &imu_samples(1)
+                )
+                .is_err()
+            );
+            assert!(bad.finish().is_err());
+        }
+        let mut samples = if policy == "disabled" {
+            Vec::new()
+        } else {
+            imu_samples(1)
+        };
+        for sample in &mut samples {
+            sample.global_timestamp_us = Some(sample.system_timestamp_us + 1);
+        }
+        let mut writer =
+            RawRecordingWriter::begin_chunked(root.path(), "capture", snapshot, 1_000_000).unwrap();
+        let diagnostics = writer.diagnostics();
+        writer
+            .append_with_imu(
+                &pair_at(&pair, 1),
+                &[1, 2, 3, 4],
+                &pixels,
+                StorageEndian::Little,
+                &samples,
+            )
+            .unwrap();
+        let path = writer.finish().unwrap();
+        assert_eq!(
+            diagnostics.report()["validation_imu_samples"],
+            samples.len() * 2
+        );
+        assert_eq!(read_all(&path, false)[0].record.imu, samples);
+    }
+}

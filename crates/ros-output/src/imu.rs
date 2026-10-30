@@ -1,6 +1,6 @@
 //! Optional IMU bridge extension; separate raw accel/gyro messages, no fusion.
 use super::*;
-use frame_core::imu::{ImuConfig, ImuKind, ImuProgress, ImuSample};
+use frame_core::imu::{ImuConfig, ImuKind, ImuProgress, ImuSample, ValidatedImuConfig};
 #[repr(C)]
 pub struct ImuFrameRaw {
     pub abi_version: u32,
@@ -38,7 +38,7 @@ pub struct ImuPublisher {
     handle: NonNull<c_void>,
     publish: ImuPublish,
     destroy: Destroy,
-    config: ImuConfig,
+    binding: ValidatedImuConfig,
     progress: ImuProgress,
     global: bool,
 }
@@ -49,7 +49,8 @@ impl ImuPublisher {
         config: ImuConfig,
         global: bool,
     ) -> Result<Self> {
-        config.validate()?;
+        let binding = ValidatedImuConfig::new(config)?;
+        let config = binding.config();
         ensure!(
             config.enabled && absolute_name(namespace, true),
             "invalid IMU binding"
@@ -93,14 +94,14 @@ impl ImuPublisher {
             handle: NonNull::new(handle).context("null IMU publisher")?,
             publish,
             destroy,
-            config,
+            binding,
             progress: ImuProgress::default(),
             global,
         })
     }
     pub fn publish(&mut self, sample: &ImuSample) -> Result<()> {
         let mut next = self.progress.clone();
-        next.accept(sample, &self.config)?;
+        next.accept_validated(sample, &self.binding)?;
         let us = if self.global {
             sample
                 .global_timestamp_us

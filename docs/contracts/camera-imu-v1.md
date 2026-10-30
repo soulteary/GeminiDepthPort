@@ -109,12 +109,35 @@ python3 ros/imu_recording.py --bag /absolute/capture --namespace /camera_a
 `ros/tests/smoke_imu.py` 使用实际 DDS 接收、ROSbag2 写入/读回和逐条 CDR 哈希证据，
 还会修改 SQLite 中一条消息，确认验证拒绝损坏。它是无硬件合成验证，不是实机验收。
 
+## 配置缓存与计时
+
+SDK 回调和 ROS 发布器在创建时分别构建不可变的已验证 IMU 配置绑定。原生录制
+写入器及每次新开的读回器，都从各自经过内容哈希验证的快照独立解析并校验绑定；
+该缓存不随外部配置变化，也不复用另一份快照的绑定。启用的 IMU 配置或 acquisition
+无效时，在创建写入器/读回器时失败。禁用 IMU 时不要求 acquisition。
+
+缓存仅省去固定配置的重复校验和反序列化。每条样本仍检查有限数值、绑定 frame_id、
+时钟范围、序号和各来源时钟严格递增；选择 global 时仍要求每条样本具有 global 时间戳。
+两轮实际读回、索引/图像哈希、检查点与崩溃恢复规则不变。
+
+- `pipeline_timing.sdk_wait_call`：仅 `pipeline.wait` 调用，包括超时和错误；不含 IMU
+  处理或录制缓冲。有限采集按调用开始时所处的预热阶段归属该次等待。
+- `imu.drain_wall`：每次 pump 的计数读取和 SDK 队列排空，包括锁等待及失败尝试。
+- `imu.ros_publish_wall`：每个非空、允许发布的批次内所有同步 ROS 发布调用，包括失败
+  的调用；未配置 ROS、预热排除或空批次不会增加其样本数。该分位数单位是批次，不是单条 IMU。
+- `imu.pump_wall`：完整 pump 耗时，包含排空、发布和统计开销，不含原生录制器缓冲。
+
+这些计时使用单调时钟，均未声明 DDS 下游送达。旧版本 `sdk_wait_call` 含前后两次 IMU
+pump，跨版本比较须使用整条路径指标，不能把拆分后的等待缩短解释为 SDK 性能提升。
+
 ## 来源与验证边界
 
 ABI 依据 [SDK v2.10.6 C headers](https://github.com/orbbec/OrbbecSDK_v2/tree/v2.10.6/include/libobsensor/h)，
 回调生命周期依据同版本 Sensor/ImuStreamer 实现；单位依据
 [官方 IMU 读取示例](https://doc.orbbec.com/documentation/Orbbec%20Gemini%20330%20Series%20Documentation/C%2B%2B%20Sample%20IMU%20Reader)。
 部署 SDK 仍来自现有固定 OrbbecSDK_ROS2 提交，未替换厂商二进制。
+
+配置缓存优化与计时拆分的前后对照见 [配置缓存性能报告](../validation/reports/imu-config-cache-ab-20261030.md)。
 
 性能影响需区分合成回调/发布边界开销与真实 USB、SDK 调度和 DDS 传输成本。
 本轮数据见 [IMU 性能报告](../validation/reports/camera-imu-ab-20261030.md)。本机没有连接

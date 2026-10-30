@@ -1,7 +1,7 @@
 //! Versioned recording boundary. Observed associations never become SDK framesets.
 use super::*;
 mod chunked;
-use capture_contract::imu::{ImuConfig, ImuProgress, ImuSample};
+use capture_contract::imu::{ImuProgress, ImuSample, ValidatedImuConfig};
 use capture_contract::timing::StageStats;
 use capture_contract::{DepthRepresentation, QuantizationPolicy};
 use capture_observer::{DecodedCameraInfo, MetadataProvenance, ObservedAssociation};
@@ -86,44 +86,50 @@ pub struct SnapshotAssociation {
     pub native_snapshot_id: capture_contract::SnapshotId,
     pub ros_snapshot_id: capture_contract::SnapshotId,
 }
-fn imu_config(snapshot: &SnapshotEnvelope) -> Result<Option<ImuConfig>> {
-    snapshot
-        .content
-        .configuration
-        .get("capture")
-        .unwrap_or(&snapshot.content.configuration)
-        .get("imu")
-        .map(|v| {
-            let config: ImuConfig = serde_json::from_value(v.clone())?;
-            config.validate()?;
-            Ok(config)
-        })
-        .transpose()
+/// Reconstructed independently from each verified writer/reader snapshot.
+/// Checkpoints retain sample progress, never a binding from an untrusted source.
+struct RecordingImuBinding {
+    config: ValidatedImuConfig,
+    global: bool,
+}
+impl RecordingImuBinding {
+    fn from_snapshot(snapshot: &SnapshotEnvelope) -> Result<Option<Self>> {
+        let configuration = snapshot
+            .content
+            .configuration
+            .get("capture")
+            .unwrap_or(&snapshot.content.configuration);
+        configuration
+            .get("imu")
+            .map(|value| {
+                let config = ValidatedImuConfig::new(serde_json::from_value(value.clone())?)?;
+                let global = if config.config().enabled {
+                    let acquisition: capture_contract::AcquisitionPolicy =
+                        serde_json::from_value(configuration["acquisition"].clone())?;
+                    acquisition.resolve()?.message_timestamp
+                        == capture_contract::MessageTimestamp::Global
+                } else {
+                    false
+                };
+                Ok(Self { config, global })
+            })
+            .transpose()
+    }
 }
 fn validate_imu(
     samples: &[ImuSample],
-    snapshot: &SnapshotEnvelope,
+    binding: Option<&RecordingImuBinding>,
     progress: &mut ImuProgress,
 ) -> Result<()> {
     require(samples.len() <= 128, "IMU_BATCH_LIMIT")?;
     if !samples.is_empty() {
-        let config = imu_config(snapshot)?.ok_or(OfflineError::Invalid("IMU_CONFIG_REQUIRED"))?;
-        let acquisition: capture_contract::AcquisitionPolicy = serde_json::from_value(
-            snapshot
-                .content
-                .configuration
-                .get("capture")
-                .unwrap_or(&snapshot.content.configuration)["acquisition"]
-                .clone(),
-        )?;
-        let global =
-            acquisition.resolve()?.message_timestamp == capture_contract::MessageTimestamp::Global;
+        let binding = binding.ok_or(OfflineError::Invalid("IMU_CONFIG_REQUIRED"))?;
         for sample in samples {
             require(
-                !global || sample.global_timestamp_us.is_some(),
+                !binding.global || sample.global_timestamp_us.is_some(),
                 "IMU_GLOBAL_TIMESTAMP_REQUIRED",
             )?;
-            progress.accept(sample, &config)?;
+            progress.accept_validated(sample, &binding.config)?;
         }
     }
     Ok(())
@@ -204,6 +210,7 @@ pub struct RecordingDirectorySource {
     chunk_reader: Mutex<Option<chunked::CachedChunk>>,
     digest: ring::digest::Context,
     seen: u64,
+    imu_binding: Option<RecordingImuBinding>,
     imu_progress: ImuProgress,
     imu_validated: u64,
     previous: Option<Progress>,
@@ -262,6 +269,7 @@ impl RecordingDirectorySource {
         require(fs::metadata(&index_path)?.is_file(), "SOURCE_NOT_FILE")?;
         let file = fs::File::open(index_path)?;
         require(file.metadata()?.is_file(), "SOURCE_NOT_FILE")?;
+        let imu_binding = RecordingImuBinding::from_snapshot(&snapshot)?;
         Ok(Self {
             root,
             manifest,
@@ -275,6 +283,7 @@ impl RecordingDirectorySource {
             chunk_reader: Mutex::new(None),
             digest: ring::digest::Context::new(&ring::digest::SHA256),
             seen: 0,
+            imu_binding,
             imu_progress: ImuProgress::default(),
             imu_validated: 0,
             previous: None,
@@ -460,7 +469,9 @@ impl RecordingDirectorySource {
         require(n <= 65536, "RECORDING_INDEX_LINE_LIMIT")?;
         if n == 0 {
             require(
-                imu_config(&self.snapshot)?.is_none_or(|c| !c.enabled)
+                self.imu_binding
+                    .as_ref()
+                    .is_none_or(|b| !b.config.config().enabled)
                     || self.imu_progress.has_both(),
                 "IMU_STREAMS_MISSING",
             )?;
@@ -485,7 +496,11 @@ impl RecordingDirectorySource {
             "RECORDING_INDEX_COUNT",
         )?;
         let record: RecordingRecord = parse(&self.line)?;
-        validate_imu(&record.imu, &self.snapshot, &mut self.imu_progress)?;
+        validate_imu(
+            &record.imu,
+            self.imu_binding.as_ref(),
+            &mut self.imu_progress,
+        )?;
         self.imu_validated += record.imu.len() as u64;
         self.check_ranges(&record)?;
         record.storage_representation.validate()?;
@@ -938,6 +953,7 @@ pub struct RawRecordingWriter {
     final_path: PathBuf,
     snapshot: SnapshotEnvelope,
     records: fs::File,
+    imu_binding: Option<RecordingImuBinding>,
     imu_progress: ImuProgress,
     evidence_buffer: Vec<u8>,
     record_buffer: Vec<u8>,
@@ -975,6 +991,7 @@ impl RawRecordingWriter {
         diagnostics: RawRecordingDiagnostics,
     ) -> Result<Self> {
         snapshot.verify(&snapshot.content.binding)?;
+        let imu_binding = RecordingImuBinding::from_snapshot(&snapshot)?;
         require(
             !name.is_empty()
                 && name.len() <= 128
@@ -1005,6 +1022,7 @@ impl RawRecordingWriter {
             final_path,
             snapshot,
             records,
+            imu_binding,
             imu_progress: ImuProgress::default(),
             evidence_buffer: Vec::new(),
             record_buffer: Vec::new(),
@@ -1076,7 +1094,7 @@ impl RawRecordingWriter {
         endian: StorageEndian,
         imu: &[ImuSample],
     ) -> Result<()> {
-        validate_imu(imu, &self.snapshot, &mut self.imu_progress)?;
+        validate_imu(imu, self.imu_binding.as_ref(), &mut self.imu_progress)?;
         pair.validate()
             .map_err(|_| OfflineError::Invalid("PAIR_EVIDENCE_INVALID"))?;
         require(

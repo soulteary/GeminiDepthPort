@@ -10,6 +10,8 @@ pub(crate) struct ImuMetrics {
     excluded: u64,
     peak: usize,
     wall: capture_contract::timing::StageStats,
+    drain_wall: capture_contract::timing::StageStats,
+    publish_wall: capture_contract::timing::StageStats,
     error: Option<String>,
     ros: bool,
 }
@@ -20,7 +22,7 @@ impl ImuMetrics {
             && self.error.is_none()
     }
     pub fn report(&self) -> serde_json::Value {
-        json!({"enabled":true,"received":self.received,"published":self.published,"startup_samples_excluded":self.excluded,"queue_high_water":self.peak,"error":self.error,"ready":self.ready(),"pump_wall":self.wall.report(),"units":{"accel":"m/s^2","gyro":"rad/s"},"orientation_available":false,"extrinsics_verified":false,"interpolation":false,"delivery_verified":false})
+        json!({"enabled":true,"received":self.received,"published":self.published,"startup_samples_excluded":self.excluded,"queue_high_water":self.peak,"error":self.error,"ready":self.ready(),"pump_wall":self.wall.report(),"drain_wall":self.drain_wall.report(),"ros_publish_wall":self.publish_wall.report(),"timing_scope":{"drain_wall":"per pump, counters and SDK queue drain including lock wait","ros_publish_wall":"per nonempty published batch, all synchronous ROS calls including failures","pump_wall":"whole IMU pump; excludes native recorder buffering"},"units":{"accel":"m/s^2","gyro":"rad/s"},"orientation_available":false,"extrinsics_verified":false,"interpolation":false,"delivery_verified":false})
     }
 }
 pub(crate) struct RuntimeImu {
@@ -51,16 +53,27 @@ impl RuntimeImu {
             .get_or_insert_with(|| Box::new(ImuMetrics::default()));
         let started = Instant::now();
         stats.ros = self.publisher.is_some();
+        let drain_started = Instant::now();
         let (received, peak) = self.capture.counters();
         stats.received = received;
         stats.peak = peak;
         let result = (|| -> Result<Vec<ImuSample>> {
-            let samples = self.capture.drain()?;
+            let drained = self.capture.drain();
+            stats.drain_wall.observe(drain_started.elapsed());
+            let samples = drained?;
             if publish {
                 if let Some(publisher) = &mut self.publisher {
-                    for sample in &samples {
-                        publisher.publish(sample)?;
-                        stats.published[sample.kind.slot()] += 1;
+                    if !samples.is_empty() {
+                        let publish_started = Instant::now();
+                        let result = (|| -> Result<()> {
+                            for sample in &samples {
+                                publisher.publish(sample)?;
+                                stats.published[sample.kind.slot()] += 1;
+                            }
+                            Ok(())
+                        })();
+                        stats.publish_wall.observe(publish_started.elapsed());
+                        result?;
                     }
                 }
             } else {

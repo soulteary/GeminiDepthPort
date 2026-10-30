@@ -318,6 +318,14 @@ fn status(f: &Fixture) -> Option<Value> {
         .and_then(|raw| serde_json::from_str(&raw).ok())
 }
 fn wait_status(f: &Fixture, child: &mut Child, predicate: impl Fn(&Value) -> bool) -> Value {
+    wait_status_for(f, child, predicate, Duration::from_secs(8))
+}
+fn wait_status_for(
+    f: &Fixture,
+    child: &mut Child,
+    predicate: impl Fn(&Value) -> bool,
+    timeout: Duration,
+) -> Value {
     let start = Instant::now();
     loop {
         if let Some(value) = status(f) {
@@ -330,7 +338,7 @@ fn wait_status(f: &Fixture, child: &mut Child, predicate: impl Fn(&Value) -> boo
             "service exited before expected state: {:?}",
             status(f)
         );
-        if start.elapsed() > Duration::from_secs(8) {
+        if start.elapsed() > timeout {
             unsafe {
                 libc::kill(child.id() as i32, libc::SIGTERM);
             }
@@ -2665,36 +2673,58 @@ fn process_measurement(pid: u32) -> (u64, u64) {
 #[test]
 #[ignore = "explicit release IMU on/off performance experiment; no noisy CI thresholds"]
 fn imu_capture_ab_benchmark() {
+    let baseline = std::env::var_os("GDP_IMU_BENCH_BASELINE_SERVICE");
+    let target_pairs = if baseline.is_some() { 300 } else { 60 };
+    let window_seconds = if baseline.is_some() { 10 } else { 2 };
     let mut rows = Vec::new();
     let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
     for repeat in 0..5 {
         for recording in [false, true] {
-            for enabled in if repeat % 2 == 0 {
+            for candidate in if repeat % 2 == 0 {
                 [false, true]
             } else {
                 [true, false]
             } {
+                let enabled = baseline.is_some() || candidate;
+                let service = if !candidate {
+                    baseline
+                        .as_deref()
+                        .unwrap_or(std::ffi::OsStr::new(env!("CARGO_BIN_EXE_capture-service")))
+                } else {
+                    std::ffi::OsStr::new(env!("CARGO_BIN_EXE_capture-service"))
+                };
                 let f = large_imu_benchmark_fixture();
                 if recording {
-                    configure_runtime_quality(&f, 60, 256 * 1024 * 1024);
+                    configure_runtime_quality(&f, target_pairs, 1024 * 1024 * 1024);
                 }
                 enable_imu(&f);
                 let mut value: Value =
                     serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
                 value["imu"]["enabled"] = json!(enabled);
                 fs::write(&f.config, value.to_string()).unwrap();
-                let mut child = acquisition_child(&f, &[("GDP_MOCK_WAIT_DELAY_MS", "33")]);
+                let mut child = Command::new(service)
+                    .args(["--config", f.config.to_str().unwrap()])
+                    .env("GDP_MOCK_WAIT_DELAY_MS", "33")
+                    .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+                    .env("GDP_ROS_MOCK_EVENTS", &f.events)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap();
                 let ready = wait_status(&f, &mut child, |v| v["ready"] == true);
                 let worker = ready["pid"].as_u64().unwrap() as u32;
                 let parent_start = process_measurement(child.id());
                 let worker_start = process_measurement(worker);
                 let started = Instant::now();
                 let final_status = if recording {
-                    wait_status(&f, &mut child, |v| {
-                        v["raw_recording"]["state"] == "complete"
-                    })
+                    wait_status_for(
+                        &f,
+                        &mut child,
+                        |v| v["raw_recording"]["state"] == "complete",
+                        Duration::from_secs(30),
+                    )
                 } else {
-                    thread::sleep(Duration::from_secs(2));
+                    thread::sleep(Duration::from_secs(window_seconds));
                     status(&f).unwrap()
                 };
                 let wall = started.elapsed().as_secs_f64();
@@ -2709,7 +2739,7 @@ fn imu_capture_ab_benchmark() {
                     assert!(final_status["imu"]["queue_high_water"].as_u64().unwrap() <= 128);
                 }
                 if recording {
-                    assert_eq!(final_status["raw_recording"]["written_pairs"], 60);
+                    assert_eq!(final_status["raw_recording"]["written_pairs"], target_pairs);
                     let samples = final_status["raw_recording"]["imu_samples_submitted"]
                         .as_u64()
                         .unwrap();
@@ -2721,13 +2751,13 @@ fn imu_capture_ab_benchmark() {
                         assert!(samples > 100);
                     }
                 }
-                let row = json!({"repeat":repeat,"recording":recording,"imu_enabled":enabled,"wall_seconds":wall,"published_pairs_in_window":frames,"observed_pairs_per_second":frames as f64/wall,"monitored_cpu_cores":((parent_end.0-parent_start.0)+(worker_end.0-worker_start.0)) as f64/hz/wall,"worker_peak_rss_kib":worker_end.1,"supervisor_peak_rss_kib":parent_end.1,"sum_process_peak_rss_kib":worker_end.1+parent_end.1,"pipeline_timing":final_status["pipeline_timing"],"imu":final_status["imu"],"raw_recording":final_status["raw_recording"]});
+                let row = json!({"service_variant":if baseline.is_some() {if candidate {"after"}else{"before"}}else{"current"},"repeat":repeat,"recording":recording,"imu_enabled":enabled,"wall_seconds":wall,"published_pairs_in_window":frames,"observed_pairs_per_second":frames as f64/wall,"monitored_cpu_cores":((parent_end.0-parent_start.0)+(worker_end.0-worker_start.0)) as f64/hz/wall,"worker_peak_rss_kib":worker_end.1,"supervisor_peak_rss_kib":parent_end.1,"sum_process_peak_rss_kib":worker_end.1+parent_end.1,"pipeline_timing":final_status["pipeline_timing"],"imu":final_status["imu"],"raw_recording":final_status["raw_recording"]});
                 stop(&mut child);
                 rows.push(row);
             }
         }
     }
-    fs::write(std::env::var_os("GDP_IMU_BENCH_OUTPUT").unwrap(),serde_json::to_vec_pretty(&json!({"bridge_backend":if std::env::var_os("GDP_IMU_BENCH_REAL_BRIDGE").is_some(){"real-humble-dds"}else{"synthetic-c-abi"},"kind":"imu-on-off-synthetic-capture","runs":20,"repeats":5,"width":640,"height":400,"nominal_fps":30,"imu_rate_hz_per_stream":200,"rows":rows,"limits":if std::env::var_os("GDP_IMU_BENCH_REAL_BRIDGE").is_some(){"synthetic C SDK with real Humble/Fast DDS publishers and no downstream image subscribers; no USB; architecture may be emulated; CPU sums capture worker and supervisor; RSS sums separate process high-water marks; native recording serial chunked-v3, 60 pairs"}else{"synthetic C SDK and bridge; includes producer callback thread overhead, excludes USB and actual DDS costs; CPU sums capture worker and supervisor; RSS sums process high-water marks, not simultaneous or anonymous RSS; native recording uses serial chunked-v3 and 60-pair target"}})).unwrap()).unwrap();
+    fs::write(std::env::var_os("GDP_IMU_BENCH_OUTPUT").unwrap(),serde_json::to_vec_pretty(&json!({"bridge_backend":if std::env::var_os("GDP_IMU_BENCH_REAL_BRIDGE").is_some(){"real-humble-dds"}else{"synthetic-c-abi"},"kind":if baseline.is_some(){"imu-cache-before-after-alternating"}else{"imu-on-off-synthetic-capture"},"native_target_pairs":target_pairs,"ros_window_seconds":window_seconds,"runs":20,"repeats":5,"width":640,"height":400,"nominal_fps":30,"imu_rate_hz_per_stream":200,"rows":rows,"limits":if std::env::var_os("GDP_IMU_BENCH_REAL_BRIDGE").is_some(){"synthetic C SDK with real Humble/Fast DDS publishers and no downstream image subscribers; no USB; architecture may be emulated; CPU sums capture worker and supervisor; RSS sums separate process high-water marks; native recording serial chunked-v3; target/window in report metadata"}else{"synthetic C SDK and bridge; includes producer callback thread overhead, excludes USB and actual DDS costs; CPU sums capture worker and supervisor; RSS sums process high-water marks, not simultaneous or anonymous RSS; native recording uses serial chunked-v3; target/window in report metadata"}})).unwrap()).unwrap();
 }
 
 #[test]
@@ -2750,6 +2780,8 @@ fn finite_imu_sdk_only_capture_needs_both_streams_without_requiring_ros() {
         assert_eq!(result["ok"], !stalled, "{result}");
         assert_eq!(result["imu"]["ready"], !stalled);
         assert_eq!(result["imu"]["published"], json!([0, 0]));
+        assert_eq!(result["imu"]["ros_publish_wall"]["samples"], 0);
+        assert!(result["imu"]["drain_wall"]["samples"].as_u64().unwrap() > 0);
     }
 }
 
@@ -2766,5 +2798,44 @@ fn imu_is_published_even_while_video_framesets_are_incomplete() {
     assert_eq!(status["pairs_accepted"], 0);
     assert!(status["imu"]["published"][0].as_u64().unwrap() > 0);
     assert!(status["imu"]["published"][1].as_u64().unwrap() > 0);
+    stop(&mut child);
+}
+
+#[test]
+fn imu_timing_reports_drain_and_ros_batches_separately_from_sdk_wait() {
+    let f = fixture();
+    enable_imu(&f);
+    let mut child = acquisition_child(&f, &[("GDP_ROS_IMU_FIRST_PUBLISH_DELAY_MS", "150")]);
+    let observed = wait_status(&f, &mut child, |v| {
+        v["ready"] == true && v["imu"]["published"][0].as_u64().unwrap_or(0) > 10
+    });
+    let imu = &observed["imu"];
+    assert!(imu["ros_publish_wall"]["maximum_ns"].as_u64().unwrap() >= 150_000_000);
+    let total = |key: &str| {
+        imu[key]["total_ns"]
+            .as_str()
+            .unwrap()
+            .parse::<u128>()
+            .unwrap()
+    };
+    assert!(total("pump_wall") >= total("drain_wall") + total("ros_publish_wall"));
+    assert!(
+        imu["drain_wall"]["samples"].as_u64().unwrap()
+            >= imu["ros_publish_wall"]["samples"].as_u64().unwrap()
+    );
+    let sdk = &observed["pipeline_timing"];
+    assert!(sdk["sdk_wait_call"]["samples"].as_u64().unwrap() > 0);
+    assert!(
+        sdk["sdk_wait_scope"]
+            .as_str()
+            .unwrap()
+            .contains("pipeline.wait only")
+    );
+    assert!(
+        imu["timing_scope"]["ros_publish_wall"]
+            .as_str()
+            .unwrap()
+            .contains("batch")
+    );
     stop(&mut child);
 }
