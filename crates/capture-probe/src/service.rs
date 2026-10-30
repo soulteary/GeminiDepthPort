@@ -1317,7 +1317,11 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                             }
                         }
                         if config.capture.ros.is_some() && ros.is_none() {
-                            ros = rgbd::setup_ros(&config.capture, &pipeline.calibration()?)?;
+                            ros = rgbd::setup_ros_in_context(
+                                &config.capture,
+                                &pipeline.calibration()?,
+                                imu.as_ref().and_then(|v| v.context()),
+                            )?;
                             if let Some(output) = &mut ros {
                                 output.color.set_session_id(&status.session)?;
                                 output.depth.set_session_id(&status.session)?;
@@ -1374,7 +1378,11 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                     continue;
                 }
                 if ros.is_none() {
-                    ros = rgbd::setup_ros(&config.capture, &set.calibration()?)?;
+                    ros = rgbd::setup_ros_in_context(
+                        &config.capture,
+                        &set.calibration()?,
+                        imu.as_ref().and_then(|v| v.context()),
+                    )?;
                     if let Some(output) = &mut ros {
                         output.color.set_session_id(&status.session)?;
                         output.depth.set_session_id(&status.session)?;

@@ -544,9 +544,17 @@ pub(crate) struct Ros {
     pub(crate) depth_guard: StampGuard,
     pub(crate) timestamp: MessageTimestamp,
 }
+#[cfg(test)]
 pub(crate) fn setup_ros(
     config: &Config,
     calibration: &orbbec_safe::SessionCalibration,
+) -> Result<Option<Ros>> {
+    setup_ros_in_context(config, calibration, None)
+}
+pub(crate) fn setup_ros_in_context(
+    config: &Config,
+    calibration: &orbbec_safe::SessionCalibration,
+    context: Option<&ros_output::SharedRosContext>,
 ) -> Result<Option<Ros>> {
     let Some(ros) = &config.ros else {
         return Ok(None);
@@ -569,7 +577,10 @@ pub(crate) fn setup_ros(
             metadata_topic: format!("{prefix}/frame_metadata"),
             frame_id: stream.frame_id.clone(),
         };
-        ros_output::Publisher::load(&ros.bridge, binding, calibration)
+        match context {
+            Some(c) => ros_output::Publisher::load_shared(c, binding, calibration),
+            None => ros_output::Publisher::load(&ros.bridge, binding, calibration),
+        }
     };
     let color = build(
         "color",
@@ -923,7 +934,11 @@ fn run(config: Config) -> Result<Value> {
                 let missing_depth = depth.is_none();
                 if !startup && config.publish_partial() {
                     if config.ros.is_some() && ros.is_none() {
-                        ros = setup_ros(&config, &pipeline.calibration()?)?;
+                        ros = setup_ros_in_context(
+                            &config,
+                            &pipeline.calibration()?,
+                            imu.as_ref().and_then(|v| v.context()),
+                        )?;
                     }
                     drain(&mut queue, &mut ros, metrics)?;
                     for (frame, stream, is_depth) in
@@ -958,7 +973,11 @@ fn run(config: Config) -> Result<Value> {
                 continue;
             }
             if config.ros.is_some() && ros.is_none() {
-                ros = setup_ros(&config, &set.calibration()?)?;
+                ros = setup_ros_in_context(
+                    &config,
+                    &set.calibration()?,
+                    imu.as_ref().and_then(|v| v.context()),
+                )?;
             }
             let color_meta = color.as_ref().unwrap().metadata()?;
             let depth_meta = depth.as_ref().unwrap().metadata()?;

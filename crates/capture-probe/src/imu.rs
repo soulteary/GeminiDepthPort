@@ -14,6 +14,7 @@ pub(crate) struct ImuMetrics {
     publish_wall: capture_contract::timing::StageStats,
     error: Option<String>,
     ros: bool,
+    shared_context: bool,
 }
 impl ImuMetrics {
     pub fn ready(&self) -> bool {
@@ -22,13 +23,14 @@ impl ImuMetrics {
             && self.error.is_none()
     }
     pub fn report(&self) -> serde_json::Value {
-        json!({"enabled":true,"received":self.received,"published":self.published,"startup_samples_excluded":self.excluded,"queue_high_water":self.peak,"error":self.error,"ready":self.ready(),"pump_wall":self.wall.report(),"drain_wall":self.drain_wall.report(),"ros_publish_wall":self.publish_wall.report(),"timing_scope":{"drain_wall":"per pump, counters and SDK queue drain including lock wait","ros_publish_wall":"per nonempty published batch, all synchronous ROS calls including failures","pump_wall":"whole IMU pump; excludes native recorder buffering"},"units":{"accel":"m/s^2","gyro":"rad/s"},"orientation_available":false,"extrinsics_verified":false,"interpolation":false,"delivery_verified":false})
+        json!({"enabled":true,"received":self.received,"published":self.published,"startup_samples_excluded":self.excluded,"queue_high_water":self.peak,"error":self.error,"ready":self.ready(),"pump_wall":self.wall.report(),"drain_wall":self.drain_wall.report(),"ros_publish_wall":self.publish_wall.report(),"timing_scope":{"drain_wall":"per pump, counters and SDK queue drain including lock wait","ros_publish_wall":"per nonempty published batch, all synchronous ROS calls including failures","pump_wall":"whole IMU pump; excludes native recorder buffering"},"units":{"accel":"m/s^2","gyro":"rad/s"},"orientation_available":false,"extrinsics_verified":false,"interpolation":false,"delivery_verified":false,"shared_ros_context":self.shared_context})
     }
 }
 pub(crate) struct RuntimeImu {
     capture: orbbec_safe::ImuCapture,
     samples: Vec<SharedImuSample>,
     publisher: Option<ros_output::ImuPublisher>,
+    context: Option<ros_output::SharedRosContext>,
 }
 impl RuntimeImu {
     pub fn open(config: &Config, pipeline: &orbbec_safe::Pipeline) -> Result<Option<Self>> {
@@ -38,16 +40,33 @@ impl RuntimeImu {
         let global = config.message_timestamp() == capture_contract::MessageTimestamp::Global;
         // Create the ROS context before callbacks begin, avoiding a startup queue
         // burst while discovery/publisher allocation is still initializing.
+        let context = config
+            .ros
+            .as_ref()
+            .map(|r| ros_output::SharedRosContext::try_load(&r.bridge))
+            .transpose()?
+            .flatten();
         let publisher = config
             .ros
             .as_ref()
-            .map(|r| ros_output::ImuPublisher::load(&r.bridge, &r.namespace, imu.clone(), global))
+            .map(|r| match &context {
+                Some(c) => {
+                    ros_output::ImuPublisher::load_shared(c, &r.namespace, imu.clone(), global)
+                }
+                None => {
+                    ros_output::ImuPublisher::load(&r.bridge, &r.namespace, imu.clone(), global)
+                }
+            })
             .transpose()?;
         Ok(Some(Self {
             capture: pipeline.start_imu(imu.clone(), global)?,
             samples: Vec::with_capacity(imu.queue_capacity),
             publisher,
+            context,
         }))
+    }
+    pub fn context(&self) -> Option<&ros_output::SharedRosContext> {
+        self.context.as_ref()
     }
     pub fn tick(
         &mut self,
@@ -59,6 +78,7 @@ impl RuntimeImu {
             .get_or_insert_with(|| Box::new(ImuMetrics::default()));
         let started = Instant::now();
         stats.ros = self.publisher.is_some();
+        stats.shared_context = self.context.is_some();
         let drain_started = Instant::now();
         let drained = self.capture.drain_into(&mut self.samples);
         stats.drain_wall.observe(drain_started.elapsed());

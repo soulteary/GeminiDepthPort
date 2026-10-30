@@ -11,6 +11,7 @@ python3 /ws/ros/tests/smoke_aux.py \
   --namespace /gdp_synthetic_aux_smoke
 
 python3 /ws/ros/tests/smoke_imu.py
+python3 /ws/ros/tests/smoke_context.py
 
 python3 /ws/ros/tests/diagnostics_smoke.py
 

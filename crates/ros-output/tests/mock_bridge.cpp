@@ -130,3 +130,22 @@ extern "C" int32_t gdp_ros_imu_publish(void *h,const gdp_ros_imu_frame *f){
  event(f->kind==1?"imu-accel-publish":"imu-gyro-publish");return 0;}
 extern "C" void gdp_ros_imu_destroy(void *h){delete static_cast<ImuMock*>(h);event("imu-destroy");}
 #endif
+
+#if !defined(MOCK_NO_CONTEXT) && !defined(MOCK_NO_IMU)
+#include "gdp_ros_context.h"
+extern "C" uint32_t gdp_ros_context_abi_version(void){return std::getenv("GDP_ROS_CONTEXT_BAD_ABI")?2:1;}
+extern "C" int32_t gdp_ros_context_create(void **out){
+ if(!out)return 1;
+ *out=nullptr;if(std::getenv("GDP_ROS_CONTEXT_CREATE_ERROR"))return 2;
+ if(std::getenv("GDP_ROS_CONTEXT_NULL"))return 0;
+ *out=new int(1);event("context-create");return std::getenv("GDP_ROS_CONTEXT_WITH_HANDLE")?2:0;}
+extern "C" void gdp_ros_context_destroy(void *p){delete static_cast<int*>(p);event("context-destroy");}
+extern "C" int32_t gdp_ros_create_in_context(void *context,const gdp_ros_config *config,void **out){
+ if(!context)return 1;
+ event("image-shared-context");return gdp_ros_create(config,out);}
+#ifndef MOCK_PARTIAL_CONTEXT
+extern "C" int32_t gdp_ros_imu_create_in_context(void *context,const char *n,const char *ns,const char *a,const char *g,const char *af,const char *gf,void **out){
+ if(!context)return 1;
+ event("imu-shared-context");return gdp_ros_imu_create(n,ns,a,g,af,gf,out);}
+#endif
+#endif

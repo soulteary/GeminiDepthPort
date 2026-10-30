@@ -161,6 +161,31 @@ SDK 队列和消费者各持有一个预留至配置上限的数组。`drain_int
 
 本轮数据见 [缓冲区复用性能报告](../validation/reports/imu-buffers-ab-20261030.md)。
 
+## ROS 消息与 context 生命周期
+
+C++ 桥为加速度计和陀螺仪各持有一个消息模板，初始化时复制 frame ID、协方差及未知姿态
+标记。每次先执行原有校验，再完整更新时间戳和对应三轴值；两类消息分开存储，避免
+残留另一传感器的数据。保持 reliable / volatile / KEEP_LAST(100)，图像、CameraInfo、
+metadata 保持 KEEP_LAST(10)。显式关闭 intra-process 通信，按现有同步 publish(const&)
+契约在返回后复用模板；未声称 DDS 零复制、零分配或已送达。
+
+可选 context v1 扩展采用显式租约，不使用全局/命名空间缓存。Rust `SharedRosContext`
+持有同一动态库引用且不可跨线程；共享的图像和 IMU 发布器分别保留租约。调用方先释放
+租约或先销毁任一发布器都不会关闭其他发布器，最后一个持有者释放时才 shutdown。
+会话间默认隔离；C ABI 裸句柄只能由同一库创建，在同一线程使用并且只销毁一次。
+
+仅在显式启用 IMU 与 ROS 时，采集路径尝试创建共享会话，随后让彩色、深度和 IMU 的
+独立节点使用同一 context。旧桥完全没有扩展时保持独立模式；扩展不完整、版本不符或
+创建失败时报错。现有 ABI v1、独立创建接口及消息格式均保留。TF/诊断辅助发布器本轮
+保持独立 context，未改变其 QoS 或生命周期。`imu.shared_ros_context` 表示已选择共享会话。
+
+实际 Humble 测试通过 Fast DDS endpoint GID 前缀验证会话内同一参与者与会话间隔离，
+并验证租约先销毁、图像先销毁、IMU 先销毁及失败创建后其余发布器继续工作。保留
+系统/global 映射、异常拒绝、ROSbag2 CDR 哈希读回与损坏拒绝测试。SDK 时间戳规则未
+因消息复用或共享 context 而放宽，物理设备兼容性仍需独立验证。
+
+性能结果见 [ROS 消息复用与共享 context 报告](../validation/reports/imu-ros-reuse-ab-20261030.md)。
+
 ## 来源与验证边界
 
 ABI 依据 [SDK v2.10.6 C headers](https://github.com/orbbec/OrbbecSDK_v2/tree/v2.10.6/include/libobsensor/h)，

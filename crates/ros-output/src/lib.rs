@@ -14,6 +14,8 @@ use std::{
     ptr::{self, NonNull},
     rc::Rc,
 };
+mod context;
+pub use context::SharedRosContext;
 mod imu;
 pub use imu::{ImuFrameRaw, ImuPublisher};
 mod auxiliary;
@@ -412,6 +414,7 @@ pub struct Publisher {
     stamps: StampGuard,
     sequence: Option<u64>,
     session_bound: bool,
+    _context: Option<SharedRosContext>,
 }
 impl Publisher {
     pub fn load(
@@ -419,6 +422,25 @@ impl Publisher {
         binding: Binding,
         calibration: Calibration,
     ) -> Result<Self> {
+        Self::load_inner(
+            context::BridgeSource::Isolated(path.as_ref()),
+            binding,
+            calibration,
+        )
+    }
+    pub fn load_shared(
+        context: &SharedRosContext,
+        binding: Binding,
+        calibration: Calibration,
+    ) -> Result<Self> {
+        Self::load_inner(context::BridgeSource::Shared(context), binding, calibration)
+    }
+    fn load_inner(
+        source: context::BridgeSource<'_>,
+        binding: Binding,
+        calibration: Calibration,
+    ) -> Result<Self> {
+        let context = source.context();
         binding.validate()?;
         calibration.validate()?;
         ensure!(
@@ -455,9 +477,14 @@ impl Publisher {
             d: calibration.d.as_ptr(),
             d_len: u32::try_from(calibration.d.len())?,
         };
-        let library = Library::load(path.as_ref())?;
+        let library = source.library()?;
         let mut handle = ptr::null_mut();
-        let code = unsafe { (library.create)(&config, &mut handle) };
+        let code = unsafe {
+            match context {
+                Some(c) => (c.0.image_create)(c.0.handle.as_ptr(), &config, &mut handle),
+                None => (library.create)(&config, &mut handle),
+            }
+        };
         if code != 0 {
             if !handle.is_null() {
                 unsafe {
@@ -474,6 +501,7 @@ impl Publisher {
             stamps: StampGuard::default(),
             sequence: None,
             session_bound: false,
+            _context: context.cloned(),
         })
     }
     /// Bind once before any publication; recreating a publisher is required for a new session.

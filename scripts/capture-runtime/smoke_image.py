@@ -90,8 +90,12 @@ def main():
                            'ob_accel_frame_get_value', 'ob_gyro_frame_get_value'):
                 require(hasattr(sdk_api, symbol), 'pinned SDK IMU extension missing')
             bridge_api = ctypes.CDLL(bridge)
-            for symbol in ('gdp_ros_imu_create', 'gdp_ros_imu_publish', 'gdp_ros_imu_destroy'):
-                require(hasattr(bridge_api, symbol), 'IMU bridge extension missing')
+            for symbol in ('gdp_ros_imu_create', 'gdp_ros_imu_publish', 'gdp_ros_imu_destroy',
+                           'gdp_ros_context_abi_version', 'gdp_ros_context_create', 'gdp_ros_context_destroy',
+                           'gdp_ros_create_in_context', 'gdp_ros_imu_create_in_context'):
+                require(hasattr(bridge_api, symbol), 'IMU/context bridge extension missing')
+            bridge_api.gdp_ros_context_abi_version.restype = ctypes.c_uint32
+            require(bridge_api.gdp_ros_context_abi_version() == 1, 'ROS context extension ABI differs')
         finally:
             os.chdir(previous_directory)
         config = {'version': 1, 'sdk_library': sdk, 'serial': 'SYNTHETIC_NO_DEVICE_ACCESS',

@@ -2536,6 +2536,7 @@ fn imu_service_publishes_both_streams_and_preserves_samples_in_native_recording(
         v["ready"] == true && v["raw_recording"]["state"] == "complete"
     });
     assert_eq!(done["imu"]["ready"], true);
+    assert_eq!(done["imu"]["shared_ros_context"], true);
     assert!(done["imu"]["startup_samples_excluded"].as_u64().unwrap() > 0);
     assert!(done["imu"]["published"][0].as_u64().unwrap() > 0);
     assert!(done["imu"]["published"][1].as_u64().unwrap() > 0);
@@ -2842,4 +2843,32 @@ fn imu_timing_reports_drain_and_ros_batches_separately_from_sdk_wait() {
             .contains("batch")
     );
     stop(&mut child);
+}
+
+#[test]
+fn old_imu_bridges_keep_isolated_contexts_without_losing_capture_readiness() {
+    let f = fixture();
+    enable_imu(&f);
+    let source = f.root.join("mock-bridge.cpp");
+    let old = fs::read_to_string(&source).unwrap();
+    fs::write(&source, format!("#define MOCK_NO_CONTEXT\n{old}")).unwrap();
+    let config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    compile(
+        "c++",
+        &source,
+        Path::new(config["ros"]["bridge"].as_str().unwrap()),
+        Some(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ros/include")),
+    );
+    let mut child = launch(&f);
+    let ready = wait_status(&f, &mut child, |v| {
+        v["ready"] == true && v["imu"]["ready"] == true
+    });
+    assert_eq!(ready["imu"]["shared_ros_context"], false);
+    stop(&mut child);
+    assert!(
+        !fs::read_to_string(&f.events)
+            .unwrap()
+            .lines()
+            .any(|v| v == "context-create")
+    );
 }

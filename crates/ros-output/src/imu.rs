@@ -44,6 +44,7 @@ pub struct ImuPublisher {
     binding: ValidatedImuConfig,
     progress: ImuProgress,
     global: bool,
+    _context: Option<SharedRosContext>,
 }
 impl ImuPublisher {
     pub fn load(
@@ -52,13 +53,40 @@ impl ImuPublisher {
         config: ImuConfig,
         global: bool,
     ) -> Result<Self> {
+        Self::load_inner(
+            context::BridgeSource::Isolated(path.as_ref()),
+            namespace,
+            config,
+            global,
+        )
+    }
+    pub fn load_shared(
+        context: &SharedRosContext,
+        namespace: &str,
+        config: ImuConfig,
+        global: bool,
+    ) -> Result<Self> {
+        Self::load_inner(
+            context::BridgeSource::Shared(context),
+            namespace,
+            config,
+            global,
+        )
+    }
+    fn load_inner(
+        source: context::BridgeSource<'_>,
+        namespace: &str,
+        config: ImuConfig,
+        global: bool,
+    ) -> Result<Self> {
+        let context = source.context();
         let binding = ValidatedImuConfig::new(config)?;
         let config = binding.config();
         ensure!(
             config.enabled && absolute_name(namespace, true),
             "invalid IMU binding"
         );
-        let library = Library::load(path.as_ref())?;
+        let library = source.library()?;
         let create: ImuCreate = unsafe { symbol(&library, b"gdp_ros_imu_create\0")? };
         let publish: ImuPublish = unsafe { symbol(&library, b"gdp_ros_imu_publish\0")? };
         let destroy: Destroy = unsafe { symbol(&library, b"gdp_ros_imu_destroy\0")? };
@@ -76,15 +104,28 @@ impl ImuPublisher {
         .collect::<std::result::Result<Vec<_>, _>>()?;
         let mut handle = ptr::null_mut();
         let code = unsafe {
-            create(
-                strings[0].as_ptr(),
-                strings[1].as_ptr(),
-                strings[2].as_ptr(),
-                strings[3].as_ptr(),
-                strings[4].as_ptr(),
-                strings[5].as_ptr(),
-                &mut handle,
-            )
+            if let Some(c) = context {
+                (c.0.imu_create)(
+                    c.0.handle.as_ptr(),
+                    strings[0].as_ptr(),
+                    strings[1].as_ptr(),
+                    strings[2].as_ptr(),
+                    strings[3].as_ptr(),
+                    strings[4].as_ptr(),
+                    strings[5].as_ptr(),
+                    &mut handle,
+                )
+            } else {
+                create(
+                    strings[0].as_ptr(),
+                    strings[1].as_ptr(),
+                    strings[2].as_ptr(),
+                    strings[3].as_ptr(),
+                    strings[4].as_ptr(),
+                    strings[5].as_ptr(),
+                    &mut handle,
+                )
+            }
         };
         if code != 0 {
             if !handle.is_null() {
@@ -100,6 +141,7 @@ impl ImuPublisher {
             binding,
             progress: ImuProgress::default(),
             global,
+            _context: context.cloned(),
         })
     }
     pub fn publish(&mut self, sample: &ImuSample) -> Result<()> {

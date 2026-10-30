@@ -2,6 +2,8 @@
 #include "gdp_ros_bridge.h"
 #include "gdp_ros_validation.hpp"
 #include "gdp_ros_session.hpp"
+#include "gdp_ros_context.h"
+#include "gdp_ros_context.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
@@ -24,6 +26,7 @@ uint64_t unix_now_ns() {
   return ns > 0 ? static_cast<uint64_t>(ns) : 0;
 }
 struct Publisher {
+  std::shared_ptr<gdp_ros::ContextOwner> owner;
   std::shared_ptr<rclcpp::Context> context;
   std::shared_ptr<rclcpp::Node> node;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image;
@@ -35,7 +38,7 @@ struct Publisher {
   uint64_t last_stamp = 0, last_sequence = 0;
   ~Publisher() {
     metadata.reset(); info.reset(); image.reset(); node.reset();
-    if (context && context->is_valid()) { try { context->shutdown("bridge destroyed"); } catch (...) {} }
+
   }
 };
 std::string frame_metadata(const gdp_ros_frame &f, const std::string &frame_id, const std::string &session_id, uint64_t global_timestamp_us, uint32_t source, uint64_t sdk_return_unix_ns, uint64_t publication_start_unix_ns, uint64_t image_publish_finished_unix_ns, uint64_t image_publish_wall_ns, bool sdk_system_clock_verified) {
@@ -70,16 +73,16 @@ std::string frame_metadata(const gdp_ros_frame &f, const std::string &frame_id, 
 }
 }
 extern "C" uint32_t gdp_ros_abi_version(void) { return GDP_ROS_ABI_VERSION; }
-extern "C" int32_t gdp_ros_create(const gdp_ros_config *c, void **out) {
+static int32_t create_publisher(const gdp_ros_config *c, void **out, std::shared_ptr<gdp_ros::ContextOwner> owner) {
   if (!out) return 1;
   *out = nullptr;
   try {
     if (!gdp_ros::config_valid(c)) return 1;
     auto p = std::make_unique<Publisher>();
-    p->context = std::make_shared<rclcpp::Context>();
-    p->context->init(0, nullptr);
+    p->owner = owner ? std::move(owner) : std::make_shared<gdp_ros::ContextOwner>();
+    p->context = p->owner->context;
     rclcpp::NodeOptions options;
-    options.context(p->context).use_global_arguments(false).start_parameter_services(false).start_parameter_event_publisher(false);
+    options.context(p->context).use_intra_process_comms(false).use_global_arguments(false).start_parameter_services(false).start_parameter_event_publisher(false);
     p->node = std::make_shared<rclcpp::Node>(c->node_name, c->namespace_name, options);
     const auto qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
     p->image = p->node->create_publisher<sensor_msgs::msg::Image>(c->image_topic, qos);
@@ -107,6 +110,13 @@ extern "C" int32_t gdp_ros_create(const gdp_ros_config *c, void **out) {
     *out = p.release();
     return 0;
   } catch (const std::bad_alloc &) { return 3; } catch (...) { return 2; }
+}
+extern "C" int32_t gdp_ros_create(const gdp_ros_config *c, void **out) {
+  return create_publisher(c, out, nullptr);
+}
+extern "C" int32_t gdp_ros_create_in_context(void *context, const gdp_ros_config *c, void **out) {
+  if (!context) { if (out) *out = nullptr; return 1; }
+  return create_publisher(c, out, gdp_ros::shared_context(context));
 }
 extern "C" int32_t gdp_ros_set_session_id(void *handle, const char *id) {
   try {
