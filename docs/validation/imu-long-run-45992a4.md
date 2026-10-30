@@ -1,6 +1,6 @@
 # 45992a4 三相机与 IMU 实机长测
 
-被测采集服务固定为 `45992a4c0e81dd7a23b0b0f17fafd14a24d926b7`，Orbbec SDK 2.10.6、现有固定 SDK/驱动来源、ROS Humble/Fast DDS。新增工具是测试侧代码，不改采集服务。以下命令在专用 Linux 实机环境运行；本机合成 DDS 测试通过不等于相机长测通过。
+流程以 `45992a4c0e81dd7a23b0b0f17fafd14a24d926b7` 为历史基线；本次修正后的实机验收须使用包含“原生图像 Global 保留”修正的实际构建提交。`plan.commit` 显式填写该完整提交号，并与镜像 revision 及受信二进制摘要核对，不能把新二进制标注成旧提交。Orbbec SDK 2.10.6、现有固定 SDK/驱动来源、ROS Humble/Fast DDS。新增工具是测试侧代码，不改采集服务。以下命令在专用 Linux 实机环境运行；本机合成 DDS 测试通过不等于相机长测通过。
 
 ## 工具与证据
 
@@ -13,7 +13,7 @@
 
 ## 准备
 
-1. 在干净的 `45992a4` 源码及既有受控构建流程中构建生产镜像。记录 source commit、SDK/固件版本、image ID、生成清单和 capture-service SHA256。镜像必须带 `org.opencontainers.image.revision=45992a4c0e81dd7a23b0b0f17fafd14a24d926b7` 标签，例如构建时增加 `--label`。标签只是来源声明，不能代替受信构建记录或二进制摘要。
+1. 在包含本次修正的干净源码及既有受控构建流程中构建生产镜像。记录 source commit、SDK/固件版本、image ID、生成清单和 capture-service SHA256。镜像必须带 `org.opencontainers.image.revision=<实际完整提交号>` 标签，例如构建时增加 `--label`。标签只是来源声明，不能代替受信构建记录或二进制摘要。
 2. 三个容器分别绑定实际序列号、唯一 namespace/frame prefix、已验证的 30 FPS 图像档位；三台均需实际支持 IMU 与所选量程/频率。建议先做每台 120 秒能力验证，再三台同时运行。不能假定不同型号均有相同 IMU 支持。
 3. 每个生成后的 `capture.json` 显式启用 IMU（例：accel/gyro 各 200 Hz，queue_capacity=128）、Global 消息映射、`pairing.clock=device`，保持原 `max_delta_us`。可选择 `strict-rgbd`；`complete` 发布独立图像而原生录制只保留完整对，工具会揭示这种范围差异，不能隐去未录图像。
 4. 原生录制使用 `storage_format=chunked-v3`，开启 `checkpoint_observation`；分别测试 `checkpoint_pipeline=false/true`，其余配置保持一致。启用实际质量策略与快照绑定，确认状态中的 raw_recording 非 null。外部 ROSbag2 不能替代内置录制。
@@ -30,7 +30,7 @@ cargo build --release --locked -p offline-depth --example audit_imu_long_run
 
 ```json
 {
-  "commit": "45992a4c0e81dd7a23b0b0f17fafd14a24d926b7",
+  "commit": "REPLACE_WITH_FIXED_CAPTURE_COMMIT_40_HEX",
   "cameras": [
     {"name":"a","container":"gdp-test-a","namespace":"/camera_a","config_host":"/srv/gdp-test/a/capture.json","status_host":"/srv/gdp-test/a/status.json","recording_host":"/srv/gdp-test/a/raw/ACTUAL_SESSION","binary_sha256":"TRUSTED_CAPTURE_SERVICE_SHA256"},
     {"name":"b","container":"gdp-test-b","namespace":"/camera_b","config_host":"/srv/gdp-test/b/capture.json","status_host":"/srv/gdp-test/b/status.json","recording_host":"/srv/gdp-test/b/raw/ACTUAL_SESSION","binary_sha256":"TRUSTED_CAPTURE_SERVICE_SHA256"},
@@ -118,6 +118,14 @@ fi
 
 必须确认失败原因是受影响记录的哈希/内容校验，而不是权限、路径、空间或命令不存在。保留 stderr 和副本变更记录；原始录制再次审计仍应通过。对任一完整 V3 目录，不能以重算索引哈希让损坏副本通过。
 
+## counts 与 ROS 毫米数据的校验范围
+
+审计 JSONL 版本为 2。每个 depth 条目中的 `sha256` 始终是原生 counts 字节哈希，生产读取器首先从磁盘实际读回并校验它；`ros_sha256` 是审计器独立实现参考转换后得到的预期 ROS 毫米字节哈希。参考实现不调用生产 `normalize_depth_mm`，按已封口的 snapshot `depth.unit_policy` 与实际 SDK f32 比例尺执行：零保持零，正数最近半向上取整、低于 1 mm 钳至 1，溢出拒绝，去除行填充并输出 LE。`require-mm` 仅接受比例尺 1，且不冒充 normalized 模式。
+
+比对时另外核对 `source_depth_scale_mm`、`output_depth_scale_mm=1`、`normalized`、`encoding=16UC1` 和端序。C++ 元数据按足以往返 f32 的精度输出；比例尺按 f32 位模式比较，避免把 `0.100000001` 与 f32 提升后的 f64 值误判为不同参数。不能通过宽松容差接受真正不同的比例尺。
+
+末尾 summary 必须有 `audit_version=2`、`native_hashes_verified=true` 与两次独立审计通过。旧版本审计文件须重新生成；旧录制若缺少原始图像 Global 时间，不能用 system 或 host 接收时间补造 Global 证据，可使用原有只读 profile 工具验证其存储完整性，但不能通过本轮 Global 映射验收。原生 V3 生产双轮读回仍由最终状态计数单独验证。
+
 ## 崩溃恢复轮次
 
 这是独立轮次，不能复用正常长测的 complete 目录。三台仍并行采集；每轮只杀一台，依次轮换 a/b/c，每种 checkpoint_pipeline 模式各至少三次。至少等待 2 个检查点后注入，覆盖正常写入期和检查点读回/落盘期；用已有 checkpoint_probe 的 active span 观察择时，采样是快照，不宣称精确命中单个 syscall。先结束本轮正常观察/采样，再注入；SIGKILL 后这些正常长测工具因目标消失而失败是预期，不把该失败当成恢复结果。
@@ -142,7 +150,7 @@ SIGKILL 验证的是进程崩溃，不是断电、内核崩溃或存储缓存断
 ### 必须通过的正确性
 
 - 被测身份均为固定 commit 的受信构建；三台真实 serial 与 namespace/配置绑定正确。IMU/global 能力已逐台验证。每次状态 config_sha256/session_id 稳定，零重启，最终 stopped/complete 状态实际落盘。
-- 每个 IMU 传感器的 sequence、device、可用 global 严格递增；system 可相等、不可倒退。原值不改写，XYZ 有限、frame_id 正确、Global 不缺失。实际 DDS header 必须逐流严格递增，等于原生 global_timestamp_us×1000，数值和 frame_id 逐条一致。图像元数据的 global 映射、SDK 序号、device/system 与原生证据一致；图像载荷 SHA256 和尺寸/stride 一致。
+- 每个 IMU 传感器的 sequence、device、可用 global 严格递增；system 可相等、不可倒退。原值不改写，XYZ 有限、frame_id 正确、Global 不缺失。实际 DDS header 必须逐流严格递增，等于原生 global_timestamp_us×1000，数值和 frame_id 逐条一致。图像元数据的 global 映射、SDK 序号、device/system 与原生证据一致；彩色图像载荷 SHA256 和尺寸/stride 一致。深度分别验证原生 counts 的真实读回哈希，以及独立参考转换所得 ROS 毫米数据的哈希、紧凑 stride、16UC1/LE 编码；原生 counts 哈希不直接与归一化后的 ROS 哈希比较。
 - 正常观察窗口内四类数据双向匹配，无观察器漏收、重复或原生漏录。QoS 正确，八个发布端 GID 证明相机内共享、跨相机隔离，期间不变；仅状态字段 shared_ros_context=true 不足以单独验收。
 - 每台原生 written_pairs/imu_samples_submitted 与完整审计数量一致；`validation_image_bytes == payload_bytes_submitted*2`，`validation_imu_samples == imu_samples_submitted*2`。这是生产 V3 检查点+最终读回，不用额外审计的两次代替。原生读取器对全量图像、索引、证据、快照及 IMU 进度的实际校验通过。V2 不属于本轮。
 - 零 IMU 错误、发布/时间戳/单调性错误、原生队列溢出、未解释重启、观测期间 trace event 丢失。保留 startup_samples_excluded、imu_samples_outside_recording_excluded、pending、received/published 计数，解释启动和收尾边界；不把 total received、ROS published、native submitted 混作同一范围。
@@ -164,3 +172,13 @@ IMU 队列高水位不得达到容量且溢出必须为零；图像/原生队列
 每轮保留 plan、生成配置、版本/固件/SDK 来源、USB 拓扑、镜像/二进制摘要、最终状态、私有日志、两个工具的摘要、SQLite、audit JSONL、acceptance/recovery 报告和 perf（若启用）。对这些**停止写入后的**文件另生成 SHA256 清单；生成的清单只能证明之后未变，不能代替从原生读取器验证采集时已写入的哈希。不要把私有资料提交到仓库。
 
 工具回归：Python `tests/test_imu_long_test.py`；Rust `cargo test --locked -p offline-depth --test long_run_audit`；实际 DDS 合成 `ros/tests/smoke_long_run.py` 已加入标准 run_smokes.sh。实机执行成功之前，报告中 hardware_verified 必须保持未验证。
+
+## 验收缺口修正验证（2026-10-31）
+
+基线 `7c84db2154298ad53ce7e443247642014f0ed8b9`。Global 模式的原生图像复制读取并保留 SDK 原始 global 时间，缺失或超出 ROS 时间范围则拒绝，不从 system/接收时间推算；system-only 模式保持旧 SDK 兼容性。没有改动 IMU 时钟进度、V3 生产双轮读回、SHA256、提交屏障或恢复协议。
+
+Linux SDK/ROS C ABI 服务级回归串联共享 context、非 1.0 深度比例、两种检查点模式、原生完成和审计工具：逐帧核对录制 Global 与实际提交 header，原生 counts 哈希保留、独立转换的毫米哈希与实际 ROS C ABI 载荷一致。Global 入口缺失、录制边界缺失、超范围时间、尺寸/载荷长度在读取间变化均失败，禁止 COMPLETE；最后有效前缀仍可实际读回审计两遍。既有 SIGKILL/哈希破坏/提交故障回归继续通过。
+
+独立参考转换对全部 65536 个 u16 值，分别以 0.1f32、0.5、1 和微小比例与生产转换核对；另验证 BE/填充、半向上取整、正值钳制、零保持和溢出拒绝。Python 比对拒绝原始 counts 被当作 ROS 毫米数据、错误转换哈希、比例尺、normalized 标记、单位、stride、编码、端序和旧审计版本。真实 Humble/Fast DDS 三会话回归验证非单位比例的毫米图像哈希与 f32 元数据往返，并保留 ROSbag2、QoS、Global header 及共享 context 生命周期检查。
+
+完整 Rust 工作区、63 项外部集成、327 项 Python 测试（1 项平台/环境跳过）、全目标 Clippy、格式/语法检查和完整真实 ROS smoke 通过。生产 Rust 行覆盖率 18939/19123（99.0378%）→18952/19133（99.0540%）；新增 10 行均覆盖，原统计口径、过滤规则和 99% 门禁未改。该指标不包含 Python、C++ 或 examples；其回归结果另述，不混入生产 Rust 行覆盖率。没有连接物理相机，仍需按新构建的实际提交、镜像与二进制摘要完成实机验收。

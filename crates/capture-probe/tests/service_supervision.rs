@@ -1,6 +1,9 @@
 //! Linux-only black-box process supervision. The native ABI fixtures never open
 //! USB, a real SDK device or ROS. macOS deliberately rejects live workers.
 #![cfg(target_os = "linux")]
+#[allow(dead_code)]
+#[path = "../../offline-depth/examples/audit_imu_long_run.rs"]
+mod recording_auditor;
 use ring::digest;
 use serde_json::{Value, json};
 use std::{
@@ -153,12 +156,12 @@ fn fixture() -> Fixture {
     replace(
         &mut sdk_source,
         "int kind, refs, stream;",
-        "int kind, refs, stream, size_reads;",
+        "int kind, refs, stream, size_reads, width_reads, global_reads;",
     );
     replace(
         &mut sdk_source,
         "o->stream=0;",
-        "o->stream=0;o->size_reads=0;",
+        "o->stream=0;o->size_reads=0;o->width_reads=0;o->global_reads=0;",
     );
     replace(
         &mut sdk_source,
@@ -168,7 +171,7 @@ fn fixture() -> Fixture {
     replace(
         &mut sdk_source,
         "uint32_t ob_video_frame_get_width(const obj *p,error **e){(void)p;(void)e;return 2;}",
-        "uint32_t ob_video_frame_get_width(const obj *p,error **e){(void)p;(void)e;return getenv(\"GDP_MOCK_BAD_WIDTH\")&&fault_active()?3:2;}",
+        "uint32_t ob_video_frame_get_width(const obj *p,error **e){(void)p;(void)e;if(getenv(\"GDP_MOCK_WIDTH_AFTER\")&&fault_active()&&++((obj*)p)->width_reads>atoi(getenv(\"GDP_MOCK_WIDTH_AFTER\"))){return 0;}return getenv(\"GDP_MOCK_BAD_WIDTH\")&&fault_active()?3:2;}",
     );
     replace(
         &mut sdk_source,
@@ -207,7 +210,7 @@ fn fixture() -> Fixture {
     replace(
         &mut sdk_source,
         "return global_enabled?5000:0;",
-        "if(getenv(\"GDP_MOCK_GLOBAL_DEPTH_ZERO\")&&f->stream==3){return 0;}const char *warmup=getenv(\"GDP_MOCK_GLOBAL_WARMUP\");if(warmup&&service_sequence<=strtoul(warmup,NULL,10))return 0;if(getenv(\"GDP_MOCK_GLOBAL_LOST\")&&fault_active())return 0;return global_enabled?1700000000000000ULL+service_sequence*33333-2000:0;",
+        "if(getenv(\"GDP_MOCK_GLOBAL_LATE_LOST\")&&fault_active()&&++((obj*)f)->global_reads>1){return 0;}if(getenv(\"GDP_MOCK_GLOBAL_DEPTH_ZERO\")&&f->stream==3){return 0;}const char *warmup=getenv(\"GDP_MOCK_GLOBAL_WARMUP\");if(warmup&&service_sequence<=strtoul(warmup,NULL,10))return 0;if(getenv(\"GDP_MOCK_GLOBAL_LOST\")&&fault_active())return 0;if(getenv(\"GDP_MOCK_GLOBAL_INVALID\")&&fault_active())return 2147483648000000ULL;return global_enabled?1700000000000000ULL+service_sequence*33333-2000:0;",
     );
     replace(
         &mut sdk_source,
@@ -280,7 +283,7 @@ fn fixture() -> Fixture {
     replace(
         &mut bridge_source,
         "event(source == 2 ? \"publish-global\" : \"publish-system-with-global\");",
-        "event(source == 2 ? \"publish-global\" : \"publish-system-with-global\"); char record[160]; std::snprintf(record,sizeof(record),\"image:%s:%llu\",p.frame_id.c_str(),static_cast<unsigned long long>(frame->sequence)); event(record);",
+        "event(source == 2 ? \"publish-global\" : \"publish-system-with-global\"); if(std::getenv(\"GDP_ROS_CAPTURE_BYTES\")){char payload[512]; int used=std::snprintf(payload,sizeof(payload),\"payload:%s:%llu:%llu:\",p.frame_id.c_str(),static_cast<unsigned long long>(frame->sequence),static_cast<unsigned long long>(frame->stamp_sec)*1000000000ULL+frame->stamp_nanosec); for(size_t i=0;i<frame->data_len && i<64;i++)used+=std::snprintf(payload+used,sizeof(payload)-used,\"%02x\",frame->data[i]); event(payload);} char record[160]; std::snprintf(record,sizeof(record),\"image:%s:%llu\",p.frame_id.c_str(),static_cast<unsigned long long>(frame->sequence)); event(record);",
     );
     let bridge_cpp = root.join("mock-bridge.cpp");
     fs::write(&bridge_cpp, bridge_source).unwrap();
@@ -2630,6 +2633,7 @@ fn equal_system_imu_survives_global_shared_context_and_native_readback() {
             &[
                 ("GDP_MOCK_WAIT_DELAY_MS", "33"),
                 ("GDP_MOCK_IMU_EQUAL_SYSTEM", "1"),
+                ("GDP_ROS_CAPTURE_BYTES", "1"),
             ],
         );
         let done = wait_status(&f, &mut child, |v| {
@@ -2646,6 +2650,17 @@ fn equal_system_imu_survives_global_shared_context_and_native_readback() {
         let mut repeated = [false, false];
         let mut samples = 0;
         while let Some(frame) = source.next_frame().unwrap() {
+            let offline_depth::recording::TaggedEvidence::SdkBoundPair { pair, .. } =
+                &frame.evidence
+            else {
+                panic!("SDK evidence required")
+            };
+            for f in [&pair.color, &pair.depth] {
+                assert_eq!(
+                    f.context.global_timestamp_us,
+                    Some(1_700_000_000_000_000 + f.context.sequence.unwrap() * 33333 - 2000)
+                );
+            }
             for sample in frame.record.imu {
                 let slot = sample.kind.slot();
                 let system = 1_700_000_000_000_000 + (((sample.sequence - 1) / 2) * 2 + 1) * 40_000;
@@ -2682,9 +2697,117 @@ fn equal_system_imu_survives_global_shared_context_and_native_readback() {
         assert_eq!(stopped["state"], "stopped");
         assert_eq!(stopped["raw_recording"]["state"], "complete");
         let events = fs::read_to_string(&f.events).unwrap();
+        let mut audit = Vec::new();
+        recording_auditor::audit(path, false, &mut audit).unwrap();
+        let rows: Vec<Value> = String::from_utf8(audit)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let mut pairs = 0;
+        for row in rows.iter().filter(|v| v["kind"] == "pair") {
+            pairs += 1;
+            for (stream, frame_id) in [("color", "color_optical"), ("depth", "depth_optical")] {
+                let data = &row[stream];
+                let prefix = format!(
+                    "payload:{frame_id}:{}:{}:",
+                    data["sequence"], data["stamp_ns"]
+                );
+                let hex = events
+                    .lines()
+                    .find_map(|l| l.strip_prefix(&prefix))
+                    .expect("actual C ABI publication must match native Global header");
+                let payload: Vec<u8> = (0..hex.len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                    .collect();
+                let digest = offline_depth::sha256(&payload);
+                assert_eq!(
+                    digest,
+                    data[if stream == "depth" {
+                        "ros_sha256"
+                    } else {
+                        "sha256"
+                    }]
+                );
+                if stream == "depth" {
+                    assert_ne!(data["sha256"], data["ros_sha256"]);
+                }
+            }
+        }
+        assert_eq!(pairs, 31);
+        assert_eq!(rows.last().unwrap()["independent_audit_passes"], 2);
+
         assert!(events.contains("evidence-copied"));
         assert!(events.contains("imu-accel-publish"));
         assert!(events.contains("imu-gyro-publish"));
+    }
+}
+#[test]
+fn native_global_capture_rejects_missing_invalid_and_changed_sdk_metadata_without_false_complete() {
+    for (fault, value) in [
+        ("GDP_MOCK_GLOBAL_LOST", "1"),
+        ("GDP_MOCK_GLOBAL_INVALID", "1"),
+        ("GDP_MOCK_GLOBAL_LATE_LOST", "1"),
+        ("GDP_MOCK_WIDTH_AFTER", "2"),
+        ("GDP_MOCK_MUTATE_PAYLOAD", "1"),
+    ] {
+        let f = fixture();
+        configure_runtime_quality(&f, 1000, 20_000_000);
+        acquisition(&f, "strict-rgbd", true);
+        let gate = f.root.join("arm-fault");
+        let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+        config["raw_recording"]["queue_capacity"] = json!(16);
+        fs::write(&f.config, config.to_string()).unwrap();
+        let mut child = acquisition_child(
+            &f,
+            &[
+                (fault, value),
+                ("GDP_MOCK_FAULT_ARMED", gate.to_str().unwrap()),
+                ("GDP_MOCK_WAIT_DELAY_MS", "33"),
+                ("GDP_MOCK_MUTATE_AFTER", "4"),
+            ],
+        );
+        let ready = wait_status(&f, &mut child, |v| {
+            v["ready"] == true && v["raw_recording"]["written_pairs"].as_u64().unwrap_or(0) >= 40
+        });
+        fs::write(&gate, b"armed").unwrap();
+        let failed = wait_status(&f, &mut child, |v| v["raw_recording"]["state"] == "failed");
+        assert_eq!(
+            failed["raw_recording"]["reason"],
+            if fault == "GDP_MOCK_GLOBAL_LOST" {
+                "RAW_SDK_OR_SESSION_ERROR"
+            } else {
+                "RAW_NATIVE_PAIR_REJECTED"
+            },
+            "{fault}: {failed}"
+        );
+        assert!(!Path::new(ready["raw_recording"]["job_path"].as_str().unwrap()).exists());
+        let deadline = Instant::now() + Duration::from_secs(7);
+        let exit = loop {
+            if let Some(exit) = child.try_wait().unwrap() {
+                break exit;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("fault must terminate unhealthy session: {fault}");
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert!(!exit.success());
+        let partial = Path::new(ready["raw_recording"]["partial_path"].as_str().unwrap());
+        assert!(!partial.join("COMPLETE").exists());
+        let mut out = Vec::new();
+        recording_auditor::audit(partial, true, &mut out).unwrap();
+        let rows: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|s| serde_json::from_str(s).unwrap())
+            .collect();
+        assert!(rows.last().unwrap()["pairs"].as_u64().unwrap() >= 32);
+        assert_eq!(rows.last().unwrap()["recovered"], true);
+        assert_eq!(rows.last().unwrap()["independent_audit_passes"], 2);
     }
 }
 #[test]
@@ -2737,7 +2860,7 @@ fn large_imu_benchmark_fixture() -> Fixture {
     );
     replace(
         &mut source,
-        "ob_video_frame_get_width(const obj *p,error **e){(void)p;(void)e;return getenv(\"GDP_MOCK_BAD_WIDTH\")&&fault_active()?3:2;}",
+        "ob_video_frame_get_width(const obj *p,error **e){(void)p;(void)e;if(getenv(\"GDP_MOCK_WIDTH_AFTER\")&&fault_active()&&++((obj*)p)->width_reads>atoi(getenv(\"GDP_MOCK_WIDTH_AFTER\"))){return 0;}return getenv(\"GDP_MOCK_BAD_WIDTH\")&&fault_active()?3:2;}",
         "ob_video_frame_get_width(const obj *p,error **e){(void)p;(void)e;return 640;}",
     );
     replace(

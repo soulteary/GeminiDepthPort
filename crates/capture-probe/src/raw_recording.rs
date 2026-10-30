@@ -679,6 +679,7 @@ impl RawRecorder {
         sequence: u64,
         received: Instant,
         policy: PairPolicy,
+        timestamp: capture_contract::MessageTimestamp,
     ) -> Result<()> {
         if !self.active() {
             return Ok(());
@@ -697,8 +698,8 @@ impl RawRecorder {
             self.fail("RAW_BYTE_LIMIT");
             anyhow::bail!("raw byte limit");
         }
-        let color = copy_packet(color, false, received)?;
-        let depth = copy_packet(depth, true, received)?;
+        let color = copy_packet(color, false, received, timestamp)?;
+        let depth = copy_packet(depth, true, received, timestamp)?;
         self.submit_owned(color, depth, sequence, policy)
     }
     fn submit_owned(
@@ -837,6 +838,7 @@ fn copy_packet(
     frame: &orbbec_safe::Frame,
     depth: bool,
     received: Instant,
+    timestamp: capture_contract::MessageTimestamp,
 ) -> Result<FramePacket<Vec<u8>>> {
     let source = frame.metadata()?;
     let expected = if depth {
@@ -858,6 +860,15 @@ fn copy_packet(
         "raw payload length"
     );
     let scale = if depth { source.depth_scale_mm } else { None };
+    let global = if timestamp == capture_contract::MessageTimestamp::Global {
+        let us = frame
+            .global_timestamp_us()?
+            .context("raw global timestamp unavailable")?;
+        frame_core::sdk_system_unix_stamp(Some(us))?;
+        Some(us)
+    } else {
+        None // Preserve system-only SDK compatibility; never guess a global time.
+    };
     let metadata = PacketMetadata {
         layout: FrameLayout {
             width: source.width,
@@ -877,7 +888,7 @@ fn copy_packet(
         sequence: source.index,
         device_timestamp_us: Some(source.timestamp_us),
         system_timestamp_us: Some(source.system_timestamp_us),
-        global_timestamp_us: None,
+        global_timestamp_us: global,
         sdk_return_unix_ns: None,
         sdk_system_clock_verified: false,
 

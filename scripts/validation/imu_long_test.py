@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""45992a4: sample three isolated Linux containers, compare DDS/native, inject explicit crash.
+"""IMU long-run acceptance: explicit expected commit, three isolated Linux containers.
 
 No launch/config editing. Only `crash --execute` sends a signal, to one pinned
 container with restart disabled. Normal capture must finish its configured pair target.
@@ -9,6 +9,8 @@ import hashlib
 import json
 import math
 import os
+import re
+import struct
 import resource
 from pathlib import Path
 import sqlite3
@@ -28,7 +30,7 @@ def require(ok, reason):
 def load_plan(path):
     plan = json.loads(Path(path).read_text())
     cameras = plan['cameras']
-    require(plan['commit'] == COMMIT and len(cameras) == 3, 'PINNED_COMMIT_AND_THREE_CAMERAS_REQUIRED')
+    require(isinstance(plan['commit'],str) and re.fullmatch('[0-9a-f]{40}',plan['commit']) is not None and len(cameras) == 3, 'PINNED_COMMIT_AND_THREE_CAMERAS_REQUIRED')
     for key in ('name', 'container', 'namespace', 'status_host', 'recording_host'):
         require(len({c[key] for c in cameras}) == 3, 'DUPLICATE_' + key)
     for c in cameras:
@@ -54,7 +56,7 @@ def bound_host_path(info, container_path):
     raise ValueError('HOST_BIND_MOUNT_NOT_FOUND')
 
 
-def preflight(c):
+def preflight(c, expected_commit):
     config_bytes = Path(c['config_host']).read_bytes()
     config = json.loads(config_bytes)
     status = probe.bounded_json(c['status_host'])
@@ -72,7 +74,7 @@ def preflight(c):
     raw_key = 'partial_path' if Path(c['recording_host']).name.endswith('.partial') else 'job_path'
     require(Path(c['recording_host']).resolve()==bound_host_path(info,status['raw_recording'][raw_key]), 'RECORDING_MOUNT_BINDING')
     image = json.loads(command(['docker', 'image', 'inspect', info['Image']]))[0]
-    require((image['Config'].get('Labels') or {}).get('org.opencontainers.image.revision') == COMMIT, 'IMAGE_REVISION_LABEL')
+    require((image['Config'].get('Labels') or {}).get('org.opencontainers.image.revision') == expected_commit, 'IMAGE_REVISION_LABEL')
     executable = command(['docker', 'exec', info['Id'], 'sha256sum', '/proc/' + str(status['pid']) + '/exe']).split()[0]
     require(executable == c['binary_sha256'], 'WORKER_BINARY_DIGEST')
     require(0 <= time.time_ns() // 10**6 - status['updated_unix_ms'] <= 5000, 'STALE_STATUS')
@@ -96,12 +98,12 @@ def sample(a, plan):
     a.output.mkdir(mode=0o700, parents=True, exist_ok=False)
     bindings, targets = [], []
     for c in plan['cameras']:
-        binding, status = preflight(c)
+        binding, status = preflight(c, plan['commit'])
         health(status)
         bindings.append(binding)
         targets.append(probe.Target(spec=c['container'] + ':' + binding['config']['service']['status_path']))
     require(len({b['config']['serial'] for b in bindings})==3, 'THREE_DISTINCT_SERIALS_REQUIRED')
-    (a.output/'identity.json').write_text(json.dumps({'commit': COMMIT, 'cameras': bindings}, indent=2))
+    (a.output/'identity.json').write_text(json.dumps({'commit': plan['commit'], 'baseline_commit':COMMIT, 'cameras': bindings}, indent=2))
     started, cpu0, used = time.monotonic(), time.process_time(), 0
     errors, totals = [], [{'worker_cpu_seconds': 0., 'supervisor_cpu_seconds': 0., 'worker_peak_rss_bytes': 0, 'worker_peak_hwm_bytes': 0} for _ in targets]
     previous_supervisor = [None] * 3
@@ -173,9 +175,16 @@ def compare_native(db, ns, path, trim):
         row = db.execute('SELECT data FROM messages WHERE ns=? AND stream=? AND stamp=?', (ns, stream, stamp)).fetchone()
         require(row is not None, 'NATIVE_SAMPLE_MISSING_FROM_DDS:'+stream)
         wire = json.loads(row[0])
+        if stream in ('color','depth'):
+            require(isinstance(data.get('sha256'),str) and re.fullmatch('[0-9a-f]{64}',data['sha256']) is not None, 'NATIVE_HASH_REQUIRED')
         for key in ('sha256', 'frame_id', 'width', 'height', 'step', 'xyz'):
             if key in data:
-                require(wire.get(key) == data[key], 'DDS_NATIVE_MISMATCH:'+stream+':'+key)
+                expected = data[key]
+                if stream == 'depth' and key == 'sha256':expected = data['ros_sha256']
+                if stream == 'depth' and key == 'step':expected = data['ros_step']
+                require(wire.get(key) == expected, 'DDS_NATIVE_MISMATCH:'+stream+':'+key)
+        if stream == 'depth':
+            require(wire['encoding']=='16UC1' and wire['is_bigendian']==0, 'ROS_DEPTH_LAYOUT')
         if stream in ('color','depth'):
             meta = db.execute('SELECT data FROM messages WHERE ns=? AND stream=? AND stamp=?', (ns,stream+'_metadata',stamp)).fetchone()
             require(meta is not None, 'MISSING_IMAGE_METADATA')
@@ -183,6 +192,14 @@ def compare_native(db, ns, path, trim):
             require(meta['global_timestamp_us']*1000 == stamp and meta['stamp_mapping'] == 'sdk-global-unix', 'GLOBAL_MAPPING')
             for key, expected in [('sequence',data['sequence']),('device_timestamp_us',data['device_us']),('system_timestamp_us',data['system_us'])]:
                 require(meta[key] == expected, 'IMAGE_METADATA_SOURCE_MISMATCH')
+            if stream == 'depth':
+                scale = data['source_depth_scale_mm']
+                require(type(scale) in (int,float) and math.isfinite(scale) and 0 < scale <= 3.4028234663852886e38, 'NATIVE_DEPTH_SCALE')
+                # C++ metadata prints enough digits for f32 round-trip, not f64 equality.
+                reported = meta['source_depth_scale_mm']
+                require(type(reported) in (int,float) and math.isfinite(reported) and 0 < reported <= 3.4028234663852886e38, 'ROS_DEPTH_SCALE')
+                require(struct.pack('<f',reported)==struct.pack('<f',scale), 'DEPTH_SOURCE_SCALE_MISMATCH')
+                require(type(data['ros_normalized']) is bool and meta['normalized'] is data['ros_normalized'] and meta['output_depth_scale_mm']==1., 'ROS_DEPTH_REPRESENTATION')
         db.execute('INSERT INTO matched VALUES(?,?)', (stream,stamp))
         matched[stream] = matched.get(stream,0)+1
     with Path(path).open() as source:
@@ -210,7 +227,7 @@ def compare_native(db, ns, path, trim):
                 if imu:
                     require(all(math.isfinite(v) for v in data['xyz']), 'NONFINITE_IMU')
                 match(stream,stamp,data)
-    require(summary and summary['ok'] is True and summary['independent_audit_passes'] == 2, 'AUDIT_NOT_FINISHED')
+    require(summary and summary.get('audit_version')==2 and summary.get('native_hashes_verified') is True and summary['ok'] is True and summary['independent_audit_passes'] == 2, 'AUDIT_NOT_FINISHED')
     for stream, bounds in native_bounds.items():
         lo = max(bounds[0],windows[stream][0])+int(trim*10**9)
         hi = min(bounds[1],windows[stream][1])-int(trim*10**9)
@@ -236,7 +253,10 @@ def check(a, plan):
         audits = dict(v.split('=',1) for v in a.audit)
         require(set(audits)=={c['name'] for c in plan['cameras']}, 'THREE_NAMED_AUDITS_REQUIRED')
         rows = []
-        identities = json.loads((a.sample_dir/'identity.json').read_text())['cameras']
+        identity_document = json.loads((a.sample_dir/'identity.json').read_text())
+        require(identity_document['commit']==plan['commit'], 'EXPECTED_COMMIT_CHANGED')
+        identities = identity_document['cameras']
+        require(len(identities)==3, 'THREE_SAMPLED_IDENTITIES_REQUIRED')
         for c, identity in zip(plan['cameras'],identities):
             final = probe.bounded_json(c['status_host'])
             require(final['config_sha256']==identity['config_sha256'] and final['session_id']==identity['session_id'], 'FINAL_IDENTITY_CHANGED')
@@ -254,7 +274,7 @@ def check(a, plan):
             result.update(camera=c['name'],append_p99_ns=disk['append']['p99_ns'],final_status=final)
             rows.append(result)
         zero_gaps=all(r['zero_source_gaps'] for r in rows)
-        return {'ok':zero_gaps,'integrity_ok':True,'zero_source_gaps':zero_gaps,'cameras':rows,'sampling':sampling,
+        return {'ok':zero_gaps,'commit':plan['commit'],'baseline_commit':COMMIT,'integrity_ok':True,'zero_source_gaps':zero_gaps,'cameras':rows,'sampling':sampling,
                 'scope':'DDS/native comparison covers trimmed common window; independent reader hashes cover entire completed native recording; no pre-SDK completeness or power-loss certification'}
     finally:
         db.close()
@@ -263,7 +283,7 @@ def check(a, plan):
 def crash(a, plan):
     require(a.execute, 'EXPLICIT_EXECUTE_REQUIRED')
     c = next(c for c in plan['cameras'] if c['name']==a.camera)
-    binding, before = preflight(c)
+    binding, before = preflight(c, plan['commit'])
     health(before)
     require(before['raw_recording']['state']!='complete', 'CRASH_REQUIRES_ACTIVE_PARTIAL_RECORDING')
     partial = Path(c['recording_host'])
@@ -307,7 +327,7 @@ def recover(a, plan):
         finally:
             if child.poll() is None:child.kill();child.wait()
             child.stdout.close()
-    require(summary and summary['ok'] and summary['recovered'] and summary['independent_audit_passes']==2, 'RECOVERY_AUDIT_INCOMPLETE')
+    require(summary and summary.get('audit_version')==2 and summary.get('native_hashes_verified') is True and summary['ok'] and summary['recovered'] and summary['independent_audit_passes']==2, 'RECOVERY_AUDIT_INCOMPLETE')
     require(summary['pairs']==cp['record_count'], 'RECOVERY_PREFIX_COUNT')
     with (a.output/'normal-open.log').open('x') as err:
         normal = subprocess.run([str(a.auditor.resolve()),str(partial)],stdout=subprocess.DEVNULL,stderr=err,timeout=60)

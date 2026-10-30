@@ -1472,6 +1472,7 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                                 sequence,
                                 received,
                                 config.capture.policy,
+                                config.capture.message_timestamp(),
                             )
                             .is_err()
                         {

@@ -2,6 +2,9 @@
 """Synthetic three-session real DDS exercise of the long-run evidence observer."""
 import ctypes as c
 import json
+import hashlib
+import sqlite3
+import struct
 import os
 from pathlib import Path
 import subprocess
@@ -40,8 +43,14 @@ def main():
                     n+=1;us=1_700_000_000_000_000+n*33333
                     for _,images,imu in groups:
                         for handle,cfg in images:
-                            pixels=(c.c_uint8*8)()
+                            depth=cfg.image_topic.decode().endswith('/depth/image_raw')
+                            # Counts [0,1,5,65535] at SDK 0.1f32 become [0,1,1,6554] mm.
+                            payload=struct.pack('<4H',0,1,1,6554) if depth else bytes(8)
+                            pixels=(c.c_uint8*8).from_buffer_copy(payload)
                             frame=ImageFrame(1,c.sizeof(ImageFrame),1,2,2,4,0,us//1_000_000,us%1_000_000*1000,n,1,1,n*33333,us,0,0,0.,0.,pixels,8)
+                            if depth:
+                                frame.encoding=2;frame.has_depth_scale=1;frame.normalized=1
+                                frame.source_depth_scale_mm=.1;frame.output_depth_scale_mm=1.
                             assert lib.gdp_ros_publish_timestamped(handle,c.byref(frame),us,2)==0
                         for kind in (1,2):
                             system=1_700_000_000_000_000+((n-1)//2)*66666
@@ -51,6 +60,16 @@ def main():
                 result=json.loads(Path(str(out)+'.summary.json').read_text())
                 assert child.wait()==0,result
                 assert result['ok'] and len(result['counts'])==18,result
+                db=sqlite3.connect('file:'+str(out)+'?mode=ro',uri=True)
+                try:
+                    expected=hashlib.sha256(struct.pack('<4H',0,1,1,6554)).hexdigest()
+                    for ns in ('/long_a','/long_b','/long_c'):
+                        rows=db.execute("SELECT data FROM messages WHERE ns=? AND stream='depth'",(ns,)).fetchall()
+                        assert rows and all(json.loads(row[0])['sha256']==expected for row in rows)
+                        meta=json.loads(db.execute("SELECT data FROM messages WHERE ns=? AND stream='depth_metadata' LIMIT 1",(ns,)).fetchone()[0])
+                        assert meta['normalized'] and meta['output_depth_scale_mm']==1.
+                        assert struct.pack('<f',meta['source_depth_scale_mm'])==struct.pack('<f',.1)
+                finally:db.close()
                 print(json.dumps({'ok':True,'kind':'three-camera-long-run-observer','actual_dds':True,'shared_sessions':3,'hardware_verified':False}))
             finally:
                 if child.poll() is None:child.kill();child.wait()
