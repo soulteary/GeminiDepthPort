@@ -95,7 +95,7 @@ fn mono() -> Option<u64> {
         None
     }
 }
-fn cpu() -> Option<u64> {
+pub(super) fn cpu() -> Option<u64> {
     #[cfg(unix)]
     {
         clock(libc::CLOCK_THREAD_CPUTIME_ID)
@@ -243,7 +243,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn unavailable_clock_is_explicit() {
-        assert_eq!(clock(-1), None);
+        assert_eq!(clock(!0), None);
     }
     #[test]
     fn concurrent_completion_ids_preserve_late_events_and_report_during_wait() {

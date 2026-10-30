@@ -1,6 +1,8 @@
 //! Versioned recording boundary. Observed associations never become SDK framesets.
 use super::*;
 mod chunked;
+mod reader_json;
+mod reader_profile;
 mod telemetry;
 use capture_contract::imu::{
     ImuProgress, ImuSample, ImuSampleFields, SharedImuSample, ValidatedImuConfig,
@@ -195,7 +197,17 @@ struct ValidationScratch {
     image_bytes: u64,
 }
 /// Hash exactly the declared extent using a fixed, reusable scratch buffer.
+#[cfg(test)]
 fn hash_extent(input: &mut impl Read, length: u64, buffer: &mut Vec<u8>) -> Result<String> {
+    hash_extent_profiled(input, length, buffer, None)
+}
+fn hash_extent_profiled(
+    input: &mut impl Read,
+    length: u64,
+    buffer: &mut Vec<u8>,
+    profile: Option<&reader_profile::Profile>,
+) -> Result<String> {
+    let profile = profile.filter(|p| p.enabled());
     if buffer.is_empty() {
         buffer
             .try_reserve_exact(VALIDATION_BUFFER_BYTES)
@@ -206,8 +218,16 @@ fn hash_extent(input: &mut impl Read, length: u64, buffer: &mut Vec<u8>) -> Resu
     let mut remaining = length;
     while remaining > 0 {
         let n = remaining.min(buffer.len() as u64) as usize;
-        input.read_exact(&mut buffer[..n])?;
-        hash.update(&buffer[..n]);
+        if let Some(p) = profile {
+            p.measure("image_read", || input.read_exact(&mut buffer[..n]))?;
+            p.measure("image_sha256", || {
+                hash.update(&buffer[..n]);
+                Ok::<_, OfflineError>(())
+            })?;
+        } else {
+            input.read_exact(&mut buffer[..n])?;
+            hash.update(&buffer[..n]);
+        }
         remaining -= n as u64;
     }
     Ok(lower_hex(hash.finish().as_ref()))
@@ -219,6 +239,8 @@ pub struct RecordingDirectorySource {
     reader: BufReader<std::io::Take<fs::File>>,
     line: Vec<u8>,
     validation: Mutex<ValidationScratch>,
+    cpu_profile: reader_profile::Profile,
+    evidence_buffer: Vec<u8>,
     recovered: bool,
     recovered_chunks: Option<u64>,
     chunk_position: Option<(u64, u64)>,
@@ -296,6 +318,8 @@ impl RecordingDirectorySource {
             recovered_chunks: None,
             chunk_position: None,
             chunk_reader: Mutex::new(None),
+            cpu_profile: reader_profile::Profile::default(),
+            evidence_buffer: Vec::new(),
             digest: ring::digest::Context::new(&ring::digest::SHA256),
             seen: 0,
             imu_binding,
@@ -331,6 +355,30 @@ impl RecordingDirectorySource {
         require(sha256(&bytes) == file.sha256, "RECORDING_DIGEST")?;
         Ok(bytes)
     }
+    fn evidence_into(&self, file: &FileRef, buffer: &mut Vec<u8>) -> Result<()> {
+        require(digest_valid(&file.sha256), "RECORDING_DIGEST_FORMAT")?;
+        let range = file
+            .range
+            .as_ref()
+            .ok_or(OfflineError::Invalid("RECORDING_RANGE_VERSION"))?;
+        chunked::with_range(
+            &self.root,
+            file,
+            range,
+            4 * 1024 * 1024,
+            &self.chunk_reader,
+            |input, length| {
+                buffer.clear();
+                buffer
+                    .try_reserve_exact(length as usize)
+                    .map_err(|_| OfflineError::Invalid("ALLOCATION_FAILED"))?;
+                buffer.resize(length as usize, 0);
+                input.read_exact(buffer)?;
+                Ok(())
+            },
+        )?;
+        require(sha256(buffer) == file.sha256, "RECORDING_DIGEST")
+    }
     fn verify_image_file(
         &self,
         file: &FileRef,
@@ -346,7 +394,14 @@ impl RecordingDirectorySource {
                 range,
                 max,
                 &self.chunk_reader,
-                |input, length| hash_extent(input, length, &mut scratch.buffer),
+                |input, length| {
+                    hash_extent_profiled(
+                        input,
+                        length,
+                        &mut scratch.buffer,
+                        Some(&self.cpu_profile),
+                    )
+                },
             )?;
             (range.length, hash)
         } else {
@@ -357,7 +412,12 @@ impl RecordingDirectorySource {
             require(metadata.is_file(), "SOURCE_NOT_FILE")?;
             require(metadata.len() <= max as u64, "SOURCE_SIZE_LIMIT")?;
             let length = metadata.len();
-            let hash = hash_extent(&mut input, length, &mut scratch.buffer)?;
+            let hash = hash_extent_profiled(
+                &mut input,
+                length,
+                &mut scratch.buffer,
+                Some(&self.cpu_profile),
+            )?;
             let mut extra = [0u8; 1];
             require(input.read(&mut extra)? == 0, "SOURCE_CHANGED_DURING_READ")?;
             (length, hash)
@@ -471,16 +531,46 @@ impl RecordingDirectorySource {
         self.read_next(false)?;
         Ok(self.seen > before)
     }
+    /// Enable diagnostic clocks before the first read. No recording semantics change.
+    pub fn enable_validation_cpu_profiling(&mut self) -> Result<()> {
+        require(
+            self.seen == 0 && !self.finished && self.line.is_empty(),
+            "READER_PROFILE_ALREADY_STARTED",
+        )?;
+        self.cpu_profile.enable();
+        Ok(())
+    }
+    pub fn validation_cpu_profile(&self) -> serde_json::Value {
+        let mut value = self.cpu_profile.report();
+        value["evidence_buffer_capacity_bytes"] =
+            serde_json::json!(self.evidence_buffer.capacity());
+        value["image_buffer_capacity_bytes"] = serde_json::json!(
+            self.validation
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .buffer
+                .capacity()
+        );
+        value
+    }
     fn read_next(&mut self, materialize: bool) -> Result<Option<RecordedFrame>> {
+        let started = self.cpu_profile.start();
+        let result = self.read_next_inner(materialize);
+        self.cpu_profile
+            .finish("read_call", started, result.is_ok());
+        result
+    }
+    fn read_next_inner(&mut self, materialize: bool) -> Result<Option<RecordedFrame>> {
         if self.finished {
             return Ok(None);
         }
         self.line.clear();
-        let n = self
-            .reader
-            .by_ref()
-            .take(65537)
-            .read_until(b'\n', &mut self.line)?;
+        let n = self.cpu_profile.measure("index_read", || {
+            self.reader
+                .by_ref()
+                .take(65537)
+                .read_until(b'\n', &mut self.line)
+        })?;
         require(n <= 65536, "RECORDING_INDEX_LINE_LIMIT")?;
         if n == 0 {
             require(
@@ -510,7 +600,13 @@ impl RecordingDirectorySource {
             self.seen < self.manifest.record_count,
             "RECORDING_INDEX_COUNT",
         )?;
-        let record: RecordingRecord = parse(&self.line)?;
+        let record: RecordingRecord = self.cpu_profile.measure("index_decode", || {
+            if materialize {
+                parse(&self.line)
+            } else {
+                reader_json::parse(&self.line)
+            }
+        })?;
         validate_imu(
             &record.imu,
             self.imu_binding.as_ref(),
@@ -519,8 +615,25 @@ impl RecordingDirectorySource {
         self.imu_validated += record.imu.len() as u64;
         self.check_ranges(&record)?;
         record.storage_representation.validate()?;
-        let evidence_json = self.file(&record.evidence, 4 * 1024 * 1024)?;
-        let evidence: TaggedEvidence = parse(&evidence_json)?;
+        let reuse_evidence = !materialize && self.manifest.version == 3;
+        let evidence_json = if reuse_evidence {
+            let mut buffer = std::mem::take(&mut self.evidence_buffer);
+            self.cpu_profile.measure("evidence_read_hash", || {
+                self.evidence_into(&record.evidence, &mut buffer)
+            })?;
+            buffer
+        } else {
+            self.cpu_profile.measure("evidence_read_hash", || {
+                self.file(&record.evidence, 4 * 1024 * 1024)
+            })?
+        };
+        let evidence: TaggedEvidence = self.cpu_profile.measure("evidence_decode", || {
+            if materialize {
+                parse(&evidence_json)
+            } else {
+                reader_json::parse(&evidence_json)
+            }
+        })?;
         if self.manifest.version == 3 {
             require(
                 matches!(
@@ -604,8 +717,8 @@ impl RecordingDirectorySource {
                     )?;
                 }
                 (
-                    pair.color.context.clone(),
-                    pair.depth.context.clone(),
+                    &pair.color.context,
+                    &pair.depth.context,
                     pair.color_stamp_us,
                     pair.depth_stamp_us,
                     "sdk-bound-pair",
@@ -698,8 +811,8 @@ impl RecordingDirectorySource {
                     }
                 }
                 (
-                    a.color.context.clone(),
-                    a.depth.context.clone(),
+                    &a.color.context,
+                    &a.depth.context,
                     a.color.mapped_unix_ns,
                     a.depth.mapped_unix_ns,
                     "observed-association",
@@ -707,8 +820,8 @@ impl RecordingDirectorySource {
             }
         };
         require(
-            context_binding(&color, &self.snapshot)
-                && context_binding(&depth, &self.snapshot)
+            context_binding(color, &self.snapshot)
+                && context_binding(depth, &self.snapshot)
                 && color.stream_id == "color"
                 && depth.stream_id == "depth",
             "PAIR_SNAPSHOT_BINDING",
@@ -731,8 +844,12 @@ impl RecordingDirectorySource {
             )?;
         }
         let observed = matches!(evidence, TaggedEvidence::ObservedAssociation { .. });
-        let _color = self.image(&record.color, "color", observed, materialize)?;
-        let depth_bytes = self.image(&record.depth, "depth", observed, materialize)?;
+        let _color = self.cpu_profile.measure("image_read_hash", || {
+            self.image(&record.color, "color", observed, materialize)
+        })?;
+        let depth_bytes = self.cpu_profile.measure("image_read_hash", || {
+            self.image(&record.depth, "depth", observed, materialize)
+        })?;
         self.previous = Some(Progress {
             sequence: record.sequence,
             color: color_time,
@@ -752,6 +869,9 @@ impl RecordingDirectorySource {
                 depth: depth_bytes,
             }))
         } else {
+            if reuse_evidence {
+                self.evidence_buffer = evidence_json;
+            }
             Ok(None)
         }
     }

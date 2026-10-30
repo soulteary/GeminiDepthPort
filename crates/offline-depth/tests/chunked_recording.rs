@@ -1645,3 +1645,64 @@ fn checkpoint_observation_preserves_artifacts_and_both_readbacks() {
         assert_eq!(artifacts[0], artifacts[1]);
     }
 }
+
+#[test]
+fn reader_cpu_profile_is_opt_in_and_keeps_validation_and_error_guards() {
+    for chunked in [false, true] {
+        let (snapshot, pair, pixels) = fixture();
+        let root = tempfile::tempdir().unwrap();
+        let mut writer = if chunked {
+            RawRecordingWriter::begin_chunked(root.path(), "capture", snapshot, 1_000_000).unwrap()
+        } else {
+            RawRecordingWriter::begin(root.path(), "capture", snapshot).unwrap()
+        };
+        for n in 1..=33 {
+            append(&mut writer, &pair, &pixels, n);
+        }
+        let path = writer.finish().unwrap();
+        let mut disabled = RecordingDirectorySource::open(&path).unwrap();
+        assert!(disabled.validate_next().unwrap());
+        assert!(
+            disabled.validation_cpu_profile()["stages"]
+                .as_object()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(disabled.enable_validation_cpu_profiling().is_err());
+        let mut source = RecordingDirectorySource::open(&path).unwrap();
+        source.enable_validation_cpu_profiling().unwrap();
+        for _ in 0..33 {
+            assert!(source.validate_next().unwrap());
+        }
+        assert!(!source.validate_next().unwrap());
+        assert!(source.enable_validation_cpu_profiling().is_err());
+        let profile = source.validation_cpu_profile();
+        assert_eq!(profile["enabled"], true);
+        assert_eq!(profile["stages"]["read_call"]["calls"], 34);
+        assert_eq!(profile["stages"]["image_read_hash"]["calls"], 66);
+        assert_eq!(profile["stages"]["index_decode"]["calls"], 33);
+        assert_eq!(profile["stages"]["evidence_decode"]["calls"], 33);
+        assert_eq!(profile["stages"]["read_call"]["errors"], 0);
+        #[cfg(unix)]
+        assert_eq!(profile["stages"]["image_sha256"]["cpu_samples"], 66);
+        let payload = if chunked {
+            path.join("payload-00000000000000000001.bin")
+        } else {
+            path.join("color-00000000000000000001.raw")
+        };
+        let mut bytes = fs::read(&payload).unwrap();
+        bytes[0] ^= 1;
+        fs::write(payload, bytes).unwrap();
+        let mut bad = RecordingDirectorySource::open(&path).unwrap();
+        bad.enable_validation_cpu_profiling().unwrap();
+        assert!(bad.validate_next().is_err());
+        assert_eq!(
+            bad.validation_cpu_profile()["stages"]["image_read_hash"]["errors"],
+            1
+        );
+        assert_eq!(
+            bad.validation_cpu_profile()["stages"]["read_call"]["errors"],
+            1
+        );
+    }
+}

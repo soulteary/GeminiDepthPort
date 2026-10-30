@@ -1,0 +1,238 @@
+--- a/crates/offline-depth/src/recording.rs
++++ b/crates/offline-depth/src/recording.rs
+@@ -1,6 +1,7 @@
+ //! Versioned recording boundary. Observed associations never become SDK framesets.
+ use super::*;
+ mod chunked;
++mod reader_profile;
+ mod telemetry;
+ use capture_contract::imu::{
+     ImuProgress, ImuSample, ImuSampleFields, SharedImuSample, ValidatedImuConfig,
+@@ -195,7 +196,12 @@
+     image_bytes: u64,
+ }
+ /// Hash exactly the declared extent using a fixed, reusable scratch buffer.
++#[cfg(test)]
+ fn hash_extent(input: &mut impl Read, length: u64, buffer: &mut Vec<u8>) -> Result<String> {
++    hash_extent_profiled(input, length, buffer, None)
++}
++fn hash_extent_profiled(input: &mut impl Read, length: u64, buffer: &mut Vec<u8>, profile: Option<&reader_profile::Profile>) -> Result<String> {
++    let profile = profile.filter(|p|p.enabled());
+     if buffer.is_empty() {
+         buffer
+             .try_reserve_exact(VALIDATION_BUFFER_BYTES)
+@@ -206,8 +212,13 @@
+     let mut remaining = length;
+     while remaining > 0 {
+         let n = remaining.min(buffer.len() as u64) as usize;
+-        input.read_exact(&mut buffer[..n])?;
+-        hash.update(&buffer[..n]);
++        if let Some(p) = profile {
++            p.measure("image_read", || input.read_exact(&mut buffer[..n]))?;
++            p.measure("image_sha256", || {hash.update(&buffer[..n]); Ok::<_, OfflineError>(())})?;
++        } else {
++            input.read_exact(&mut buffer[..n])?;
++            hash.update(&buffer[..n]);
++        }
+         remaining -= n as u64;
+     }
+     Ok(lower_hex(hash.finish().as_ref()))
+@@ -219,6 +230,7 @@
+     reader: BufReader<std::io::Take<fs::File>>,
+     line: Vec<u8>,
+     validation: Mutex<ValidationScratch>,
++    cpu_profile: reader_profile::Profile,
+     recovered: bool,
+     recovered_chunks: Option<u64>,
+     chunk_position: Option<(u64, u64)>,
+@@ -296,6 +308,7 @@
+             recovered_chunks: None,
+             chunk_position: None,
+             chunk_reader: Mutex::new(None),
++            cpu_profile: reader_profile::Profile::default(),
+             digest: ring::digest::Context::new(&ring::digest::SHA256),
+             seen: 0,
+             imu_binding,
+@@ -346,7 +359,7 @@
+                 range,
+                 max,
+                 &self.chunk_reader,
+-                |input, length| hash_extent(input, length, &mut scratch.buffer),
++                |input, length| hash_extent_profiled(input, length, &mut scratch.buffer, Some(&self.cpu_profile)),
+             )?;
+             (range.length, hash)
+         } else {
+@@ -357,7 +370,7 @@
+             require(metadata.is_file(), "SOURCE_NOT_FILE")?;
+             require(metadata.len() <= max as u64, "SOURCE_SIZE_LIMIT")?;
+             let length = metadata.len();
+-            let hash = hash_extent(&mut input, length, &mut scratch.buffer)?;
++            let hash = hash_extent_profiled(&mut input, length, &mut scratch.buffer, Some(&self.cpu_profile))?;
+             let mut extra = [0u8; 1];
+             require(input.read(&mut extra)? == 0, "SOURCE_CHANGED_DURING_READ")?;
+             (length, hash)
+@@ -471,16 +484,36 @@
+         self.read_next(false)?;
+         Ok(self.seen > before)
+     }
++    /// Enable diagnostic clocks before the first read. No recording semantics change.
++    pub fn enable_validation_cpu_profiling(&mut self) -> Result<()> {
++        require(
++            self.seen == 0 && !self.finished && self.line.is_empty(),
++            "READER_PROFILE_ALREADY_STARTED",
++        )?;
++        self.cpu_profile.enable();
++        Ok(())
++    }
++    pub fn validation_cpu_profile(&self) -> serde_json::Value {
++        self.cpu_profile.report()
++    }
+     fn read_next(&mut self, materialize: bool) -> Result<Option<RecordedFrame>> {
++        let started = self.cpu_profile.start();
++        let result = self.read_next_inner(materialize);
++        self.cpu_profile
++            .finish("read_call", started, result.is_ok());
++        result
++    }
++    fn read_next_inner(&mut self, materialize: bool) -> Result<Option<RecordedFrame>> {
+         if self.finished {
+             return Ok(None);
+         }
+         self.line.clear();
+-        let n = self
+-            .reader
+-            .by_ref()
+-            .take(65537)
+-            .read_until(b'\n', &mut self.line)?;
++        let n = self.cpu_profile.measure("index_read", || {
++            self.reader
++                .by_ref()
++                .take(65537)
++                .read_until(b'\n', &mut self.line)
++        })?;
+         require(n <= 65536, "RECORDING_INDEX_LINE_LIMIT")?;
+         if n == 0 {
+             require(
+@@ -510,7 +543,9 @@
+             self.seen < self.manifest.record_count,
+             "RECORDING_INDEX_COUNT",
+         )?;
+-        let record: RecordingRecord = parse(&self.line)?;
++        let record: RecordingRecord = self
++            .cpu_profile
++            .measure("index_decode", || parse(&self.line))?;
+         validate_imu(
+             &record.imu,
+             self.imu_binding.as_ref(),
+@@ -519,8 +554,12 @@
+         self.imu_validated += record.imu.len() as u64;
+         self.check_ranges(&record)?;
+         record.storage_representation.validate()?;
+-        let evidence_json = self.file(&record.evidence, 4 * 1024 * 1024)?;
+-        let evidence: TaggedEvidence = parse(&evidence_json)?;
++        let evidence_json = self.cpu_profile.measure("evidence_read_hash", || {
++            self.file(&record.evidence, 4 * 1024 * 1024)
++        })?;
++        let evidence: TaggedEvidence = self
++            .cpu_profile
++            .measure("evidence_decode", || parse(&evidence_json))?;
+         if self.manifest.version == 3 {
+             require(
+                 matches!(
+@@ -731,8 +770,12 @@
+             )?;
+         }
+         let observed = matches!(evidence, TaggedEvidence::ObservedAssociation { .. });
+-        let _color = self.image(&record.color, "color", observed, materialize)?;
+-        let depth_bytes = self.image(&record.depth, "depth", observed, materialize)?;
++        let _color = self.cpu_profile.measure("image_read_hash", || {
++            self.image(&record.color, "color", observed, materialize)
++        })?;
++        let depth_bytes = self.cpu_profile.measure("image_read_hash", || {
++            self.image(&record.depth, "depth", observed, materialize)
++        })?;
+         self.previous = Some(Progress {
+             sequence: record.sequence,
+             color: color_time,
+--- a/crates/offline-depth/src/recording/telemetry.rs
++++ b/crates/offline-depth/src/recording/telemetry.rs
+@@ -95,7 +95,7 @@
+         None
+     }
+ }
+-fn cpu() -> Option<u64> {
++pub(super) fn cpu() -> Option<u64> {
+     #[cfg(unix)]
+     {
+         clock(libc::CLOCK_THREAD_CPUTIME_ID)
+@@ -243,7 +243,7 @@
+     #[cfg(unix)]
+     #[test]
+     fn unavailable_clock_is_explicit() {
+-        assert_eq!(clock(-1), None);
++        assert_eq!(clock(!0), None);
+     }
+     #[test]
+     fn concurrent_completion_ids_preserve_late_events_and_report_during_wait() {
+--- /dev/null
++++ b/crates/offline-depth/src/recording/reader_profile.rs
+@@ -0,0 +1,59 @@
++//! Opt-in reader CPU diagnosis. Disabled mode does not read clocks or lock stats.
++use super::*;
++use std::collections::BTreeMap;
++#[derive(Default)]
++pub(super) struct Profile {
++    enabled: bool,
++    stats: Mutex<BTreeMap<&'static str, Sample>>,
++}
++#[derive(Default)]
++struct Sample {
++    calls: u64,
++    errors: u64,
++    wall_ns: u128,
++    cpu_ns: u128,
++    cpu_samples: u64,
++}
++pub(super) struct Started(Instant, Option<u64>);
++impl Profile {
++    pub fn enabled(&self) -> bool { self.enabled }
++    pub fn enable(&mut self) {
++        self.enabled = true;
++    }
++    pub fn start(&self) -> Option<Started> {
++        self.enabled
++            .then(|| Started(Instant::now(), super::telemetry::cpu()))
++    }
++    pub fn finish(&self, stage: &'static str, started: Option<Started>, ok: bool) {
++        if let Some(Started(wall, cpu)) = started {
++            let elapsed = wall.elapsed().as_nanos();
++            let elapsed_cpu = cpu
++                .zip(super::telemetry::cpu())
++                .and_then(|(a, b)| b.checked_sub(a));
++            let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
++            let sample = stats.entry(stage).or_default();
++            sample.calls += 1;
++            sample.errors += u64::from(!ok);
++            sample.wall_ns += elapsed;
++            if let Some(ns) = elapsed_cpu {
++                sample.cpu_ns += u128::from(ns);
++                sample.cpu_samples += 1;
++            }
++        }
++    }
++    pub fn measure<T, E>(
++        &self,
++        stage: &'static str,
++        run: impl FnOnce() -> std::result::Result<T, E>,
++    ) -> std::result::Result<T, E> {
++        let start = self.start();
++        let result = run();
++        self.finish(stage, start, result.is_ok());
++        result
++    }
++    pub fn report(&self) -> serde_json::Value {
++        let stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
++        let stages = stats.iter().map(|(k,s)| (*k, serde_json::json!({"calls":s.calls,"errors":s.errors,"wall_ns":s.wall_ns.to_string(),"thread_cpu_ns":s.cpu_ns.to_string(),"cpu_samples":s.cpu_samples}))).collect::<BTreeMap<_,_>>();
++        serde_json::json!({"enabled":self.enabled,"stages":stages,"scope":"reader calls only, excludes open/drop; read_call includes all sub-stages and their instrumentation; image_read_hash includes file access and SHA256; timings are diagnostic and must not be summed with read_call"})
++    }
++}

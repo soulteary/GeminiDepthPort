@@ -125,3 +125,6 @@ load equal. Compare acquisition CPU, append histogram bounds, checkpoint/final
 verification time, throughput, queue high-water and memory; include sampler and
 perf CPU separately. The accompanying synthetic report measures basic sampling;
 real-camera/perf acceptance must use the actual Linux host and storage load.
+
+For post-capture reader CPU breakdown, see
+[Recording reader CPU profile](recording-reader-profile.md).

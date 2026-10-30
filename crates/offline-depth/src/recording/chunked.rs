@@ -70,18 +70,25 @@ fn chunk_name(n: u64) -> String {
     format!("payload-{n:020}.bin")
 }
 fn chunk_number(path: &str) -> Result<u64> {
-    let n = path
+    let digits = path
         .strip_prefix("payload-")
         .and_then(|s| s.strip_suffix(".bin"))
-        .and_then(|s| s.parse::<u64>().ok())
         .ok_or(OfflineError::Invalid("RECORDING_CHUNK_PATH"))?;
-    require(n > 0 && path == chunk_name(n), "RECORDING_CHUNK_PATH")?;
+    require(
+        digits.len() == 20 && digits.bytes().all(|b| b.is_ascii_digit()),
+        "RECORDING_CHUNK_PATH",
+    )?;
+    let n = digits
+        .parse::<u64>()
+        .map_err(|_| OfflineError::Invalid("RECORDING_CHUNK_PATH"))?;
+    require(n > 0, "RECORDING_CHUNK_PATH")?;
     Ok(n)
 }
 pub(super) struct CachedChunk {
     path: String,
     file: fs::File,
     length: u64,
+    position: Option<u64>,
 }
 pub(super) fn read_range(
     root: &Path,
@@ -131,12 +138,21 @@ pub(super) fn with_range<T>(
             path: file.path.clone(),
             file: input,
             length: meta.len(),
+            position: Some(0),
         });
     }
     let input = cache.as_mut().unwrap();
     require(end <= input.length, "RECORDING_RANGE_BOUNDS")?;
-    input.file.seek(SeekFrom::Start(range.offset))?;
-    read(&mut input.file, range.length)
+    if input.position != Some(range.offset) {
+        input.position = None; // Any seek/read error invalidates our position knowledge.
+        input.file.seek(SeekFrom::Start(range.offset))?;
+    }
+    input.position = None;
+    let result = read(&mut input.file, range.length);
+    if result.is_ok() {
+        input.position = Some(end);
+    }
+    result
 }
 impl RecordingDirectorySource {
     /// Read-only recovery of the last durable prefix. No source file is changed,
@@ -691,6 +707,80 @@ mod write_tests {
         } else {
             write_all_counted(writer, b"abcdefghij", calls)
         }
+    }
+    #[test]
+    fn cached_positions_skip_only_contiguous_ranges_and_errors_force_reposition() {
+        let root = tempfile::tempdir().unwrap();
+        let canonical_root = fs::canonicalize(root.path()).unwrap();
+        let name = chunk_name(1);
+        fs::write(root.path().join(&name), b"abcdefgh").unwrap();
+        let cache = Mutex::new(None);
+        let file = FileRef {
+            path: name,
+            sha256: "0".repeat(64),
+            range: None,
+        };
+        for (offset, expected) in [(0, b"ab"), (2, b"cd"), (0, b"ab")] {
+            let range = FileRange { offset, length: 2 };
+            let bytes = with_range(
+                &canonical_root,
+                &file,
+                &range,
+                8,
+                &cache,
+                |input, length| {
+                    let mut out = vec![0; length as usize];
+                    input.read_exact(&mut out)?;
+                    Ok(out)
+                },
+            )
+            .unwrap();
+            assert_eq!(bytes, expected);
+            assert_eq!(
+                cache.lock().unwrap().as_ref().unwrap().position,
+                Some(offset + 2)
+            );
+        }
+        let range = FileRange {
+            offset: 2,
+            length: 2,
+        };
+        assert!(
+            with_range(
+                &canonical_root,
+                &file,
+                &range,
+                8,
+                &cache,
+                |input, _| -> Result<()> {
+                    let mut b = [0];
+                    input.read_exact(&mut b)?;
+                    Err(OfflineError::Invalid("INJECTED_PARTIAL_READ"))
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(cache.lock().unwrap().as_ref().unwrap().position, None);
+        let bytes = with_range(&canonical_root, &file, &range, 8, &cache, |input, _| {
+            let mut b = [0; 2];
+            input.read_exact(&mut b)?;
+            Ok(b)
+        })
+        .unwrap();
+        assert_eq!(&bytes, b"cd");
+        for path in [
+            "payload-00000000000000000000.bin",
+            "payload-+0000000000000000001.bin",
+            "payload-18446744073709551616.bin",
+            "payload-1.bin",
+            "other.bin",
+        ] {
+            assert!(chunk_number(path).is_err());
+        }
+        assert_eq!(
+            chunk_number("payload-18446744073709551615.bin").unwrap(),
+            u64::MAX
+        );
     }
     #[test]
     fn scalar_and_vectored_writes_retry_interrupts_and_preserve_cross_slice_short_writes() {
