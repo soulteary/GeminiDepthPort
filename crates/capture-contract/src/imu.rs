@@ -1,6 +1,7 @@
 //! Independent raw IMU streams. No interpolation, orientation or extrinsic claim.
 use crate::{ContractError, ErrorClass, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 fn require(ok: bool) -> Result<()> {
     if ok {
         Ok(())
@@ -49,14 +50,24 @@ impl ImuConfig {
 /// Immutable configuration validated at a trust boundary. The owned copy cannot
 /// be changed after validation; sample data must still be checked independently.
 #[derive(Debug, Clone)]
-pub struct ValidatedImuConfig(ImuConfig);
+pub struct ValidatedImuConfig {
+    config: ImuConfig,
+    frames: [Arc<str>; 2],
+}
 impl ValidatedImuConfig {
     pub fn new(config: ImuConfig) -> Result<Self> {
         config.validate()?;
-        Ok(Self(config))
+        let frames = [
+            Arc::from(config.accel_frame_id.as_str()),
+            Arc::from(config.gyro_frame_id.as_str()),
+        ];
+        Ok(Self { config, frames })
     }
     pub fn config(&self) -> &ImuConfig {
-        &self.0
+        &self.config
+    }
+    pub fn frame_id(&self, kind: ImuKind) -> &Arc<str> {
+        &self.frames[kind.slot()]
     }
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -75,7 +86,7 @@ impl ImuKind {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct ImuSample {
+pub struct ImuSampleFields<F> {
     pub kind: ImuKind,
     pub sequence: u64,
     pub device_timestamp_us: u64,
@@ -83,7 +94,23 @@ pub struct ImuSample {
     pub global_timestamp_us: Option<u64>,
     /// SDK SI units: accel m/s²; gyro rad/s. Axes remain the sensor's own axes.
     pub xyz: [f64; 3],
-    pub frame_id: String,
+    pub frame_id: F,
+}
+/// Existing owned wire/read API. Shared live samples serialize identically.
+pub type ImuSample = ImuSampleFields<String>;
+pub type SharedImuSample = ImuSampleFields<Arc<str>>;
+impl<F: AsRef<str>> ImuSampleFields<F> {
+    pub fn into_owned(self) -> ImuSample {
+        ImuSample {
+            kind: self.kind,
+            sequence: self.sequence,
+            device_timestamp_us: self.device_timestamp_us,
+            system_timestamp_us: self.system_timestamp_us,
+            global_timestamp_us: self.global_timestamp_us,
+            xyz: self.xyz,
+            frame_id: self.frame_id.as_ref().to_owned(),
+        }
+    }
 }
 type SourceProgress = (u64, u64, u64, Option<u64>);
 #[derive(Debug, Clone, Default)]
@@ -94,15 +121,23 @@ impl ImuProgress {
     pub fn has_both(&self) -> bool {
         self.last.iter().all(Option::is_some)
     }
-    pub fn accept(&mut self, s: &ImuSample, c: &ImuConfig) -> Result<()> {
+    pub fn accept<F: AsRef<str>>(&mut self, s: &ImuSampleFields<F>, c: &ImuConfig) -> Result<()> {
         c.validate()?;
         self.accept_sample(s, c)
     }
     /// Validate every sample against an immutable, previously checked binding.
-    pub fn accept_validated(&mut self, s: &ImuSample, binding: &ValidatedImuConfig) -> Result<()> {
+    pub fn accept_validated<F: AsRef<str>>(
+        &mut self,
+        s: &ImuSampleFields<F>,
+        binding: &ValidatedImuConfig,
+    ) -> Result<()> {
         self.accept_sample(s, binding.config())
     }
-    fn accept_sample(&mut self, s: &ImuSample, c: &ImuConfig) -> Result<()> {
+    fn accept_sample<F: AsRef<str>>(
+        &mut self,
+        s: &ImuSampleFields<F>,
+        c: &ImuConfig,
+    ) -> Result<()> {
         let slot = s.kind.slot();
         require(
             c.enabled
@@ -112,7 +147,7 @@ impl ImuProgress {
                 && s.system_timestamp_us <= i32::MAX as u64 * 1_000_000 + 999999
                 && s.global_timestamp_us
                     .is_none_or(|v| v > 0 && v <= i32::MAX as u64 * 1_000_000 + 999999)
-                && &s.frame_id
+                && s.frame_id.as_ref()
                     == if slot == 0 {
                         &c.accel_frame_id
                     } else {

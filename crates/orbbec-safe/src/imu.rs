@@ -1,8 +1,10 @@
 use super::*;
-use capture_contract::imu::{ImuConfig, ImuKind, ImuProgress, ImuSample, ValidatedImuConfig};
-use std::{collections::VecDeque, ffi::c_void, sync::Arc, time::Instant};
+use capture_contract::imu::{
+    ImuConfig, ImuKind, ImuProgress, ImuSample, SharedImuSample, ValidatedImuConfig,
+};
+use std::{ffi::c_void, sync::Arc, time::Instant};
 struct Queue {
-    samples: VecDeque<ImuSample>,
+    samples: Vec<SharedImuSample>,
     error: Option<&'static str>,
     progress: ImuProgress,
     last: [Instant; 2],
@@ -22,7 +24,7 @@ struct CallbackState {
     delete_error: unsafe extern "C" fn(*mut sys::Error),
 }
 impl CallbackState {
-    unsafe fn read(&self, frame: *mut sys::Handle) -> Option<ImuSample> {
+    unsafe fn read(&self, frame: *mut sys::Handle) -> Option<SharedImuSample> {
         let mut e = ptr::null_mut();
         macro_rules! call {
             ($expr:expr) => {{
@@ -53,18 +55,14 @@ impl CallbackState {
         } else {
             None
         };
-        Some(ImuSample {
+        Some(SharedImuSample {
             kind: self.kind,
             sequence,
             device_timestamp_us,
             system_timestamp_us,
             global_timestamp_us,
             xyz: [value.x.into(), value.y.into(), value.z.into()],
-            frame_id: if self.kind == ImuKind::Accel {
-                self.binding.config().accel_frame_id.clone()
-            } else {
-                self.binding.config().gyro_frame_id.clone()
-            },
+            frame_id: self.binding.frame_id(self.kind).clone(),
         })
     }
 }
@@ -95,7 +93,7 @@ unsafe extern "C" fn callback(frame: *mut sys::Handle, user: *mut c_void) {
                 let slot = sample.kind.slot();
                 queue.last[slot] = Instant::now();
                 queue.received[slot] += 1;
-                queue.samples.push_back(sample);
+                queue.samples.push(sample);
                 queue.high_water = queue.high_water.max(queue.samples.len());
             }
             Some(_) => queue.error = Some("IMU_QUEUE_OVERFLOW"),
@@ -153,6 +151,7 @@ pub struct ImuCapture {
     sensors: Vec<Sensor>,
     queue: Arc<Mutex<Queue>>,
     config: ImuConfig,
+    legacy_spare: Vec<SharedImuSample>,
 }
 impl Pipeline {
     pub fn start_imu(&self, config: ImuConfig, global: bool) -> Result<ImuCapture> {
@@ -170,7 +169,7 @@ impl Pipeline {
             None
         };
         let queue = Arc::new(Mutex::new(Queue {
-            samples: VecDeque::with_capacity(config.queue_capacity),
+            samples: Vec::with_capacity(config.queue_capacity),
             error: None,
             progress: ImuProgress::default(),
             last: [Instant::now(); 2],
@@ -181,6 +180,7 @@ impl Pipeline {
             sensors: Vec::with_capacity(2),
             queue: queue.clone(),
             config: config.clone(),
+            legacy_spare: Vec::new(),
         };
         for (kind, range, rate) in [
             (ImuKind::Accel, config.accel_range_g, config.accel_rate_hz),
@@ -250,7 +250,21 @@ impl Pipeline {
     }
 }
 impl ImuCapture {
+    /// Compatibility owned path; live capture uses drain_into to reuse buffers.
     pub fn drain(&mut self) -> Result<Vec<ImuSample>> {
+        let mut shared = std::mem::take(&mut self.legacy_spare);
+        let drained = self.drain_into(&mut shared);
+        let result = drained.map(|_| shared.drain(..).map(SharedImuSample::into_owned).collect());
+        self.legacy_spare = shared;
+        result
+    }
+    /// Clear/reserve the caller's buffer outside the mutex, then swap in O(1).
+    /// Returned counters describe the same queue snapshot as the drained batch.
+    pub fn drain_into(&mut self, samples: &mut Vec<SharedImuSample>) -> Result<([u64; 2], usize)> {
+        samples.clear();
+        if samples.capacity() < self.config.queue_capacity {
+            samples.reserve_exact(self.config.queue_capacity);
+        }
         let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(error) = queue.error {
             return Err(Error(error.into()));
@@ -262,7 +276,8 @@ impl ImuCapture {
         {
             return Err(Error("IMU_STREAM_STALE".into()));
         }
-        Ok(queue.samples.drain(..).collect())
+        std::mem::swap(samples, &mut queue.samples);
+        Ok((queue.received, queue.high_water))
     }
     pub fn counters(&self) -> ([u64; 2], usize) {
         let q = self.queue.lock().unwrap_or_else(|e| e.into_inner());

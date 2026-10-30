@@ -1444,3 +1444,81 @@ fn cached_recording_binding_keeps_disabled_and_global_clock_policies() {
         assert_eq!(read_all(&path, false)[0].record.imu, samples);
     }
 }
+
+#[test]
+fn borrowed_shared_imu_batches_keep_index_bytes_and_readback_hashes_identical() {
+    use capture_contract::imu::{SharedImuSample, ValidatedImuConfig};
+    let (snapshot, pair, pixels, config) = imu_fixture();
+    let binding = ValidatedImuConfig::new(config).unwrap();
+    let root = tempfile::tempdir().unwrap();
+    for chunked in [false, true] {
+        let mut paths = Vec::new();
+        for shared in [false, true] {
+            let name = format!("capture-{chunked}-{shared}");
+            let mut w = if chunked {
+                RawRecordingWriter::begin_chunked(root.path(), &name, snapshot.clone(), 2_000_000)
+                    .unwrap()
+            } else {
+                RawRecordingWriter::begin(root.path(), &name, snapshot.clone()).unwrap()
+            };
+            let stats = w.diagnostics();
+            for n in 1..=35 {
+                let samples = imu_samples(n);
+                if shared {
+                    let shared: Vec<SharedImuSample> = samples
+                        .into_iter()
+                        .map(|s| SharedImuSample {
+                            frame_id: binding.frame_id(s.kind).clone(),
+                            kind: s.kind,
+                            sequence: s.sequence,
+                            device_timestamp_us: s.device_timestamp_us,
+                            system_timestamp_us: s.system_timestamp_us,
+                            global_timestamp_us: s.global_timestamp_us,
+                            xyz: s.xyz,
+                        })
+                        .collect();
+                    w.append_shared_imu(
+                        &pair_at(&pair, n),
+                        &[1, 2, 3, 4],
+                        &pixels,
+                        StorageEndian::Little,
+                        &shared,
+                    )
+                    .unwrap();
+                } else {
+                    w.append_with_imu(
+                        &pair_at(&pair, n),
+                        &[1, 2, 3, 4],
+                        &pixels,
+                        StorageEndian::Little,
+                        &samples,
+                    )
+                    .unwrap();
+                }
+            }
+            let path = w.finish().unwrap();
+            // V3 retains checkpoint + final full scan; legacy V2 retains its
+            // existing final scan. Buffer changes do not alter either policy.
+            assert_eq!(
+                stats.report()["validation_imu_samples"],
+                if chunked { 140 } else { 70 }
+            );
+            let frames = read_all(&path, false);
+            let bytes = fs::read(path.join("records.jsonl")).unwrap();
+            let expected = frames
+                .iter()
+                .flat_map(|frame| {
+                    let mut b = serde_json::to_vec(&frame.record).unwrap();
+                    b.push(b'\n');
+                    b
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(bytes, expected);
+            paths.push(path);
+        }
+        assert_eq!(
+            fs::read(paths[0].join("records.jsonl")).unwrap(),
+            fs::read(paths[1].join("records.jsonl")).unwrap()
+        );
+    }
+}

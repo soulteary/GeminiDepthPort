@@ -198,3 +198,46 @@ fn imu_validation_cache_benchmark() {
     )
     .unwrap();
 }
+
+#[test]
+fn shared_imu_frames_keep_owned_wire_format_and_validation() {
+    use std::sync::Arc;
+    let c: ImuConfig = serde_json::from_value(config()).unwrap();
+    let binding = ValidatedImuConfig::new(c).unwrap();
+    let shared = SharedImuSample {
+        kind: ImuKind::Accel,
+        sequence: 1,
+        device_timestamp_us: 100,
+        system_timestamp_us: 1_700_000_000_000_000,
+        global_timestamp_us: None,
+        xyz: [1., 2., 3.],
+        frame_id: binding.frame_id(ImuKind::Accel).clone(),
+    };
+    assert!(Arc::ptr_eq(
+        &shared.frame_id,
+        binding.frame_id(ImuKind::Accel)
+    ));
+    let copied = shared.clone();
+    assert!(Arc::ptr_eq(&shared.frame_id, &copied.frame_id));
+    let owned = copied.into_owned();
+    let bytes = serde_json::to_vec(&shared).unwrap();
+    assert_eq!(bytes, serde_json::to_vec(&owned).unwrap());
+    assert_eq!(serde_json::from_slice::<ImuSample>(&bytes).unwrap(), owned);
+    ImuProgress::default()
+        .accept_validated(&shared, &binding)
+        .unwrap();
+    let mut bad = shared.clone();
+    bad.frame_id = Arc::from("wrong");
+    assert!(
+        ImuProgress::default()
+            .accept_validated(&bad, &binding)
+            .is_err()
+    );
+    bad = shared;
+    bad.xyz[2] = f64::NAN;
+    assert!(
+        ImuProgress::default()
+            .accept_validated(&bad, &binding)
+            .is_err()
+    );
+}

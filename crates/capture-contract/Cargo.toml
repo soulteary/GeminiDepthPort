@@ -7,7 +7,7 @@ license = "Apache-2.0"
 description = "Versioned capture identity, geometry and content contracts independent of acquisition"
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = { version = "1.0", features = ["float_roundtrip"] }
 ring = "0.17"
 

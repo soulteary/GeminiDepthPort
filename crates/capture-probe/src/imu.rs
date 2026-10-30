@@ -1,6 +1,6 @@
 use crate::rgbd::{Config, Metrics};
 use anyhow::{Result, ensure};
-use capture_contract::imu::ImuSample;
+use capture_contract::imu::SharedImuSample;
 use serde_json::json;
 use std::time::Instant;
 #[derive(Default)]
@@ -27,6 +27,7 @@ impl ImuMetrics {
 }
 pub(crate) struct RuntimeImu {
     capture: orbbec_safe::ImuCapture,
+    samples: Vec<SharedImuSample>,
     publisher: Option<ros_output::ImuPublisher>,
 }
 impl RuntimeImu {
@@ -44,30 +45,38 @@ impl RuntimeImu {
             .transpose()?;
         Ok(Some(Self {
             capture: pipeline.start_imu(imu.clone(), global)?,
+            samples: Vec::with_capacity(imu.queue_capacity),
             publisher,
         }))
     }
-    pub fn tick(&mut self, metrics: &mut Metrics, publish: bool) -> Result<Vec<ImuSample>> {
+    pub fn tick(
+        &mut self,
+        metrics: &mut Metrics,
+        publish: bool,
+    ) -> Result<&mut Vec<SharedImuSample>> {
         let stats = metrics
             .imu
             .get_or_insert_with(|| Box::new(ImuMetrics::default()));
         let started = Instant::now();
         stats.ros = self.publisher.is_some();
         let drain_started = Instant::now();
-        let (received, peak) = self.capture.counters();
+        let drained = self.capture.drain_into(&mut self.samples);
+        stats.drain_wall.observe(drain_started.elapsed());
+        let (received, peak) = match &drained {
+            Ok(counters) => *counters,
+            Err(_) => self.capture.counters(),
+        };
         stats.received = received;
         stats.peak = peak;
-        let result = (|| -> Result<Vec<ImuSample>> {
-            let drained = self.capture.drain();
-            stats.drain_wall.observe(drain_started.elapsed());
-            let samples = drained?;
+        let result = (|| -> Result<()> {
+            drained?;
             if publish {
                 if let Some(publisher) = &mut self.publisher {
-                    if !samples.is_empty() {
+                    if !self.samples.is_empty() {
                         let publish_started = Instant::now();
                         let result = (|| -> Result<()> {
-                            for sample in &samples {
-                                publisher.publish(sample)?;
+                            for sample in &self.samples {
+                                publisher.publish_shared(sample)?;
                                 stats.published[sample.kind.slot()] += 1;
                             }
                             Ok(())
@@ -77,17 +86,23 @@ impl RuntimeImu {
                     }
                 }
             } else {
-                stats.excluded += samples.len() as u64;
+                stats.excluded += self.samples.len() as u64;
+                self.samples.clear();
             }
-            Ok(if publish { samples } else { Vec::new() })
+            Ok(())
         })();
         stats.wall.observe(started.elapsed());
         if let Err(e) = &result {
             stats.error = Some(e.to_string());
         }
-        result
+        result?;
+        Ok(&mut self.samples)
     }
-    pub fn stop(&mut self, metrics: &mut Metrics, publish: bool) -> Result<Vec<ImuSample>> {
+    pub fn stop(
+        &mut self,
+        metrics: &mut Metrics,
+        publish: bool,
+    ) -> Result<&mut Vec<SharedImuSample>> {
         self.capture.stop()?;
         let tail = self.tick(metrics, publish)?;
         ensure!(

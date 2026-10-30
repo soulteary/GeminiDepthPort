@@ -6,6 +6,28 @@ use std::{
     process::Command,
     time::{Duration, Instant},
 };
+struct CountAlloc;
+static COUNT_ALLOC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static ALLOCATIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+unsafe impl std::alloc::GlobalAlloc for CountAlloc {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        if COUNT_ALLOC.load(std::sync::atomic::Ordering::Relaxed) {
+            ALLOCATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+    unsafe fn dealloc(&self, p: *mut u8, layout: std::alloc::Layout) {
+        unsafe { std::alloc::System.dealloc(p, layout) }
+    }
+    unsafe fn realloc(&self, p: *mut u8, layout: std::alloc::Layout, size: usize) -> *mut u8 {
+        if COUNT_ALLOC.load(std::sync::atomic::Ordering::Relaxed) {
+            ALLOCATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        unsafe { std::alloc::System.realloc(p, layout, size) }
+    }
+}
+#[global_allocator]
+static ALLOCATOR: CountAlloc = CountAlloc;
 fn config() -> ImuConfig {
     serde_json::from_str(r#"{"enabled":true,"accel_rate_hz":200,"gyro_rate_hz":200,"accel_range_g":4,"gyro_range_dps":1000,"queue_capacity":128,"stale_timeout_ms":100,"accel_frame_id":"accel_frame","gyro_frame_id":"gyro_frame"}"#).unwrap()
 }
@@ -61,7 +83,83 @@ fn imu_child() {
         pipeline.stop().unwrap();
         return;
     }
-    if mode == "overflow" {
+    if mode == "reuse" {
+        let mut samples = Vec::with_capacity(128);
+        let first = samples.as_ptr();
+        let mut second = None;
+        let mut accel_frame = None;
+        let mut seen = 0;
+        let mut received = [0; 2];
+        let mut turns = 0;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        // Warm lazy platform mutex/thread state before measuring steady state.
+        while !imu.counters().0.iter().all(|n| *n >= 2) {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        ALLOCATIONS.store(0, std::sync::atomic::Ordering::Relaxed);
+        COUNT_ALLOC.store(true, std::sync::atomic::Ordering::Relaxed);
+        while seen < 32 || turns < 100 {
+            assert!(Instant::now() < deadline);
+            let counters = imu.drain_into(&mut samples).unwrap();
+            assert!(counters.0[0] >= received[0] && counters.0[1] >= received[1]);
+            received = counters.0;
+            assert!(counters.1 <= 128);
+            assert!(samples.capacity() >= 128);
+            if turns == 0 {
+                second = Some(samples.as_ptr());
+            }
+            assert_eq!(
+                samples.as_ptr(),
+                if turns % 2 == 0 {
+                    second.unwrap()
+                } else {
+                    first
+                }
+            );
+            for sample in &samples {
+                if sample.kind == capture_contract::imu::ImuKind::Accel {
+                    if let Some(frame) = &accel_frame {
+                        assert!(std::sync::Arc::ptr_eq(frame, &sample.frame_id));
+                    } else {
+                        accel_frame = Some(sample.frame_id.clone());
+                    }
+                }
+            }
+            assert_eq!(received[0] + received[1], (seen + samples.len()) as u64);
+            seen += samples.len();
+            turns += 1;
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        COUNT_ALLOC.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            ALLOCATIONS.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "shared callback and reused drain must not allocate after initialization"
+        );
+        let shared_samples = seen;
+        let shared_drains = turns;
+        samples.clear();
+        drop(imu.drain().unwrap()); // Warm the compatibility path's spare buffer too.
+        let mut seen = 0;
+        ALLOCATIONS.store(0, std::sync::atomic::Ordering::Relaxed);
+        COUNT_ALLOC.store(true, std::sync::atomic::Ordering::Relaxed);
+        while seen < 16 {
+            assert!(Instant::now() < deadline);
+            seen += imu.drain().unwrap().len();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        COUNT_ALLOC.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert!(ALLOCATIONS.load(std::sync::atomic::Ordering::Relaxed) >= seen);
+        if let Some(path) = std::env::var_os("GDP_IMU_ALLOC_REPORT") {
+            fs::write(path, serde_json::to_vec_pretty(&serde_json::json!({
+                "scope":"isolated process, all Rust allocations after platform/SDK warmup; excludes C SDK malloc",
+                "shared_samples":shared_samples,"shared_drains":shared_drains,"shared_allocations":0,
+                "owned_samples":seen,"owned_allocations":ALLOCATIONS.load(std::sync::atomic::Ordering::Relaxed),
+                "queue_capacity":128,"same_frame_storage":true,"two_reused_sdk_buffers":true
+            })).unwrap()).unwrap();
+        }
+    } else if mode == "overflow" {
         let deadline = Instant::now() + Duration::from_secs(5);
         let path = std::env::var_os("GEMINIDEPTHPORT_MOCK_EVENTS").unwrap();
         while !fs::read_to_string(&path)
@@ -122,6 +220,7 @@ fn optional_imu_abi_covers_callbacks_boundedness_errors_and_cleanup() {
     fs::create_dir_all(&root).unwrap();
     for (mode, env) in [
         ("normal", ""),
+        ("reuse", ""),
         ("slow", ""),
         ("unsupported", "GDP_MOCK_IMU_UNSUPPORTED"),
         ("profile", "GDP_MOCK_IMU_PROFILE_ERROR"),

@@ -1,6 +1,9 @@
 //! Optional IMU bridge extension; separate raw accel/gyro messages, no fusion.
 use super::*;
-use frame_core::imu::{ImuConfig, ImuKind, ImuProgress, ImuSample, ValidatedImuConfig};
+use frame_core::imu::{
+    ImuConfig, ImuKind, ImuProgress, ImuSample, ImuSampleFields, SharedImuSample,
+    ValidatedImuConfig,
+};
 #[repr(C)]
 pub struct ImuFrameRaw {
     pub abi_version: u32,
@@ -100,6 +103,12 @@ impl ImuPublisher {
         })
     }
     pub fn publish(&mut self, sample: &ImuSample) -> Result<()> {
+        self.publish_sample(sample)
+    }
+    pub fn publish_shared(&mut self, sample: &SharedImuSample) -> Result<()> {
+        self.publish_sample(sample)
+    }
+    fn publish_sample<F: AsRef<str>>(&mut self, sample: &ImuSampleFields<F>) -> Result<()> {
         let mut next = self.progress.clone();
         next.accept_validated(sample, &self.binding)?;
         let us = if self.global {

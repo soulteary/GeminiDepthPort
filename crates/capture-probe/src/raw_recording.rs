@@ -1,5 +1,6 @@
 //! Opt-in bounded owned native SDK capture. SDK handles never cross threads.
 use anyhow::{Context, Result, ensure};
+use capture_contract::imu::SharedImuSample;
 use capture_contract::{DepthRepresentation, snapshot::SnapshotEnvelope, timing::StageStats};
 use frame_core::{
     BoundPairEvidence, BoundPairGuard, FrameEncoding, FrameLayout, FramePacket, PacketMetadata,
@@ -15,7 +16,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread::{self, JoinHandle},
     time::Instant,
@@ -153,8 +154,53 @@ struct Shared {
     ros_snapshot: Option<String>,
     disk: RawRecordingDiagnostics,
 }
+/// Fixed buffer credits: pending + queued + writer + a failed-send spare.
+/// Backing arrays are reserved on first use, outside all queue locks.
+struct ImuBufferPool {
+    free: Mutex<Vec<Vec<SharedImuSample>>>,
+    credits: usize,
+    allocated: AtomicUsize,
+}
+impl ImuBufferPool {
+    fn new(credits: usize) -> Arc<Self> {
+        Arc::new(Self {
+            free: Mutex::new((0..credits).map(|_| Vec::new()).collect()),
+            credits,
+            allocated: AtomicUsize::new(0),
+        })
+    }
+    fn take(&self) -> Option<Vec<SharedImuSample>> {
+        let mut buffer = self.free.lock().unwrap_or_else(|e| e.into_inner()).pop()?;
+        if buffer.capacity() < 128 {
+            buffer.reserve_exact(128);
+            self.allocated.fetch_add(1, Ordering::Relaxed);
+        }
+        Some(buffer)
+    }
+    fn put(&self, mut buffer: Vec<SharedImuSample>) {
+        buffer.clear(); // Release shared strings before acquiring the pool lock.
+        let mut free = self.free.lock().unwrap_or_else(|e| e.into_inner());
+        debug_assert!(free.len() < self.credits);
+        free.push(buffer);
+    }
+    fn report(&self) -> Value {
+        json!({"buffer_credits":self.credits,"allocated_buffers":self.allocated.load(Ordering::Relaxed),"samples_per_buffer_limit":128,"scope":"fixed credits, lazily reserved arrays; independent of whole-pair queue capacity"})
+    }
+}
+#[derive(Default)]
+struct PooledImu {
+    samples: Vec<SharedImuSample>,
+    pool: Option<Arc<ImuBufferPool>>,
+}
+impl Drop for PooledImu {
+    fn drop(&mut self) {
+        if let Some(pool) = &self.pool {
+            pool.put(std::mem::take(&mut self.samples));
+        }
+    }
+}
 struct OwnedPair {
-    imu: Vec<capture_contract::imu::ImuSample>,
+    imu: PooledImu,
     evidence: BoundPairEvidence,
     color: Vec<u8>,
     depth: Vec<u8>,
@@ -249,10 +295,12 @@ impl RecordingQueue {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.closed = true;
         state.discarded += state.pairs.len() as u64 + state.inflight_pairs;
-        state.pairs.clear();
+        let abandoned = std::mem::take(&mut state.pairs);
         state.bytes = 0;
         state.inflight_pairs = 0;
         state.inflight_bytes = 0;
+        drop(state);
+        drop(abandoned);
         self.available.notify_all();
     }
     fn report(&self) -> Value {
@@ -279,7 +327,8 @@ impl Drop for WorkerQueueGuard {
 }
 
 pub(crate) struct RawRecorder {
-    pending_imu: Vec<capture_contract::imu::ImuSample>,
+    pending_imu: Vec<SharedImuSample>,
+    imu_pool: Option<Arc<ImuBufferPool>>,
     settings: RawSettings,
     session: String,
     name: String,
@@ -308,6 +357,7 @@ impl RawRecorder {
     pub fn new(settings: RawSettings, session: &str) -> Self {
         Self {
             pending_imu: Vec::new(),
+            imu_pool: None,
             name: format!("{}-{session}", settings.name),
             settings,
             session: session.into(),
@@ -345,15 +395,25 @@ impl RawRecorder {
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
         self.shared.lock().unwrap_or_else(|e| e.into_inner())
     }
-    pub fn buffer_imu(&mut self, samples: Vec<capture_contract::imu::ImuSample>) -> Result<()> {
+    pub fn buffer_imu(&mut self, samples: &mut Vec<SharedImuSample>) -> Result<()> {
+        if samples.is_empty() {
+            return Ok(());
+        }
         if matches!(self.lock().state, State::Waiting | State::Recording) {
             if self.pending_imu.len() + samples.len() > 128 {
                 self.fail("RAW_IMU_QUEUE_OVERFLOW");
                 anyhow::bail!("raw IMU batch overflow");
             }
-            self.pending_imu.extend(samples);
+            if self.imu_pool.is_none() {
+                let pool = ImuBufferPool::new(self.settings.queue_capacity + 3);
+                self.pending_imu = pool.take().context("raw IMU buffer credits exhausted")?;
+                self.imu_pool = Some(pool);
+            }
+            self.pending_imu.append(samples);
         } else {
-            self.lock().imu_outside_recording += samples.len() as u64;
+            let count = samples.len() as u64;
+            samples.clear();
+            self.lock().imu_outside_recording += count;
         }
         Ok(())
     }
@@ -483,13 +543,14 @@ impl RawRecorder {
                     let mut written = 0u64;
                     while let Some(pair) = rx.recv() {
                         ensure!(!abort.load(Ordering::Acquire), "raw aborted");
-                        writer.append_with_imu(
+                        writer.append_shared_imu(
                             &pair.evidence,
                             &pair.color,
                             &pair.depth,
                             StorageEndian::Little,
-                            &pair.imu,
+                            &pair.imu.samples,
                         )?;
+                        drop(pair); // Recycle the batch before reporting writer credit.
                         rx.written();
                         written += 1;
                         let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -607,8 +668,18 @@ impl RawRecorder {
             .checked_add(lengths.1)
             .context("raw length overflow")? as u64;
         let imu_count = self.pending_imu.len() as u64;
+        let imu = if self.pending_imu.is_empty() {
+            PooledImu::default()
+        } else {
+            let pool = self.imu_pool.as_ref().context("raw IMU pool missing")?;
+            let replacement = pool.take().context("raw IMU buffer credits exhausted")?;
+            PooledImu {
+                samples: std::mem::replace(&mut self.pending_imu, replacement),
+                pool: Some(pool.clone()),
+            }
+        };
         let message = OwnedPair {
-            imu: std::mem::take(&mut self.pending_imu),
+            imu,
             evidence: pair.evidence,
             color: pair.pair.color.payload,
             depth: pair.pair.depth.payload,
@@ -695,7 +766,7 @@ impl RawRecorder {
     }
     pub fn status(&self) -> Value {
         let s = self.lock();
-        json!({"version":1,"state":s.state.as_str(),"reason":s.reason,"session_id":self.session,"max_pairs":self.settings.max_pairs,"max_bytes":self.settings.max_bytes,"queue_capacity":self.settings.queue_capacity,"submitted_pairs":s.submitted,"written_pairs":s.written,"imu_samples_submitted":s.imu_submitted,"imu_samples_outside_recording_excluded":s.imu_outside_recording,"imu_samples_pending":self.pending_imu.len(),"payload_bytes_submitted":s.payload_bytes,"whole_pair_queue_overflows":s.overflows,"writer_queue":self.queue.as_ref().map(|q| q.report()),"disk_stages":s.disk.report(),"startup_framesets_excluded":s.excluded_startup,"waiting_framesets_excluded":s.waiting_framesets,"checkpoint_pipeline":self.settings.checkpoint_pipeline,"storage_format":if self.settings.chunked {"recording-directory-v3"}else{"recording-directory-v2"},"native_snapshot_id":s.native_snapshot,"ros_snapshot_id":s.ros_snapshot,"job_path":self.settings.directory.join(&self.name),"partial_path":self.settings.directory.join(format!("{}.partial",self.name)),"business_validity":null,"recording_protection_released":false})
+        json!({"version":1,"state":s.state.as_str(),"reason":s.reason,"session_id":self.session,"max_pairs":self.settings.max_pairs,"max_bytes":self.settings.max_bytes,"queue_capacity":self.settings.queue_capacity,"submitted_pairs":s.submitted,"written_pairs":s.written,"imu_samples_submitted":s.imu_submitted,"imu_samples_outside_recording_excluded":s.imu_outside_recording,"imu_samples_pending":self.pending_imu.len(),"imu_buffers":self.imu_pool.as_ref().map(|pool|pool.report()),"payload_bytes_submitted":s.payload_bytes,"whole_pair_queue_overflows":s.overflows,"writer_queue":self.queue.as_ref().map(|q| q.report()),"disk_stages":s.disk.report(),"startup_framesets_excluded":s.excluded_startup,"waiting_framesets_excluded":s.waiting_framesets,"checkpoint_pipeline":self.settings.checkpoint_pipeline,"storage_format":if self.settings.chunked {"recording-directory-v3"}else{"recording-directory-v2"},"native_snapshot_id":s.native_snapshot,"ros_snapshot_id":s.ros_snapshot,"job_path":self.settings.directory.join(&self.name),"partial_path":self.settings.directory.join(format!("{}.partial",self.name)),"business_validity":null,"recording_protection_released":false})
     }
 }
 impl Drop for RawRecorder {
@@ -1462,11 +1533,122 @@ mod tests {
         assert_eq!(sink.status()["disk_stages"]["durable_pairs"], 16);
         std::fs::remove_dir_all(dir).unwrap();
     }
+    fn shared_sample() -> SharedImuSample {
+        SharedImuSample {
+            kind: capture_contract::imu::ImuKind::Accel,
+            sequence: 1,
+            device_timestamp_us: 1,
+            system_timestamp_us: 1,
+            global_timestamp_us: None,
+            xyz: [0.; 3],
+            frame_id: "accel_frame".into(),
+        }
+    }
+    #[test]
+    fn imu_buffer_credits_are_bounded_reused_and_released_on_every_queue_exit() {
+        let pool = ImuBufferPool::new(3);
+        let a = pool.take().unwrap();
+        let pointer = a.as_ptr();
+        let b = pool.take().unwrap();
+        let c = pool.take().unwrap();
+        assert!(pool.take().is_none());
+        assert_eq!(pool.report()["allocated_buffers"], 3);
+        pool.put(a);
+        let recycled = pool.take().unwrap();
+        assert_eq!(recycled.as_ptr(), pointer);
+        pool.put(recycled);
+        pool.put(b);
+        pool.put(c);
+        let sample = shared_sample();
+        let dir = directory();
+        let ros = snapshot();
+        let mut sink = RawRecorder::new(
+            settings(&dir, 2, 1_000_000),
+            ros.content.binding.session_id.as_str(),
+        );
+        sink.initialize(&ros, Instant::now(), 0.1).unwrap();
+        let evidence = sink
+            .guard
+            .as_mut()
+            .unwrap()
+            .accept(
+                1,
+                Some(packet(false, 1, Instant::now())),
+                Some(packet(true, 1, Instant::now())),
+                (4, 4),
+                policy(),
+                PairProvenance::CallerObservedSdkFrameset,
+            )
+            .unwrap()
+            .evidence;
+        let make = || {
+            let mut samples = pool.take().unwrap();
+            samples.push(sample.clone());
+            OwnedPair {
+                imu: PooledImu {
+                    samples,
+                    pool: Some(pool.clone()),
+                },
+                evidence: evidence.clone(),
+                color: vec![0; 4],
+                depth: vec![0; 4],
+                enqueued: Instant::now(),
+            }
+        };
+        let queue = RecordingQueue::new(1);
+        assert!(queue.send(make()).is_ok());
+        assert!(matches!(queue.send(make()), Err(QueueSendError::Full)));
+        assert_eq!(pool.free.lock().unwrap().len(), 2);
+        queue.close();
+        assert!(matches!(
+            queue.send(make()),
+            Err(QueueSendError::Disconnected)
+        ));
+        let pair = queue.recv().unwrap();
+        drop(pair);
+        queue.written();
+        assert!(queue.recv().is_none());
+        assert_eq!(pool.free.lock().unwrap().len(), 3);
+        let queue = RecordingQueue::new(1);
+        assert!(queue.send(make()).is_ok());
+        queue.abandon();
+        assert_eq!(pool.free.lock().unwrap().len(), 3);
+        assert_eq!(Arc::strong_count(&sample.frame_id), 1);
+        assert_eq!(pool.report()["allocated_buffers"], 3);
+        let _ = sink.finish_session(false);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn imu_pending_moves_samples_without_consuming_the_callers_buffer_and_excludes_after_failure() {
+        let dir = directory();
+        let mut sink = RawRecorder::new(settings(&dir, 2, 1_000_000), &"a".repeat(32));
+        let mut samples = Vec::with_capacity(128);
+        samples.push(shared_sample());
+        let pointer = samples.as_ptr();
+        sink.buffer_imu(&mut samples).unwrap();
+        assert!(samples.is_empty());
+        assert_eq!(samples.as_ptr(), pointer);
+        assert_eq!(sink.pending_imu.len(), 1);
+        let allocated = sink.status()["imu_buffers"]["allocated_buffers"].clone();
+        for _ in 0..10 {
+            samples.push(shared_sample());
+            sink.buffer_imu(&mut samples).unwrap();
+        }
+        assert_eq!(sink.status()["imu_buffers"]["allocated_buffers"], allocated);
+        sink.fail("TEST_ABORT");
+        samples.push(shared_sample());
+        sink.buffer_imu(&mut samples).unwrap();
+        assert!(samples.is_empty());
+        assert_eq!(samples.as_ptr(), pointer);
+        assert_eq!(sink.status()["imu_samples_outside_recording_excluded"], 1);
+        sink.buffer_imu(&mut samples).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn pending_imu_overflow_fails_without_dropping_samples_silently() {
         let dir = directory();
         let mut recorder = RawRecorder::new(settings(&dir, 1, 1_000_000), &"a".repeat(32));
-        let sample = capture_contract::imu::ImuSample {
+        let sample = capture_contract::imu::SharedImuSample {
             kind: capture_contract::imu::ImuKind::Accel,
             sequence: 1,
             device_timestamp_us: 1,
@@ -1475,7 +1657,7 @@ mod tests {
             xyz: [0.; 3],
             frame_id: "accel_frame".into(),
         };
-        assert!(recorder.buffer_imu(vec![sample; 129]).is_err());
+        assert!(recorder.buffer_imu(&mut vec![sample; 129]).is_err());
         assert_eq!(recorder.status()["state"], "failed");
         assert_eq!(recorder.status()["reason"], "RAW_IMU_QUEUE_OVERFLOW");
         std::fs::remove_dir_all(dir).unwrap();

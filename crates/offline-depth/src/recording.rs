@@ -1,7 +1,9 @@
 //! Versioned recording boundary. Observed associations never become SDK framesets.
 use super::*;
 mod chunked;
-use capture_contract::imu::{ImuProgress, ImuSample, ValidatedImuConfig};
+use capture_contract::imu::{
+    ImuProgress, ImuSample, ImuSampleFields, SharedImuSample, ValidatedImuConfig,
+};
 use capture_contract::timing::StageStats;
 use capture_contract::{DepthRepresentation, QuantizationPolicy};
 use capture_observer::{DecodedCameraInfo, MetadataProvenance, ObservedAssociation};
@@ -68,6 +70,17 @@ pub struct RecordingRecord {
     pub depth: StoredImage,
     pub storage_representation: DepthRepresentation,
 }
+/// Same JSON field order/shape as RecordingRecord, borrowing live IMU batches.
+#[derive(Serialize)]
+struct RecordingRecordRef<'a, F> {
+    #[serde(skip_serializing_if = "<[ImuSampleFields<F>]>::is_empty")]
+    imu: &'a [ImuSampleFields<F>],
+    sequence: u64,
+    evidence: FileRef,
+    color: StoredImage,
+    depth: StoredImage,
+    storage_representation: DepthRepresentation,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordingManifest {
@@ -116,8 +129,8 @@ impl RecordingImuBinding {
             .transpose()
     }
 }
-fn validate_imu(
-    samples: &[ImuSample],
+fn validate_imu<F: AsRef<str>>(
+    samples: &[ImuSampleFields<F>],
     binding: Option<&RecordingImuBinding>,
     progress: &mut ImuProgress,
 ) -> Result<()> {
@@ -1066,7 +1079,7 @@ impl RawRecordingWriter {
         depth: &[u8],
         endian: StorageEndian,
     ) -> Result<()> {
-        self.append_with_imu(pair, color, depth, endian, &[])
+        self.append_with_imu(pair, color, depth, endian, &[] as &[ImuSample])
     }
     pub fn append_with_imu(
         &mut self,
@@ -1075,6 +1088,27 @@ impl RawRecordingWriter {
         depth: &[u8],
         endian: StorageEndian,
         imu: &[ImuSample],
+    ) -> Result<()> {
+        self.append_imu(pair, color, depth, endian, imu)
+    }
+    /// Borrow a shared live batch without cloning its vector or frame IDs.
+    pub fn append_shared_imu(
+        &mut self,
+        pair: &BoundPairEvidence,
+        color: &[u8],
+        depth: &[u8],
+        endian: StorageEndian,
+        imu: &[SharedImuSample],
+    ) -> Result<()> {
+        self.append_imu(pair, color, depth, endian, imu)
+    }
+    fn append_imu<F: AsRef<str> + Serialize>(
+        &mut self,
+        pair: &BoundPairEvidence,
+        color: &[u8],
+        depth: &[u8],
+        endian: StorageEndian,
+        imu: &[ImuSampleFields<F>],
     ) -> Result<()> {
         require(!self.failed, "RECORDING_ALREADY_FAILED")?;
         let diagnostics = self.diagnostics.clone();
@@ -1086,13 +1120,13 @@ impl RawRecordingWriter {
         }
         result
     }
-    fn append_inner(
+    fn append_inner<F: AsRef<str> + Serialize>(
         &mut self,
         pair: &BoundPairEvidence,
         color: &[u8],
         depth: &[u8],
         endian: StorageEndian,
-        imu: &[ImuSample],
+        imu: &[ImuSampleFields<F>],
     ) -> Result<()> {
         validate_imu(imu, self.imu_binding.as_ref(), &mut self.imu_progress)?;
         pair.validate()
@@ -1154,8 +1188,8 @@ impl RawRecordingWriter {
             };
         let color = store("color", &pair.color, color_file)?;
         let depth = store("depth", &pair.depth, depth_file)?;
-        let record = RecordingRecord {
-            imu: imu.to_vec(),
+        let record = RecordingRecordRef {
+            imu,
             sequence,
             evidence,
             color,
