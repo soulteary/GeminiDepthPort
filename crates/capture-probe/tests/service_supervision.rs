@@ -2757,6 +2757,10 @@ fn native_global_capture_rejects_missing_invalid_and_changed_sdk_metadata_withou
         acquisition(&f, "strict-rgbd", true);
         let gate = f.root.join("arm-fault");
         let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+        // This verifies injected SDK corruption and recovery, not the 500 ms
+        // supervision deadline. Instrumented CI status fsync can exceed it
+        // before the fault is armed; keep the data-fault assertions unchanged.
+        config["service"]["idle_timeout_ms"] = json!(3000);
         config["raw_recording"]["queue_capacity"] = json!(16);
         fs::write(&f.config, config.to_string()).unwrap();
         let mut child = acquisition_child(
