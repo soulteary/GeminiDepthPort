@@ -74,7 +74,7 @@ fn imu_progress_requires_finite_si_values_and_independent_monotonic_source_clock
             4 => s.global_timestamp_us = None,
             5 => s.sequence = 0,
             6 => s.frame_id = "wrong".into(),
-            7 => s.system_timestamp_us -= 1,
+            7 => s.system_timestamp_us -= 2,
             _ => s.global_timestamp_us = Some(u64::MAX),
         }
         assert!(progress.clone().accept(&s, &c).is_err());
@@ -121,7 +121,7 @@ fn validated_binding_is_immutable_and_preserves_every_sample_check() {
             2 => next.device_timestamp_us = 0,
             3 => next.device_timestamp_us -= 1,
             4 => next.system_timestamp_us = u64::MAX,
-            5 => next.system_timestamp_us -= 1,
+            5 => next.system_timestamp_us -= 2,
             6 => next.global_timestamp_us = Some(0),
             7 => next.global_timestamp_us = None,
             8 => next.global_timestamp_us = sample.global_timestamp_us,
@@ -146,6 +146,37 @@ fn validated_binding_is_immutable_and_preserves_every_sample_check() {
             .accept_validated(&next, &ValidatedImuConfig::new(disabled).unwrap())
             .is_err()
     );
+}
+
+#[test]
+fn imu_usb_batches_keep_equal_system_timestamps_without_rewriting_source_samples() {
+    let c: ImuConfig = serde_json::from_value(config()).unwrap();
+    let binding = ValidatedImuConfig::new(c.clone()).unwrap();
+    for global in [false, true] {
+        let mut owned = ImuProgress::default();
+        let mut shared = ImuProgress::default();
+        // Model the observed 200 Hz streams: two samples share one host receipt
+        // time, while device/global clocks and indices advance for each sample.
+        for n in 0..50_u64 {
+            for kind in [ImuKind::Accel, ImuKind::Gyro] {
+                let sample = SharedImuSample {
+                    kind,
+                    sequence: n,
+                    device_timestamp_us: 1_000_000 + n * 5_000,
+                    system_timestamp_us: 1_700_000_000_000_000 + (n / 2) * 10_000,
+                    global_timestamp_us: global.then_some(1_700_000_000_000_000 + n * 5_000),
+                    xyz: [1., 2., 3.],
+                    frame_id: binding.frame_id(kind).clone(),
+                };
+                let original = serde_json::to_vec(&sample).unwrap();
+                owned.accept(&sample.clone().into_owned(), &c).unwrap();
+                shared.accept_validated(&sample, &binding).unwrap();
+                assert_eq!(serde_json::to_vec(&sample).unwrap(), original);
+            }
+        }
+        assert!(owned.has_both());
+        assert!(shared.has_both());
+    }
 }
 
 #[test]

@@ -16,6 +16,13 @@ The resident Rust service, when given explicit `quality_policy`, builds an immut
 
 The existing Image, CameraInfo and v1 pair metadata topics remain unchanged. An additive reliable/volatile KeepLast(10) String topic `<pair_metadata_topic>/evidence` carries versioned bound evidence plus both actual ROS header stamps. Pixels and evidence occupy the same bounded queue item, so realtime overflow evicts the whole pair. The evidence is submitted only after both Image submissions and the matching v1 pair submission. A later failure remains a publication failure: ROS publication is not atomic, successful calls cannot be rolled back, and no consumer receipt is certified. A bridge lacking the additive evidence symbol returns a clear submission error rather than silently omit evidence.
 
+The compatibility `publish_bound_evidence` entry point requires SDK system-mapped
+Image stamps. `publish_bound_evidence_with_timestamp_source` checks the explicitly
+selected system or global fields instead; it never substitutes one clock for the
+other. Global Image stamps currently require device-clock pair metadata, while
+the legacy system-clock pair metadata contract still binds its stamps to system.
+Source timestamps, evidence JSON and sequence/session/pair-clock checks are unchanged.
+
 ## Management binding
 
 Management reads the SDK worker's exact snapshot rather than rebuilding a different ROS-observed snapshot for the recording guard. It verifies live identity before/after reading, config bytes, fixed private path, owner/mode/link count and the complete envelope. The official driver remains the default; its timestamp-only observer has a separate association contract and does not claim SDK frameset provenance.

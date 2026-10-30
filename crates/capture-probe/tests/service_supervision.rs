@@ -1994,6 +1994,56 @@ fn acquisition_complete_is_ready_with_independent_streams_while_strict_excludes_
     assert_eq!(sampled["ready"], false);
     stop(&mut child);
 }
+
+#[test]
+fn global_bound_evidence_with_imu_publishes_in_complete_and_strict_workers() {
+    for preset in ["complete", "strict-rgbd"] {
+        let f = fixture();
+        quality_only(&f);
+        enable_imu(&f);
+        acquisition(&f, preset, true);
+        let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+        config["startup_discovery_seconds"] = json!(0.3);
+        assert_eq!(config["pairing"]["clock"], "device");
+        fs::write(&f.config, config.to_string()).unwrap();
+        let mut child = acquisition_child(&f, &[]);
+        let ready = wait_status(&f, &mut child, |v| {
+            v["ready"] == true
+                && v["pairs_published"].as_u64().unwrap_or(0) >= 3
+                && v["imu"]["published"][0].as_u64().unwrap_or(0) > 0
+                && v["imu"]["published"][1].as_u64().unwrap_or(0) > 0
+        });
+        assert!(
+            ready["snapshot_id"].is_string(),
+            "quality must bind evidence"
+        );
+        assert_eq!(ready["message_timestamp"], "global");
+        assert_eq!(ready["publish_failures"], 0);
+        assert_eq!(ready["stamp_failures"], 0);
+        assert!(ready["imu"]["error"].is_null());
+        assert!(ready["raw_recording"].is_null());
+        stop(&mut child);
+        let events = fs::read_to_string(&f.events).unwrap();
+        assert!(
+            events
+                .lines()
+                .filter(|line| *line == "evidence-copied")
+                .count()
+                >= 3
+        );
+        assert!(events.lines().any(|line| line == "publish-global"));
+        let images: Vec<_> = events
+            .lines()
+            .filter(|line| line.starts_with("image:"))
+            .collect();
+        let unique: std::collections::BTreeSet<_> = images.iter().copied().collect();
+        assert_eq!(
+            images.len(),
+            unique.len(),
+            "Image submissions must stay unique"
+        );
+    }
+}
 #[test]
 fn acquisition_complete_preserves_valid_images_when_pair_skew_rejects_metadata() {
     let f = fixture();
@@ -2562,6 +2612,80 @@ fn imu_service_publishes_both_streams_and_preserves_samples_in_native_recording(
     assert!(events.contains("imu-accel-publish"));
     assert!(events.contains("imu-gyro-publish"));
     assert_eq!(events.lines().filter(|l| *l == "imu-stop").count(), 2);
+}
+#[test]
+fn equal_system_imu_survives_global_shared_context_and_native_readback() {
+    for pipeline in [false, true] {
+        let f = fixture();
+        configure_runtime_quality(&f, 31, 2_000_000);
+        enable_imu(&f);
+        acquisition(&f, "strict-rgbd", true);
+        let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+        config["startup_discovery_seconds"] = json!(0.3);
+        config["raw_recording"]["checkpoint_pipeline"] = json!(pipeline);
+        config["raw_recording"]["queue_capacity"] = json!(16);
+        fs::write(&f.config, config.to_string()).unwrap();
+        let mut child = acquisition_child(
+            &f,
+            &[
+                ("GDP_MOCK_WAIT_DELAY_MS", "33"),
+                ("GDP_MOCK_IMU_EQUAL_SYSTEM", "1"),
+            ],
+        );
+        let done = wait_status(&f, &mut child, |v| {
+            v["ready"] == true && v["raw_recording"]["state"] == "complete"
+        });
+        assert_eq!(done["message_timestamp"], "global");
+        assert_eq!(done["imu"]["shared_ros_context"], true);
+        assert_eq!(done["publish_failures"], 0);
+        assert_eq!(done["stamp_failures"], 0);
+        assert!(done["imu"]["error"].is_null());
+        let path = Path::new(done["raw_recording"]["job_path"].as_str().unwrap());
+        let mut source = offline_depth::recording::RecordingDirectorySource::open(path).unwrap();
+        let mut previous = [None, None];
+        let mut repeated = [false, false];
+        let mut samples = 0;
+        while let Some(frame) = source.next_frame().unwrap() {
+            for sample in frame.record.imu {
+                let slot = sample.kind.slot();
+                let system = 1_700_000_000_000_000 + (((sample.sequence - 1) / 2) * 2 + 1) * 40_000;
+                assert_eq!(sample.system_timestamp_us, system);
+                assert_eq!(
+                    sample.global_timestamp_us,
+                    Some(1_700_000_000_000_000 + sample.sequence * 40_000 - 2000)
+                );
+                if let Some((seq, device, system, global)) = previous[slot] {
+                    assert!(sample.sequence > seq);
+                    assert!(sample.device_timestamp_us > device);
+                    assert!(sample.system_timestamp_us >= system);
+                    assert!(sample.global_timestamp_us.unwrap() > global);
+                    repeated[slot] |= sample.system_timestamp_us == system;
+                }
+                previous[slot] = Some((
+                    sample.sequence,
+                    sample.device_timestamp_us,
+                    sample.system_timestamp_us,
+                    sample.global_timestamp_us.unwrap(),
+                ));
+                samples += 1;
+            }
+        }
+        assert!(samples > 20);
+        assert_eq!(repeated, [true, true]);
+        assert_eq!(done["raw_recording"]["imu_samples_submitted"], samples);
+        assert_eq!(
+            done["raw_recording"]["disk_stages"]["validation_imu_samples"],
+            samples * 2
+        );
+        stop(&mut child);
+        let stopped = status(&f).unwrap();
+        assert_eq!(stopped["state"], "stopped");
+        assert_eq!(stopped["raw_recording"]["state"], "complete");
+        let events = fs::read_to_string(&f.events).unwrap();
+        assert!(events.contains("evidence-copied"));
+        assert!(events.contains("imu-accel-publish"));
+        assert!(events.contains("imu-gyro-publish"));
+    }
 }
 #[test]
 fn requested_imu_failures_are_terminal_and_never_complete_a_native_recording() {

@@ -525,6 +525,156 @@ fn system_clock_pair_evidence_is_bound_to_images_session_and_clock_before_native
     );
     aux.publish_bound_evidence(&evidence, 1_000_000_000, 1_000_010_000)
         .unwrap();
+    let mut global_system_pair = evidence.clone();
+    global_system_pair.color.context.global_timestamp_us = Some(1_000_000);
+    global_system_pair.depth.context.global_timestamp_us = Some(1_000_010);
+    assert!(
+        aux.publish_bound_evidence_with_timestamp_source(
+            &global_system_pair,
+            1_000_000_000,
+            1_000_010_000,
+            ros_output::TimestampSource::Global,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("requires device-clock pair metadata")
+    );
+    drop(aux);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn global_clock_pair_evidence_uses_only_the_selected_source_and_keeps_existing_guards() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let dir = std::env::temp_dir().join(format!("gdp-aux-global-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let library = dir.join("bridge.so");
+    compile(
+        &root.join("tests/mock_bridge.cpp"),
+        &library,
+        &root.join("../../ros/include"),
+        false,
+    );
+    let transform = StaticTransform::from_depth_to_color(
+        &orbbec_safe::Extrinsics {
+            rotation_row_major: [1., 0., 0., 0., 1., 0., 0., 0., 1.],
+            translation_m: [0.1, 0.2, 0.3],
+        },
+        "color_optical",
+        "depth_optical",
+    )
+    .unwrap();
+    let mut aux = RosAuxPublisher::load(
+        &library,
+        AuxBinding {
+            node_name: "aux_global".into(),
+            namespace: "/test".into(),
+            pair_metadata_topic: "/test/pair".into(),
+        },
+        transform,
+        1_500_000_000,
+    )
+    .unwrap();
+    aux.set_session_id(&"a".repeat(32)).unwrap();
+    let pair = PairEvidence {
+        pair_sequence: 1,
+        color_sequence: 10,
+        depth_sequence: 20,
+        color_timestamp_us: 1000,
+        depth_timestamp_us: 1010,
+        delta_us: 10,
+        clock: PairClock::Device,
+        same_frameset: true,
+        hardware_sync_verified: false,
+    };
+    let context = |stream: &str, sequence: u64, delta: u64| {
+        serde_json::json!({"version":1,"session_id":"a".repeat(32),
+            "generation_id":"b".repeat(32),"configuration_id":"c".repeat(64),
+            "calibration_id":"d".repeat(64),"snapshot_id":"e".repeat(64),
+            "stream_id":stream,"sequence":sequence,"device_timestamp_us":1000+delta,
+            "system_timestamp_us":2_000_000+delta,"global_timestamp_us":1_500_000+delta,
+            "received_mono_offset_ns":1})
+    };
+    let evidence: frame_core::BoundPairEvidence = serde_json::from_value(serde_json::json!({
+        "version":1,"pair_sequence":1,
+        "color":{"context":context("color",10,0),"encoding":"yuyv","width":2,"height":2,"stride":4,
+                 "source_depth_scale_mm":null,"output_depth_scale_mm":null,"normalized":false},
+        "depth":{"context":context("depth",20,10),"encoding":"depth16","width":2,"height":2,"stride":4,
+                 "source_depth_scale_mm":1.0,"output_depth_scale_mm":1.0,"normalized":false},
+        "color_stamp_us":1000,"depth_stamp_us":1010,"clock_source":"device_us","delta_us":10,
+        "association":"sdk_frameset","hardware_sync_verified":false
+    }))
+    .unwrap();
+    let original = serde_json::to_value(&evidence).unwrap();
+    let (color_ns, depth_ns) = (1_500_000_000, 1_500_010_000);
+    aux.publish_pair(&pair, color_ns, depth_ns).unwrap();
+    // Compatibility entry point stays system-only; it must not guess global.
+    assert!(
+        aux.publish_bound_evidence(&evidence, color_ns, depth_ns)
+            .unwrap_err()
+            .to_string()
+            .contains("ROS source mapping differs")
+    );
+    for mode in 0..8 {
+        let mut invalid = evidence.clone();
+        match mode {
+            // Matching system time must never stand in for missing/wrong global.
+            0 => {
+                invalid.color.context.global_timestamp_us = None;
+                invalid.color.context.system_timestamp_us = Some(color_ns / 1000);
+            }
+            1 => {
+                invalid.depth.context.global_timestamp_us = None;
+                invalid.depth.context.system_timestamp_us = Some(depth_ns / 1000);
+            }
+            2 => {
+                invalid.color.context.global_timestamp_us = Some(color_ns / 1000 + 1);
+                invalid.color.context.system_timestamp_us = Some(color_ns / 1000);
+            }
+            3 => {
+                invalid.depth.context.global_timestamp_us = Some(depth_ns / 1000 + 1);
+                invalid.depth.context.system_timestamp_us = Some(depth_ns / 1000);
+            }
+            4 => invalid.pair_sequence += 1,
+            5 => invalid.color.context.sequence = Some(11),
+            6 => {
+                invalid.color.context.session_id = "f".repeat(32).parse().unwrap();
+                invalid.depth.context.session_id = invalid.color.context.session_id.clone();
+            }
+            _ => {
+                invalid.color_stamp_us += 1;
+                invalid.color.context.device_timestamp_us = Some(invalid.color_stamp_us);
+                invalid.delta_us -= 1;
+            }
+        }
+        assert!(
+            aux.publish_bound_evidence_with_timestamp_source(
+                &invalid,
+                color_ns,
+                depth_ns,
+                ros_output::TimestampSource::Global,
+            )
+            .is_err(),
+            "invalid mode {mode}"
+        );
+        aux.publish_bound_evidence_with_timestamp_source(
+            &evidence,
+            color_ns,
+            depth_ns,
+            ros_output::TimestampSource::Global,
+        )
+        .unwrap();
+    }
+    assert!(
+        aux.publish_bound_evidence_with_timestamp_source(
+            &evidence,
+            color_ns + 1,
+            depth_ns,
+            ros_output::TimestampSource::Global,
+        )
+        .is_err()
+    );
+    assert_eq!(serde_json::to_value(&evidence).unwrap(), original);
     drop(aux);
     fs::remove_dir_all(dir).unwrap();
 }

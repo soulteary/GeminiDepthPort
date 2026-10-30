@@ -44,7 +44,12 @@ def send_imu(lib,handle,n):
     mapped=us+1 if source==2 else us
     for kind in (1,2):
         values=(float(n),-float(n),n+.5) if kind==1 else (-float(n),n*2.,n+10.)
-        frame=Frame(1,c.sizeof(Frame),kind,source,mapped//1_000_000,mapped%1_000_000*1000,n,n*5000,us,mapped if source==2 else 0,values)
+        system=us if source==1 else us-5000
+        frame=Frame(1,c.sizeof(Frame),kind,source,mapped//1_000_000,mapped%1_000_000*1000,n,n*5000,system,mapped if source==2 else 0,values)
+        if source==2 and n>1:
+            bad=Frame.from_buffer_copy(frame);bad.timestamp_source=1
+            bad.stamp_sec=system//1_000_000;bad.stamp_nanosec=system%1_000_000*1000
+            assert lib.gdp_ros_imu_publish(handle,c.byref(bad))==1
         bad=Frame.from_buffer_copy(frame);bad.xyz[0]=float('nan')
         assert lib.gdp_ros_imu_publish(handle,c.byref(bad))==1
         bad=Frame.from_buffer_copy(frame);bad.timestamp_source=2;bad.global_timestamp_us=0

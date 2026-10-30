@@ -173,7 +173,7 @@ fn imu_child() {
     } else if mode == "stale" || mode == "gyro-stale" {
         std::thread::sleep(Duration::from_millis(140));
         assert!(imu.drain().is_err());
-    } else if mode != "normal" && mode != "slow" {
+    } else if mode != "normal" && mode != "slow" && mode != "equal-system" {
         let deadline = Instant::now() + Duration::from_secs(3);
         let error = loop {
             match imu.drain() {
@@ -185,7 +185,7 @@ fn imu_child() {
             }
         };
         let expected = match mode.as_str() {
-            "nan" | "regress" => "IMU_INVALID_OR_REGRESSING",
+            "nan" | "regress" | "system-regress" | "global-regress" => "IMU_INVALID_OR_REGRESSING",
             "release" => "IMU_FRAME_RELEASE_FAILED",
             _ => "IMU_CALLBACK_FAILED",
         };
@@ -201,6 +201,16 @@ fn imu_child() {
                     sample.device_timestamp_us,
                     sample.sequence * if mode == "slow" { 40000 } else { 5000 }
                 );
+                if mode == "equal-system" {
+                    assert_eq!(
+                        sample.system_timestamp_us,
+                        1_700_000_000_000_000 + ((sample.sequence - 1) / 2 * 2 + 1) * 5000
+                    );
+                    assert_eq!(
+                        sample.global_timestamp_us,
+                        Some(1_700_000_000_000_000 + sample.sequence * 5000 - 2000)
+                    );
+                }
                 counts[sample.kind.slot()] += 1;
             }
             std::thread::sleep(Duration::from_millis(2));
@@ -222,6 +232,9 @@ fn optional_imu_abi_covers_callbacks_boundedness_errors_and_cleanup() {
         ("normal", ""),
         ("reuse", ""),
         ("slow", ""),
+        ("equal-system", "GDP_MOCK_IMU_EQUAL_SYSTEM"),
+        ("system-regress", "GDP_MOCK_IMU_SYSTEM_REGRESS"),
+        ("global-regress", "GDP_MOCK_IMU_GLOBAL_REGRESS"),
         ("unsupported", "GDP_MOCK_IMU_UNSUPPORTED"),
         ("profile", "GDP_MOCK_IMU_PROFILE_ERROR"),
         ("start", "GDP_MOCK_IMU_START_ERROR"),

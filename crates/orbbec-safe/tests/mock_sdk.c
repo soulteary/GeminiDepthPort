@@ -45,7 +45,10 @@ uint32_t ob_video_frame_get_width(const obj *p,error **e){(void)p;(void)e;return
 uint32_t ob_video_frame_get_height(const obj *p,error **e){(void)p;(void)e;return 2;}
 uint64_t ob_frame_get_index(const obj *p,error **e){(void)e;if(p->stream>=4){return p->imu_sequence;}return 42;}
 uint64_t ob_frame_get_timestamp_us(const obj *p,error **e){(void)e;if(p->stream>=4){return p->imu_sequence*p->imu_period_us;}return 1234;}
-uint64_t ob_frame_get_system_timestamp_us(const obj *p,error **e){(void)e;if(p->stream>=4){return 1700000000000000ULL+p->imu_sequence*p->imu_period_us;}return 5678;}
+uint64_t ob_frame_get_system_timestamp_us(const obj *p,error **e){(void)e;if(p->stream>=4){uint64_t sequence=p->imu_sequence;
+if(getenv("GDP_MOCK_IMU_EQUAL_SYSTEM"))sequence=((sequence-1)/2)*2+1;
+if(getenv("GDP_MOCK_IMU_SYSTEM_REGRESS")&&p->imu_sequence>2)sequence=0;
+return 1700000000000000ULL+sequence*p->imu_period_us;}return 5678;}
 uint8_t *ob_frame_get_data(const obj *p,error **e){(void)p;(void)e;return bytes;}
 uint32_t ob_frame_get_data_size(const obj *p,error **e){(void)p;(void)e;return sizeof(bytes);}
 float ob_depth_frame_get_value_scale(const obj *p,error **e){(void)p;(void)e;return 0.1f;}
@@ -107,7 +110,9 @@ uint64_t ob_frame_get_global_timestamp_us(const obj *f,error **e){(void)f;if(cap
 #ifdef MOCK_GLOBAL_ZERO
 return 0;
 #else
-if(f->stream>=4){return global_enabled?1700000000000000ULL+f->imu_sequence*f->imu_period_us-2000:0;}
+if(f->stream>=4){uint64_t sequence=f->imu_sequence;
+if(getenv("GDP_MOCK_IMU_GLOBAL_REGRESS")&&sequence>2)sequence=1;
+return global_enabled?1700000000000000ULL+sequence*f->imu_period_us-2000:0;}
 return global_enabled?5000:0;
 #endif
 }

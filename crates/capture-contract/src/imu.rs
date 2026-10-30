@@ -158,7 +158,8 @@ impl ImuProgress {
             require(
                 s.sequence > index
                     && s.device_timestamp_us > device
-                    && s.system_timestamp_us > system
+                    // Consecutive samples can share an SDK host receipt timestamp.
+                    && s.system_timestamp_us >= system
                     && match (global, s.global_timestamp_us) {
                         (Some(a), Some(b)) => b > a,
                         (None, _) => true,

@@ -44,7 +44,12 @@ def main():
                 micros = 1_700_000_000_000_000 + sequence * 5000
                 source = 2 if sequence % 2 else 1
                 mapped = micros + 1 if source == 2 else micros
-                frame = Frame(1, c.sizeof(Frame), kind, source, mapped // 1_000_000, mapped % 1_000_000 * 1000, sequence, sequence * 5000, micros, mapped if source == 2 else 0, (1., 2., 3.))
+                system = micros if source == 1 else micros - 5000
+                frame = Frame(1, c.sizeof(Frame), kind, source, mapped // 1_000_000, mapped % 1_000_000 * 1000, sequence, sequence * 5000, system, mapped if source == 2 else 0, (1., 2., 3.))
+                if source == 2 and sequence > 1:
+                    bad = Frame.from_buffer_copy(frame); bad.timestamp_source = 1
+                    bad.stamp_sec = system // 1_000_000; bad.stamp_nanosec = system % 1_000_000 * 1000
+                    assert lib.gdp_ros_imu_publish(handle, c.byref(bad)) == 1
                 assert lib.gdp_ros_imu_publish(handle, c.byref(frame)) == 0
             rclpy.spin_once(node, timeout_sec=0.03)
         assert len(received) >= 10

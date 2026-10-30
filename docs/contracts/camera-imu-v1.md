@@ -44,7 +44,11 @@ system/global 消息映射。IMU 使用同一消息时钟策略；global 不可�
 视频仍通过原有 Pipeline 轮询。IMU 使用同一设备的两个 sensor 回调，不加入 RGB-D
 frameset，不等待颜色/深度配对，不插值、不融合、不改变图像配对或硬件同步设置。
 每个回调复制有限的 XYZ、序号与设备/system/global 时间戳后释放 SDK frame 引用。
-同类样本的序号及各个可用时钟必须严格前进，数值必须有限；SDK 原始序号保留用于核对。
+同类样本的序号、device 及可用 global 时钟必须严格前进，system 主机接收时间允许相等但不能倒退：
+SDK 主机接收时间可以被多个独立 IMU 样本共享；这不证明 USB 包边界。所有数值必须有限；SDK 原始序号和时间戳保留用于核对，
+不会为了通过检查而插值、去重或递增 system 值。该规则由采集、原生录制写入和独立读取共同使用。
+ROS 最终选用的 header 时间戳仍须严格前进；允许 system 元数据相等不表示 system 作为最终
+ROS header 的模式也支持重复时间戳。此次兼容修正面向 global ROS 时间映射。
 这不证明设备在回调前没有丢样，也不承诺跨传感器同时曝光。
 
 SDK 回调只操作有界内存队列。采集线程每次 SDK wait 前后排空它，ROS 发布发生在
@@ -117,7 +121,8 @@ SDK 回调和 ROS 发布器在创建时分别构建不可变的已验证 IMU 配
 无效时，在创建写入器/读回器时失败。禁用 IMU 时不要求 acquisition。
 
 缓存仅省去固定配置的重复校验和反序列化。每条样本仍检查有限数值、绑定 frame_id、
-时钟范围、序号和各来源时钟严格递增；选择 global 时仍要求每条样本具有 global 时间戳。
+时钟范围、序号与 device/可用 global 严格递增，以及 system 不倒退；选择 global 时仍要求
+每条样本具有 global 时间戳。最终 ROS header 仍严格递增。
 两轮实际读回、索引/图像哈希、检查点与崩溃恢复规则不变。
 
 - `pipeline_timing.sdk_wait_call`：仅 `pipeline.wait` 调用，包括超时和错误；不含 IMU

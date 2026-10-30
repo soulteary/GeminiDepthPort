@@ -234,14 +234,36 @@ impl RosAuxPublisher {
     }
     /// Separate additive topic `<pair_metadata_topic>/evidence`; legacy v1 is unchanged.
     /// Call only after both Image submissions and the matching legacy pair submission.
+    /// Compatibility entry point: Image stamps must map to SDK system timestamps.
     pub fn publish_bound_evidence(
         &mut self,
         evidence: &frame_core::BoundPairEvidence,
         color_ns: u64,
         depth_ns: u64,
     ) -> Result<()> {
+        self.publish_bound_evidence_with_timestamp_source(
+            evidence,
+            color_ns,
+            depth_ns,
+            TimestampSource::System,
+        )
+    }
+    /// Bind the evidence to the same explicit clock used by the submitted Images.
+    /// Global Image stamps currently require device-clock pair metadata; the
+    /// legacy system-clock pair wire contract still binds its stamps to system.
+    pub fn publish_bound_evidence_with_timestamp_source(
+        &mut self,
+        evidence: &frame_core::BoundPairEvidence,
+        color_ns: u64,
+        depth_ns: u64,
+        source: TimestampSource,
+    ) -> Result<()> {
         evidence.validate()?;
         let (pair, cs, ds) = self.last.context("legacy pair submission required")?;
+        ensure!(
+            source != TimestampSource::Global || pair.clock == PairClock::Device,
+            "global Image evidence requires device-clock pair metadata"
+        );
         ensure!(
             pair.pair_sequence == evidence.pair_sequence
                 && cs == color_ns
@@ -260,19 +282,19 @@ impl RosAuxPublisher {
                         .context("depth sequence required")?,
             "pair evidence differs from submitted images"
         );
+        let (color_us, depth_us) = match source {
+            TimestampSource::System => (
+                evidence.color.context.system_timestamp_us,
+                evidence.depth.context.system_timestamp_us,
+            ),
+            TimestampSource::Global => (
+                evidence.color.context.global_timestamp_us,
+                evidence.depth.context.global_timestamp_us,
+            ),
+        };
         ensure!(
-            evidence
-                .color
-                .context
-                .system_timestamp_us
-                .and_then(|s| s.checked_mul(1000))
-                == Some(color_ns)
-                && evidence
-                    .depth
-                    .context
-                    .system_timestamp_us
-                    .and_then(|s| s.checked_mul(1000))
-                    == Some(depth_ns),
+            color_us.and_then(|s| s.checked_mul(1000)) == Some(color_ns)
+                && depth_us.and_then(|s| s.checked_mul(1000)) == Some(depth_ns),
             "ROS source mapping differs"
         );
         ensure!(

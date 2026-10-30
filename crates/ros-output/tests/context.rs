@@ -14,7 +14,7 @@ fn context_child() {
         assert!(opened.unwrap().is_none());
         return;
     }
-    if mode != "normal" {
+    if mode != "normal" && mode != "global" {
         assert!(opened.is_err());
         return;
     }
@@ -33,7 +33,8 @@ fn context_child() {
         calibration,
     )
     .unwrap();
-    let mut imu = ImuPublisher::load_shared(&context, "/camera", imu_config(), false).unwrap();
+    let mut imu =
+        ImuPublisher::load_shared(&context, "/camera", imu_config(), mode == "global").unwrap();
     drop(context);
     let events = PathBuf::from(std::env::var_os("GDP_ROS_MOCK_EVENTS").unwrap());
     assert!(
@@ -42,16 +43,36 @@ fn context_child() {
             .contains("context-destroy")
     );
     drop(image);
-    let sample = ImuSample {
+    let mut sample = ImuSample {
         kind: ImuKind::Accel,
         sequence: 1,
         device_timestamp_us: 100,
         system_timestamp_us: 1_700_000_000_000_000,
-        global_timestamp_us: None,
+        global_timestamp_us: (mode == "global").then_some(1_700_000_000_001_000),
         xyz: [1., 2., 3.],
         frame_id: "accel_frame".into(),
     };
     imu.publish(&sample).unwrap();
+    if mode == "global" {
+        sample.sequence += 1;
+        sample.device_timestamp_us += 5000;
+        sample.global_timestamp_us = Some(sample.global_timestamp_us.unwrap() + 5000);
+        imu.publish(&sample).unwrap();
+        let mut valid = sample.clone();
+        valid.sequence += 1;
+        valid.device_timestamp_us += 5000;
+        valid.global_timestamp_us = Some(valid.global_timestamp_us.unwrap() + 5000);
+        for field in 0..3 {
+            let mut bad = valid.clone();
+            match field {
+                0 => bad.device_timestamp_us = sample.device_timestamp_us,
+                1 => bad.global_timestamp_us = sample.global_timestamp_us,
+                _ => bad.system_timestamp_us -= 1,
+            }
+            assert!(imu.publish(&bad).is_err());
+        }
+        imu.publish(&valid).unwrap();
+    }
     assert!(
         !fs::read_to_string(&events)
             .unwrap()
@@ -70,6 +91,7 @@ fn explicit_context_extension_preserves_legacy_and_cleans_failed_creations() {
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     for (mode, flag, env) in [
         ("normal", "", ""),
+        ("global", "", ""),
         ("legacy", "MOCK_NO_CONTEXT", ""),
         ("partial", "MOCK_PARTIAL_CONTEXT", ""),
         ("bad-abi", "", "GDP_ROS_CONTEXT_BAD_ABI"),

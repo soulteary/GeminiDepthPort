@@ -38,6 +38,14 @@ fn imu_bridge_child() {
     assert!(publisher.publish(&invalid).is_err());
     publisher.publish(&sample).unwrap();
     assert!(publisher.publish(&sample).is_err());
+    if mode == "global" {
+        // Host receipt metadata can repeat while the chosen global ROS stamp
+        // and the actual source sample identity continue to advance.
+        sample.sequence += 1;
+        sample.device_timestamp_us += 5_000;
+        sample.global_timestamp_us = Some(sample.global_timestamp_us.unwrap() + 5_000);
+        publisher.publish(&sample).unwrap();
+    }
     sample.kind = ImuKind::Gyro;
     sample.frame_id = c.gyro_frame_id;
     publisher.publish(&sample).unwrap();

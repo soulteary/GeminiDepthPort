@@ -1256,6 +1256,65 @@ fn imu_samples(n: u64) -> Vec<capture_contract::imu::ImuSample> {
         .collect()
 }
 #[test]
+fn imu_equal_system_metadata_survives_v2_v3_and_checkpoint_readback() {
+    for mode in ["v2", "v3", "pipeline"] {
+        let (snapshot, pair, pixels, _) = imu_fixture();
+        let root = tempfile::tempdir().unwrap();
+        let mut writer = if mode == "v2" {
+            RawRecordingWriter::begin(root.path(), "capture", snapshot).unwrap()
+        } else {
+            RawRecordingWriter::begin_chunked(root.path(), "capture", snapshot, 2_000_000).unwrap()
+        };
+        if mode == "pipeline" {
+            writer.enable_checkpoint_pipeline().unwrap();
+        }
+        let diagnostics = writer.diagnostics();
+        let mut expected = Vec::new();
+        for n in 1..=35 {
+            let mut samples = imu_samples(n);
+            for sample in &mut samples {
+                // Includes equality across the 32/33-pair chunk boundary.
+                sample.system_timestamp_us = 1_700_000_000_000_000 + (n / 2) * 10_000;
+                sample.global_timestamp_us = Some(1_700_000_000_000_000 + n * 5000);
+            }
+            writer
+                .append_with_imu(
+                    &pair_at(&pair, n),
+                    &[1, 2, 3, 4],
+                    &pixels,
+                    StorageEndian::Little,
+                    &samples,
+                )
+                .unwrap();
+            expected.push(samples);
+        }
+        if mode != "v2" {
+            writer.checkpoint().unwrap();
+            let prefix = read_all(&root.path().join("capture.partial"), true);
+            assert_eq!(prefix.len(), expected.len());
+            for (frame, samples) in prefix.iter().zip(&expected) {
+                assert_eq!(&frame.record.imu, samples);
+            }
+        }
+        let path = writer.finish().unwrap();
+        let rounds = if mode == "v2" { 1 } else { 2 };
+        assert_eq!(
+            diagnostics.report()["validation_imu_samples"],
+            35 * 2 * rounds
+        );
+        assert_eq!(
+            diagnostics.report()["validation_image_bytes"],
+            35 * (4 + pixels.len()) * rounds
+        );
+        let frames = read_all(&path, false);
+        assert_eq!(frames.len(), expected.len());
+        for (frame, samples) in frames.iter().zip(&expected) {
+            assert_eq!(&frame.record.imu, samples);
+        }
+    }
+}
+
+#[test]
 fn imu_batches_are_hashed_verified_twice_and_recovered_with_both_v3_checkpoint_modes() {
     for pipeline in [false, true] {
         let (snapshot, pair, pixels, _) = imu_fixture();

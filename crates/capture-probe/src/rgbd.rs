@@ -788,8 +788,15 @@ pub(crate) fn drain(
                 ros.aux.publish_pair(&pair.evidence, color_ns, depth_ns)?;
                 metrics.publish_calls += 1;
                 if let Some(evidence) = &item.bound_evidence {
-                    ros.aux
-                        .publish_bound_evidence(evidence, color_ns, depth_ns)?;
+                    ros.aux.publish_bound_evidence_with_timestamp_source(
+                        evidence,
+                        color_ns,
+                        depth_ns,
+                        match ros.timestamp {
+                            MessageTimestamp::System => ros_output::TimestampSource::System,
+                            MessageTimestamp::Global => ros_output::TimestampSource::Global,
+                        },
+                    )?;
                     metrics.publish_calls += 1;
                 }
                 Ok(())
