@@ -2510,8 +2510,10 @@ fn status_writer_thread_exhaustion_fails_before_sdk_access() {
     assert!(!events.lines().any(|line| line == "start"));
 }
 
+// Functional tests allow shared-runner snapshot fsync stalls. SDK overflow
+// tests and the explicit performance driver retain their independent 200 Hz load.
 fn imu_policy() -> Value {
-    json!({"enabled":true,"accel_rate_hz":200,"gyro_rate_hz":200,"accel_range_g":4,"gyro_range_dps":1000,"queue_capacity":128,"stale_timeout_ms":500,"accel_frame_id":"accel_frame","gyro_frame_id":"gyro_frame"})
+    json!({"enabled":true,"accel_rate_hz":25,"gyro_rate_hz":25,"accel_range_g":4,"gyro_range_dps":1000,"queue_capacity":128,"stale_timeout_ms":500,"accel_frame_id":"accel_frame","gyro_frame_id":"gyro_frame"})
 }
 fn enable_imu(f: &Fixture) {
     acquisition(f, "strict-rgbd", false);
@@ -2524,7 +2526,7 @@ fn enable_imu(f: &Fixture) {
 #[test]
 fn imu_service_publishes_both_streams_and_preserves_samples_in_native_recording() {
     let f = fixture();
-    configure_runtime_quality(&f, 35, 2_000_000);
+    configure_runtime_quality(&f, 80, 2_000_000);
     enable_imu(&f);
     let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
     config["startup_discovery_seconds"] = json!(0.05);
@@ -2701,6 +2703,8 @@ fn imu_capture_ab_benchmark() {
                 let mut value: Value =
                     serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
                 value["imu"]["enabled"] = json!(enabled);
+                value["imu"]["accel_rate_hz"] = json!(200);
+                value["imu"]["gyro_rate_hz"] = json!(200);
                 fs::write(&f.config, value.to_string()).unwrap();
                 let mut child = Command::new(service)
                     .args(["--config", f.config.to_str().unwrap()])
@@ -2790,11 +2794,6 @@ fn imu_is_published_even_while_video_framesets_are_incomplete() {
     let f = fixture();
     enable_imu(&f);
     acquisition(&f, "complete", false);
-    // Test stream independence, not 200 Hz backlog during shared-runner fsync.
-    let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
-    config["imu"]["accel_rate_hz"] = json!(25);
-    config["imu"]["gyro_rate_hz"] = json!(25);
-    fs::write(&f.config, config.to_string()).unwrap();
     let mut child = acquisition_child(&f, &[("GDP_MOCK_MISSING_COLOR", "1")]);
     let status = wait_status(&f, &mut child, |v| {
         v["unpaired_images_published"].as_u64().unwrap_or(0) >= 5 && v["imu"]["ready"] == true
