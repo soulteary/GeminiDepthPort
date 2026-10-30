@@ -95,3 +95,9 @@ geminidepthport validate --file inventory.v2.example.json --draft
 
 真实 inventory、绑定映射、迁移备份、标定及运行快照均属于私有运行资料。
 档位确认只绑定当时实际消息检查，不认证物理精度或硬件同步；验收见[验证索引](../validation/README.md)。
+
+## Rust 相机 IMU
+
+可在单台 `cameras[].imu` 显式配置加速度计/陀螺仪的采样率、量程、坐标系和有界队列。
+省略则关闭；启用会查询实际设备能力，不对所有型号承诺支持。配置、ROS 话题、录制
+完整性与验证命令见 [IMU 契约](../contracts/camera-imu-v1.md)。

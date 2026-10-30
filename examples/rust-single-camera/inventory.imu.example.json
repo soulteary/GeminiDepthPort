@@ -1,0 +1,83 @@
+{
+  "schema_version": 2,
+  "image": "local/geminidepthport-rust:example",
+  "upstream_commit": "c153462518ad674650bafa4464fda72c27ab797a",
+  "ros_domain_id": 42,
+  "startup_timeout_seconds": 150,
+  "cameras": [
+    {
+      "name": "camera_a",
+      "profile": "gemini_335l",
+      "namespace": "/camera_a",
+      "frame_prefix": "camera_a",
+      "serial_number": "",
+      "enabled": false,
+      "profiles_verified": false,
+      "verification": null,
+      "parameters": {
+        "enable_color": true,
+        "enable_depth": true,
+        "color_format": "YUYV",
+        "depth_format": "Y16",
+        "depth_registration": false,
+        "color_qos": "DEFAULT",
+        "color_camera_info_qos": "DEFAULT",
+        "depth_qos": "DEFAULT",
+        "depth_camera_info_qos": "DEFAULT",
+        "color_width": 640,
+        "color_height": 480,
+        "color_fps": 30,
+        "depth_width": 640,
+        "depth_height": 480,
+        "depth_fps": 30
+      },
+      "health": {
+        "discovery_seconds": 8,
+        "sample_seconds": 8,
+        "freshness_seconds": 1,
+        "min_fps_ratio": 0.8
+      },
+      "timestamp_source": "global",
+      "calibration_revision": "",
+      "depth_unit": "mm",
+      "imu": {
+        "enabled": true,
+        "accel_rate_hz": 200,
+        "gyro_rate_hz": 200,
+        "accel_range_g": 4,
+        "gyro_range_dps": 1000,
+        "queue_capacity": 128,
+        "stale_timeout_ms": 500,
+        "accel_frame_id": "camera_a_accel_frame",
+        "gyro_frame_id": "camera_a_gyro_frame"
+      }
+    }
+  ],
+  "communication": {
+    "profile": "humble-fastdds-local-udp-v1"
+  },
+  "capture_backend": "rust",
+  "rust_capture": {
+    "acquisition": {
+      "preset": "complete"
+    },
+    "depth_unit_policy": "normalize-mm",
+    "pairing": {
+      "clock": "device",
+      "max_delta_us": 20000
+    },
+    "poll_ms": 100,
+    "capacity": 4,
+    "startup_discovery_seconds": 2,
+    "service": {
+      "idle_timeout_ms": 2000,
+      "startup_timeout_ms": 30000,
+      "heartbeat_ms": 500,
+      "heartbeat_timeout_ms": 10000,
+      "max_restarts": 3,
+      "restart_backoff_ms": 1000,
+      "shutdown_timeout_ms": 5000,
+      "ready_min_pairs": 5
+    }
+  }
+}

@@ -180,3 +180,14 @@ successful validation passes; a complete V3 job has twice its image payload.
 are runtime diagnostics, not recording content or durability acknowledgements.
 See [release comparison](../validation/reports/streaming-verification-ab-20261029.md)
 for throughput, append P99, verification time, peak RSS and reproduction details.
+
+## Optional raw IMU samples
+
+Explicit camera IMU support adds an optional nonempty `imu` array to each index
+record in both V2 and V3. Samples retain independent source indices/timestamps
+and sensor frame IDs; the receive batch does not imply RGB-D exposure pairing.
+The index hash covers them, checkpoint validators carry per-sensor progress,
+and final validation still reads the entire recording again. Recovery ignores
+IMU samples outside the acknowledged index prefix. Legacy empty records keep
+their serialized form; strict older readers reject the new field. See
+[camera IMU v1](camera-imu-v1.md) for bounds, configuration and ROSbag2 checks.

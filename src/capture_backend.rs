@@ -58,6 +58,47 @@ pub fn validate(d: &Value) -> Result<()> {
         "RUST_CAPTURE_POLICY",
         "Explicit complete Rust capture policy required",
     )?;
+    let mut imu_frames = std::collections::BTreeSet::new();
+    let image_frames: std::collections::BTreeSet<String> = d["cameras"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|c| {
+            [
+                format!("{}_color_optical_frame", text(&c["frame_prefix"])),
+                format!("{}_depth_optical_frame", text(&c["frame_prefix"])),
+            ]
+        })
+        .collect();
+    for c in d["cameras"].as_array().into_iter().flatten() {
+        if let Some(v) = c.get("imu") {
+            let imu: capture_contract::imu::ImuConfig = serde_json::from_value(v.clone())?;
+            imu.validate()?;
+            for frame in [&imu.accel_frame_id, &imu.gyro_frame_id] {
+                require(
+                    !imu.enabled
+                        || (!image_frames.contains(frame) && imu_frames.insert(frame.clone())),
+                    "IMU_FRAME",
+                    "IMU frames must be unique across cameras and image streams",
+                )?;
+            }
+
+            require(
+                !imu.enabled || p.get("acquisition").is_some(),
+                "IMU_CLOCK",
+                "IMU requires explicit acquisition clock",
+            )?;
+            require(
+                !imu.enabled
+                    || (imu.accel_rate_hz + imu.gyro_rate_hz) as u64
+                        * p["poll_ms"].as_u64().unwrap_or(u64::MAX).min(60000)
+                        * 2
+                        <= imu.queue_capacity as u64 * 1000,
+                "IMU_QUEUE",
+                "IMU queue needs two poll periods",
+            )?;
+        }
+    }
     let acquisition = p
         .get("acquisition")
         .map(|value| {
@@ -306,6 +347,9 @@ pub fn service_config(d: &Value, c: &Value, generation: &str, runtime: &Value) -
         "max_zero_fraction":1.0,
         "action":"report-only"
     });
+    if let Some(imu) = c.get("imu") {
+        value["imu"] = imu.clone();
+    }
     let mut rules = serde_json::Map::new();
     for code in [
         "STREAM_STALE",
@@ -469,5 +513,58 @@ mod quality_generation_tests {
             assert_eq!(rule["recover_after"], 3);
         }
         assert_eq!(config["service"]["max_restarts"], 2);
+    }
+}
+
+#[cfg(test)]
+mod imu_config_tests {
+    use super::*;
+    fn policy() -> Value {
+        json!({"enabled":true,"accel_rate_hz":200,"gyro_rate_hz":200,"accel_range_g":4,"gyro_range_dps":1000,"queue_capacity":128,"stale_timeout_ms":500,"accel_frame_id":"camera_a_accel_frame","gyro_frame_id":"camera_a_gyro_frame"})
+    }
+    #[test]
+    fn camera_imu_is_validated_rendered_and_invalidates_preview_evidence() {
+        let mut official: Value =
+            serde_json::from_str(include_str!("../inventory.v2.example.json")).unwrap();
+        for invalid in [Value::Null, json!("camera"), json!(1), json!([])] {
+            official["cameras"][0] = invalid;
+            assert!(crate::config::validate(&official, true).is_err());
+        }
+        let mut inventory: Value = serde_json::from_str(include_str!(
+            "../examples/rust-single-camera/inventory.json"
+        ))
+        .unwrap();
+        let previous = preview_revision(&inventory, &inventory["cameras"][0]);
+        inventory["cameras"][0]["imu"] = policy();
+        crate::config::validate(&inventory, true).unwrap();
+        assert_ne!(
+            preview_revision(&inventory, &inventory["cameras"][0]),
+            previous
+        );
+        let rendered = service_config(
+            &inventory,
+            &inventory["cameras"][0],
+            &"a".repeat(32),
+            &json!({"manifest":{}}),
+        );
+        assert_eq!(rendered["imu"], policy());
+        let mut other = inventory["cameras"][0].clone();
+        other["name"] = json!("camera_b");
+        other["namespace"] = json!("/camera_b");
+        other["frame_prefix"] = json!("camera_b");
+        inventory["cameras"].as_array_mut().unwrap().push(other);
+        assert!(validate(&inventory).is_err());
+        inventory["cameras"].as_array_mut().unwrap().pop();
+        inventory["cameras"][0]["imu"]["accel_frame_id"] = json!("camera_a_color_optical_frame");
+        assert!(validate(&inventory).is_err());
+        inventory["cameras"][0]["imu"] = policy();
+        inventory["rust_capture"]["poll_ms"] = json!(1000);
+        assert!(validate(&inventory).is_err());
+        inventory["rust_capture"]["poll_ms"] = json!(100);
+        inventory["rust_capture"]
+            .as_object_mut()
+            .unwrap()
+            .remove("acquisition");
+        assert!(validate(&inventory).is_err());
     }
 }

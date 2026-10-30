@@ -11,6 +11,7 @@ pub use acquisition::{
     ResolvedAcquisition, UnpairedPolicy,
 };
 pub mod geometry;
+pub mod imu;
 pub mod recording;
 pub mod snapshot;
 #[cfg(unix)]

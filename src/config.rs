@@ -151,12 +151,27 @@ fn v2(d: &Value, draft: bool) -> Result<()> {
     for c in d["cameras"].as_array().unwrap() {
         require(
             fields(
-                c,
+                &{
+                    let mut camera = c.clone();
+                    if let Some(fields) = camera.as_object_mut() {
+                        fields.remove("imu");
+                    }
+                    camera
+                },
                 "name profile namespace frame_prefix serial_number enabled profiles_verified verification parameters health timestamp_source calibration_revision depth_unit",
             ),
             "CAMERA_FIELDS",
             "Unexpected or missing camera fields",
         )?;
+        if let Some(imu) = c.get("imu") {
+            let imu: capture_contract::imu::ImuConfig = serde_json::from_value(imu.clone())?;
+            imu.validate()?;
+            require(
+                !imu.enabled || crate::capture_backend::selected(d) == "rust",
+                "IMU_BACKEND",
+                "Native IMU requires explicit Rust backend",
+            )?;
+        }
         let name = text(&c["name"]);
         require(
             matches(r"^[a-z][a-z0-9_]{0,31}$", name) && names.insert(name),

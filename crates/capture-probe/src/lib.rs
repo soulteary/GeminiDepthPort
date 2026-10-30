@@ -5,3 +5,5 @@ mod capture_snapshot;
 mod raw_recording;
 
 mod usb_recovery;
+
+mod imu;

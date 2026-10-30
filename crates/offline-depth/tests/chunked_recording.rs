@@ -1176,3 +1176,148 @@ fn pending_checkpoint_write_sync_and_rename_failures_never_acknowledge_new_prefi
         io_faults::assert_injected(&marker, operation);
     }
 }
+
+fn imu_fixture() -> (
+    SnapshotEnvelope,
+    BoundPairEvidence,
+    Vec<u8>,
+    capture_contract::imu::ImuConfig,
+) {
+    let (snapshot, mut pair, pixels) = fixture();
+    let mut content = snapshot.content;
+    let c:capture_contract::imu::ImuConfig=serde_json::from_value(json!({"enabled":true,"accel_rate_hz":200,"gyro_rate_hz":200,"accel_range_g":4,"gyro_range_dps":1000,"queue_capacity":128,"stale_timeout_ms":500,"accel_frame_id":"accel_frame","gyro_frame_id":"gyro_frame"})).unwrap();
+    content.configuration["imu"] = serde_json::to_value(&c).unwrap();
+    content.configuration["acquisition"] =
+        json!({"preset":"strict-rgbd","advanced":{"message_timestamp":"system"}});
+    content.binding.configuration_id = capture_contract::ConfigurationId::parse(
+        capture_contract::content_digest(
+            capture_contract::ContentKind::Configuration,
+            &serde_json::to_vec(&content.configuration).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let snapshot = content.seal().unwrap();
+    for f in [&mut pair.color, &mut pair.depth] {
+        f.context.configuration_id = snapshot.content.binding.configuration_id.clone();
+        f.context.snapshot_id = snapshot.snapshot_id.clone();
+    }
+    (snapshot, pair, pixels, c)
+}
+fn imu_samples(n: u64) -> Vec<capture_contract::imu::ImuSample> {
+    use capture_contract::imu::*;
+    [ImuKind::Accel, ImuKind::Gyro]
+        .into_iter()
+        .map(|kind| ImuSample {
+            kind,
+            sequence: n,
+            device_timestamp_us: n * 5000,
+            system_timestamp_us: 1_700_000_000_000_000 + n * 5000,
+            global_timestamp_us: None,
+            xyz: [1., 2., 3.],
+            frame_id: if kind == ImuKind::Accel {
+                "accel_frame"
+            } else {
+                "gyro_frame"
+            }
+            .into(),
+        })
+        .collect()
+}
+#[test]
+fn imu_batches_are_hashed_verified_twice_and_recovered_with_both_v3_checkpoint_modes() {
+    for pipeline in [false, true] {
+        let (snapshot, pair, pixels, _) = imu_fixture();
+        let root = tempfile::tempdir().unwrap();
+        let mut w =
+            RawRecordingWriter::begin_chunked(root.path(), "capture", snapshot, 2_000_000).unwrap();
+        if pipeline {
+            w.enable_checkpoint_pipeline().unwrap();
+        }
+        let diagnostics = w.diagnostics();
+        for n in 1..=35 {
+            w.append_with_imu(
+                &pair_at(&pair, n),
+                &[1, 2, 3, 4],
+                &pixels,
+                StorageEndian::Little,
+                &imu_samples(n),
+            )
+            .unwrap();
+        }
+        w.checkpoint().unwrap();
+        let recovered = read_all(&root.path().join("capture.partial"), true);
+        assert_eq!(recovered.len(), 35);
+        for (i, f) in recovered.iter().enumerate() {
+            assert_eq!(f.record.imu, imu_samples(i as u64 + 1));
+        }
+        let path = w.finish().unwrap();
+        assert_eq!(diagnostics.report()["validation_imu_samples"], 140);
+        assert_eq!(read_all(&path, false).len(), 35);
+        let index = path.join("records.jsonl");
+        let mut bytes = fs::read(&index).unwrap();
+        let p = bytes.windows(3).position(|b| b == b"1.0").unwrap();
+        bytes[p] = b'2';
+        fs::write(index, bytes).unwrap();
+        let mut source = RecordingDirectorySource::open(&path).unwrap();
+        let result = (|| -> offline_depth::Result<()> {
+            while source.validate_next()? {}
+            Ok(())
+        })();
+        assert!(result.is_err());
+    }
+}
+#[test]
+fn imu_recording_rejects_unbound_missing_and_regressing_samples_and_preserves_legacy_v2() {
+    let (snapshot, pair, pixels, _) = imu_fixture();
+    let root = tempfile::tempdir().unwrap();
+    let mut w = RawRecordingWriter::begin(root.path(), "legacy", snapshot.clone()).unwrap();
+    w.append_with_imu(
+        &pair_at(&pair, 1),
+        &[1, 2, 3, 4],
+        &pixels,
+        StorageEndian::Little,
+        &imu_samples(1),
+    )
+    .unwrap();
+    let path = w.finish().unwrap();
+    assert_eq!(read_all(&path, false)[0].record.imu, imu_samples(1));
+    let mut w =
+        RawRecordingWriter::begin_chunked(root.path(), "bad", snapshot.clone(), 1_000_000).unwrap();
+    w.append_with_imu(
+        &pair_at(&pair, 1),
+        &[1, 2, 3, 4],
+        &pixels,
+        StorageEndian::Little,
+        &imu_samples(1),
+    )
+    .unwrap();
+    assert!(
+        w.append_with_imu(
+            &pair_at(&pair, 2),
+            &[1, 2, 3, 4],
+            &pixels,
+            StorageEndian::Little,
+            &imu_samples(1)
+        )
+        .is_err()
+    );
+    assert!(w.finish().is_err());
+    let mut w =
+        RawRecordingWriter::begin_chunked(root.path(), "missing", snapshot, 1_000_000).unwrap();
+    append(&mut w, &pair, &pixels, 1);
+    assert!(w.finish().is_err());
+    let (snapshot, pair, pixels) = fixture();
+    let mut w =
+        RawRecordingWriter::begin_chunked(root.path(), "unbound", snapshot, 1_000_000).unwrap();
+    assert!(
+        w.append_with_imu(
+            &pair,
+            &[1, 2, 3, 4],
+            &pixels,
+            StorageEndian::Little,
+            &imu_samples(1)
+        )
+        .is_err()
+    );
+}

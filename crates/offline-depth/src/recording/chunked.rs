@@ -41,6 +41,7 @@ impl Drop for Chunked {
     }
 }
 struct VerifiedPrefix {
+    imu: ImuProgress,
     count: u64,
     index_bytes: u64,
     digest: ring::digest::Context,
@@ -576,11 +577,13 @@ fn verify_checkpoint(
             source.seen = prefix.count;
             source.digest = prefix.digest.clone();
             source.previous = prefix.previous.clone();
+            source.imu_progress = prefix.imu.clone();
             source.chunk_position = prefix.position;
         }
         while source.validate_next()? {}
         diagnostics.verified(&source);
         Ok(VerifiedPrefix {
+            imu: source.imu_progress,
             count: source.seen,
             index_bytes: checkpoint.index_bytes,
             digest: source.digest,

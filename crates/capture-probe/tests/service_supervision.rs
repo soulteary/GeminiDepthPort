@@ -2495,3 +2495,270 @@ fn status_writer_thread_exhaustion_fails_before_sdk_access() {
     let events = fs::read_to_string(&f.events).unwrap_or_default();
     assert!(!events.lines().any(|line| line == "start"));
 }
+
+fn imu_policy() -> Value {
+    json!({"enabled":true,"accel_rate_hz":200,"gyro_rate_hz":200,"accel_range_g":4,"gyro_range_dps":1000,"queue_capacity":128,"stale_timeout_ms":500,"accel_frame_id":"accel_frame","gyro_frame_id":"gyro_frame"})
+}
+fn enable_imu(f: &Fixture) {
+    acquisition(f, "strict-rgbd", false);
+    let mut v: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    v["imu"] = imu_policy();
+    v["service"]["idle_timeout_ms"] = json!(3000);
+    v["service"]["max_restarts"] = json!(0);
+    fs::write(&f.config, v.to_string()).unwrap();
+}
+#[test]
+fn imu_service_publishes_both_streams_and_preserves_samples_in_native_recording() {
+    let f = fixture();
+    configure_runtime_quality(&f, 35, 2_000_000);
+    enable_imu(&f);
+    let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    config["startup_discovery_seconds"] = json!(0.05);
+    fs::write(&f.config, config.to_string()).unwrap();
+    let mut child = launch(&f);
+    let done = wait_status(&f, &mut child, |v| {
+        v["ready"] == true && v["raw_recording"]["state"] == "complete"
+    });
+    assert_eq!(done["imu"]["ready"], true);
+    assert!(done["imu"]["startup_samples_excluded"].as_u64().unwrap() > 0);
+    assert!(done["imu"]["published"][0].as_u64().unwrap() > 0);
+    assert!(done["imu"]["published"][1].as_u64().unwrap() > 0);
+    let path = Path::new(done["raw_recording"]["job_path"].as_str().unwrap());
+    let mut source = offline_depth::recording::RecordingDirectorySource::open(path).unwrap();
+    let mut samples = 0;
+    while let Some(frame) = source.next_frame().unwrap() {
+        samples += frame.record.imu.len();
+    }
+    assert!(samples > 20);
+    assert_eq!(
+        done["raw_recording"]["disk_stages"]["validation_imu_samples"],
+        samples * 2
+    );
+    assert_eq!(done["raw_recording"]["imu_samples_submitted"], samples);
+    stop(&mut child);
+    let events = fs::read_to_string(&f.events).unwrap();
+    assert!(events.contains("imu-accel-publish"));
+    assert!(events.contains("imu-gyro-publish"));
+    assert_eq!(events.lines().filter(|l| *l == "imu-stop").count(), 2);
+}
+#[test]
+fn requested_imu_failures_are_terminal_and_never_complete_a_native_recording() {
+    for fault in [
+        "GDP_MOCK_IMU_UNSUPPORTED",
+        "GDP_MOCK_IMU_PROFILE_ERROR",
+        "GDP_MOCK_IMU_START_ERROR",
+        "GDP_MOCK_IMU_NAN",
+        "GDP_MOCK_IMU_REGRESS",
+        "GDP_MOCK_IMU_GYRO_STALL",
+        "GDP_ROS_IMU_PUBLISH_ERROR",
+    ] {
+        let f = fixture();
+        configure_runtime_quality(&f, 1000, 10_000_000);
+        enable_imu(&f);
+        let mut value: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+        value["imu"]["stale_timeout_ms"] = json!(100);
+        fs::write(&f.config, value.to_string()).unwrap();
+        let mut child = acquisition_child(&f, &[(fault, "1")]);
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while child.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "{fault}");
+            thread::sleep(Duration::from_millis(5));
+        }
+        let state = status(&f).unwrap();
+        assert_eq!(state["ready"], false, "{fault}: {state}");
+        assert_ne!(state["raw_recording"]["state"], "complete");
+        assert!(
+            !Path::new(state["raw_recording"]["job_path"].as_str().unwrap())
+                .join("COMPLETE")
+                .exists()
+        );
+    }
+}
+
+fn large_imu_benchmark_fixture() -> Fixture {
+    let f = fixture();
+    let path = f.root.join("mock-sdk.c");
+    let mut source = fs::read_to_string(&path).unwrap();
+    replace(
+        &mut source,
+        "static unsigned char bytes[] = {16,128,32,128,64,90,80,240};",
+        "static unsigned char bytes[640*400*2];\n__attribute__((constructor)) static void fill_pixels(void){for(size_t i=0;i<sizeof(bytes);i+=2){bytes[i]=10;bytes[i+1]=0;}} ",
+    );
+    replace(
+        &mut source,
+        "w!=2||h!=2||fps!=30",
+        "w!=640||h!=400||fps!=30",
+    );
+    replace(
+        &mut source,
+        "ob_video_frame_get_width(const obj *p,error **e){(void)p;(void)e;return getenv(\"GDP_MOCK_BAD_WIDTH\")&&fault_active()?3:2;}",
+        "ob_video_frame_get_width(const obj *p,error **e){(void)p;(void)e;return 640;}",
+    );
+    replace(
+        &mut source,
+        "ob_video_frame_get_height(const obj *p,error **e){(void)p;(void)e;return 2;}",
+        "ob_video_frame_get_height(const obj *p,error **e){(void)p;(void)e;return 400;}",
+    );
+    replace(
+        &mut source,
+        "ob_video_stream_profile_get_width(const profile *p,error **e){(void)p;(void)e;return 2;}",
+        "ob_video_stream_profile_get_width(const profile *p,error **e){(void)p;(void)e;return 640;}",
+    );
+    replace(
+        &mut source,
+        "ob_video_stream_profile_get_height(const profile *p,error **e){(void)p;(void)e;return 2;}",
+        "ob_video_stream_profile_get_height(const profile *p,error **e){(void)p;(void)e;return 400;}",
+    );
+    replace(
+        &mut source,
+        "(intrinsic){1,2,.5f,.5f,2,2}",
+        "(intrinsic){1,2,.5f,.5f,640,400}",
+    );
+    fs::write(&path, source).unwrap();
+    let mut v: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    compile(
+        "cc",
+        &path,
+        Path::new(v["sdk_library"].as_str().unwrap()),
+        None,
+    );
+    for stream in ["color", "depth"] {
+        v[stream]["width"] = json!(640);
+        v[stream]["height"] = json!(400);
+    }
+    if let Some(bridge) = std::env::var_os("GDP_IMU_BENCH_REAL_BRIDGE") {
+        v["ros"]["bridge"] = json!(bridge.to_str().unwrap());
+    }
+    v["poll_ms"] = json!(100);
+    v["service"]["heartbeat_ms"] = json!(100);
+    v["service"]["idle_timeout_ms"] = json!(3000);
+    fs::write(&f.config, v.to_string()).unwrap();
+    f
+}
+fn process_measurement(pid: u32) -> (u64, u64) {
+    let text = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let fields: Vec<_> = text
+        .rsplit_once(") ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .collect();
+    let cpu = fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap();
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+    let peak = status
+        .lines()
+        .find_map(|l| l.strip_prefix("VmHWM:"))
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    (cpu, peak)
+}
+#[test]
+#[ignore = "explicit release IMU on/off performance experiment; no noisy CI thresholds"]
+fn imu_capture_ab_benchmark() {
+    let mut rows = Vec::new();
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
+    for repeat in 0..5 {
+        for recording in [false, true] {
+            for enabled in if repeat % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            } {
+                let f = large_imu_benchmark_fixture();
+                if recording {
+                    configure_runtime_quality(&f, 60, 256 * 1024 * 1024);
+                }
+                enable_imu(&f);
+                let mut value: Value =
+                    serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+                value["imu"]["enabled"] = json!(enabled);
+                fs::write(&f.config, value.to_string()).unwrap();
+                let mut child = acquisition_child(&f, &[("GDP_MOCK_WAIT_DELAY_MS", "33")]);
+                let ready = wait_status(&f, &mut child, |v| v["ready"] == true);
+                let worker = ready["pid"].as_u64().unwrap() as u32;
+                let parent_start = process_measurement(child.id());
+                let worker_start = process_measurement(worker);
+                let started = Instant::now();
+                let final_status = if recording {
+                    wait_status(&f, &mut child, |v| {
+                        v["raw_recording"]["state"] == "complete"
+                    })
+                } else {
+                    thread::sleep(Duration::from_secs(2));
+                    status(&f).unwrap()
+                };
+                let wall = started.elapsed().as_secs_f64();
+                let parent_end = process_measurement(child.id());
+                let worker_end = process_measurement(worker);
+                let frames = final_status["pairs_published"].as_u64().unwrap()
+                    - ready["pairs_published"].as_u64().unwrap();
+                assert_eq!(final_status["pairs_rejected"], 0);
+                assert_eq!(final_status["missing_pairs"], 0);
+                if enabled {
+                    assert_eq!(final_status["imu"]["ready"], true);
+                    assert!(final_status["imu"]["queue_high_water"].as_u64().unwrap() <= 128);
+                }
+                if recording {
+                    assert_eq!(final_status["raw_recording"]["written_pairs"], 60);
+                    let samples = final_status["raw_recording"]["imu_samples_submitted"]
+                        .as_u64()
+                        .unwrap();
+                    assert_eq!(
+                        final_status["raw_recording"]["disk_stages"]["validation_imu_samples"],
+                        samples * 2
+                    );
+                    if enabled {
+                        assert!(samples > 100);
+                    }
+                }
+                let row = json!({"repeat":repeat,"recording":recording,"imu_enabled":enabled,"wall_seconds":wall,"published_pairs_in_window":frames,"observed_pairs_per_second":frames as f64/wall,"monitored_cpu_cores":((parent_end.0-parent_start.0)+(worker_end.0-worker_start.0)) as f64/hz/wall,"worker_peak_rss_kib":worker_end.1,"supervisor_peak_rss_kib":parent_end.1,"sum_process_peak_rss_kib":worker_end.1+parent_end.1,"pipeline_timing":final_status["pipeline_timing"],"imu":final_status["imu"],"raw_recording":final_status["raw_recording"]});
+                stop(&mut child);
+                rows.push(row);
+            }
+        }
+    }
+    fs::write(std::env::var_os("GDP_IMU_BENCH_OUTPUT").unwrap(),serde_json::to_vec_pretty(&json!({"bridge_backend":if std::env::var_os("GDP_IMU_BENCH_REAL_BRIDGE").is_some(){"real-humble-dds"}else{"synthetic-c-abi"},"kind":"imu-on-off-synthetic-capture","runs":20,"repeats":5,"width":640,"height":400,"nominal_fps":30,"imu_rate_hz_per_stream":200,"rows":rows,"limits":if std::env::var_os("GDP_IMU_BENCH_REAL_BRIDGE").is_some(){"synthetic C SDK with real Humble/Fast DDS publishers and no downstream image subscribers; no USB; architecture may be emulated; CPU sums capture worker and supervisor; RSS sums separate process high-water marks; native recording serial chunked-v3, 60 pairs"}else{"synthetic C SDK and bridge; includes producer callback thread overhead, excludes USB and actual DDS costs; CPU sums capture worker and supervisor; RSS sums process high-water marks, not simultaneous or anonymous RSS; native recording uses serial chunked-v3 and 60-pair target"}})).unwrap()).unwrap();
+}
+
+#[test]
+fn finite_imu_sdk_only_capture_needs_both_streams_without_requiring_ros() {
+    for stalled in [false, true] {
+        let f = fixture();
+        enable_imu(&f);
+        let mut v: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+        v.as_object_mut().unwrap().remove("service");
+        v.as_object_mut().unwrap().remove("ros");
+        v["seconds"] = json!(0.05);
+        fs::write(&f.config, v.to_string()).unwrap();
+        let mut c = Command::new(env!("CARGO_BIN_EXE_rgbd-probe"));
+        c.args(["--config", f.config.to_str().unwrap()]);
+        if stalled {
+            c.env("GDP_MOCK_IMU_STALL", "1");
+        }
+        let output = c.output().unwrap();
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["ok"], !stalled, "{result}");
+        assert_eq!(result["imu"]["ready"], !stalled);
+        assert_eq!(result["imu"]["published"], json!([0, 0]));
+    }
+}
+
+#[test]
+fn imu_is_published_even_while_video_framesets_are_incomplete() {
+    let f = fixture();
+    enable_imu(&f);
+    acquisition(&f, "complete", false);
+    let mut child = acquisition_child(&f, &[("GDP_MOCK_MISSING_COLOR", "1")]);
+    let status = wait_status(&f, &mut child, |v| {
+        v["unpaired_images_published"].as_u64().unwrap_or(0) >= 5 && v["imu"]["ready"] == true
+    });
+    assert_eq!(status["ready"], false);
+    assert_eq!(status["pairs_accepted"], 0);
+    assert!(status["imu"]["published"][0].as_u64().unwrap() > 0);
+    assert!(status["imu"]["published"][1].as_u64().unwrap() > 0);
+    stop(&mut child);
+}

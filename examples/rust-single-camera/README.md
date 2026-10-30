@@ -89,3 +89,9 @@ SDK 前工作；录制保护仍阻止恢复和重新打开设备。旧独立配�
 配对证据，再按[offline-depth](../../crates/offline-depth/README.md)执行输入校验、
 可选离线 D2C 和无损 PNG/TAR 输出。该工具不直接读取裸 MCAP，不负责选择时间对；
 不要构造假 snapshot 或 ID 来凑出可以运行的输入。第一版不发布在线 aligned-depth。
+
+## 可选 IMU
+
+`inventory.imu.example.json` 在禁用相机槽位上声明 200 Hz 加速度计/陀螺仪请求。
+它不表示已确认设备能力。绑定和重新确认后，Rust 后端按实际 SDK 能力启用；不支持则
+明确失败。原始话题、时钟、协方差和录制限制见 [IMU 契约](../../docs/contracts/camera-imu-v1.md)。

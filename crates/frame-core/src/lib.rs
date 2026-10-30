@@ -7,6 +7,7 @@
 use std::{collections::VecDeque, error::Error, fmt, time::Instant};
 
 mod depth;
+pub use capture_contract::imu;
 pub use depth::{
     DepthNormalizationError, DepthSampleStats, DepthStats, NormalizedDepth, measure_depth_samples,
     normalize_depth_mm,

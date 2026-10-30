@@ -24,6 +24,7 @@ pub(crate) struct RosConfig {
     pub(crate) namespace: String,
 }
 pub(crate) struct Config {
+    pub(crate) imu: Option<capture_contract::imu::ImuConfig>,
     pub(crate) sdk_library: String,
     pub(crate) serial: String,
     pub(crate) quality_policy: Option<capture_contract::QualityPolicy>,
@@ -116,6 +117,7 @@ impl Config {
                 "startup_discovery_seconds",
                 "quality_policy",
                 "acquisition",
+                "imu",
             ],
         )?;
         ensure!(value["version"].as_u64() == Some(1), "config version");
@@ -197,7 +199,32 @@ impl Config {
                 "quality and pairing skew policies differ"
             );
         }
+        let imu = value
+            .get("imu")
+            .map(|v| serde_json::from_value::<capture_contract::imu::ImuConfig>(v.clone()))
+            .transpose()?;
+        if let Some(imu) = &imu {
+            imu.validate()?;
+            ensure!(
+                !imu.enabled || value.get("acquisition").is_some(),
+                "IMU requires explicit acquisition clock policy"
+            );
+            ensure!(
+                imu.accel_frame_id != color.frame_id
+                    && imu.accel_frame_id != depth.frame_id
+                    && imu.gyro_frame_id != color.frame_id
+                    && imu.gyro_frame_id != depth.frame_id,
+                "IMU frames must differ from image frames"
+            );
+            ensure!(
+                !imu.enabled
+                    || (imu.accel_rate_hz + imu.gyro_rate_hz) as u64 * poll_ms as u64 * 2
+                        <= imu.queue_capacity as u64 * 1000,
+                "IMU queue requires two polling periods of headroom"
+            );
+        }
         Ok(Self {
+            imu,
             acquisition,
             quality_policy,
             configuration: value.clone(),
@@ -269,6 +296,7 @@ pub(crate) struct QueuedPair {
 }
 #[derive(Default)]
 pub(crate) struct Metrics {
+    pub(crate) imu: Option<Box<crate::imu::ImuMetrics>>,
     pub(crate) framesets: u64,
     pub(crate) accepted: u64,
     pub(crate) rejected: u64,
@@ -783,6 +811,7 @@ fn run(config: Config) -> Result<Value> {
         Some(config.depth.profile),
         config.sdk_options(),
     )?;
+    let mut imu = crate::imu::RuntimeImu::open(&config, &pipeline)?;
     let mut ros = None;
     let mut queue = LatestQueue::new(config.capacity)?;
     let mut guard = PairGuard::default();
@@ -815,7 +844,13 @@ fn run(config: Config) -> Result<Value> {
             } else {
                 metrics.before_sdk_wait(wait_started);
             }
+            if let Some(imu) = &mut imu {
+                imu.tick(&mut metrics, started.elapsed() >= warmup)?;
+            }
             let wait_result = pipeline.wait(poll);
+            if let Some(imu) = &mut imu {
+                imu.tick(&mut metrics, started.elapsed() >= warmup)?;
+            }
             let returned_at = Instant::now();
             let returned_unix = unix_ns();
             if started.elapsed() < warmup {
@@ -1030,7 +1065,14 @@ fn run(config: Config) -> Result<Value> {
     })();
     while queue.pop().is_some() {}
     metrics.queue(queue.stats());
-    let stopped = pipeline.stop();
+    let imu_stopped = imu
+        .as_mut()
+        .map(|i| i.stop(&mut metrics, started.elapsed() >= warmup))
+        .transpose();
+    let stopped = pipeline
+        .stop()
+        .map_err(anyhow::Error::from)
+        .and(imu_stopped.map(|_| ()));
     let p99 = metrics
         .queue_wait
         .quantile_bounds(99)
@@ -1053,7 +1095,7 @@ fn run(config: Config) -> Result<Value> {
         json!({"version":1,"kind":"rgbd-probe","ok":ok,"error":error,"sdk_version":sdk.version(),"framesets_observed":metrics.framesets,"pairs_accepted":metrics.accepted,"pairs_rejected":metrics.rejected,"pairs_missing_frames":metrics.missing,"framesets_missing_color":metrics.missing_color,"framesets_missing_depth":metrics.missing_depth,"pairs_skew_rejected":metrics.skew,"pairs_monotonic_rejected":metrics.monotonic,"pairs_processed":metrics.processed,
         "observed_pair_timing":{"complete_framesets":metrics.complete_observed,"delta_min_us":metrics.delta_min_us,"delta_max_us":metrics.delta_max_us,"delta_mean_us":if metrics.complete_observed>0 {Some(metrics.delta_sum_us as f64/metrics.complete_observed as f64)} else {None},"over_budget":metrics.delta_over_budget,"scope":"all-complete-observed-framesets-including-contract-rejections"},
         "startup_discarded":{"budget_seconds":config.startup_discovery_seconds,"framesets":startup_metrics.framesets,"missing":startup_metrics.missing,"missing_color":startup_metrics.missing_color,"missing_depth":startup_metrics.missing_depth,"skew_rejected":startup_metrics.skew,"accepted_not_published":startup_metrics.accepted,"rejected":startup_metrics.rejected,"rejection_reasons":startup_metrics.reasons,"poll_timeouts":startup_metrics.timeouts,"complete_framesets":startup_metrics.complete_observed,"delta_min_us":startup_metrics.delta_min_us,"delta_max_us":startup_metrics.delta_max_us,"over_budget":startup_metrics.delta_over_budget},"rejection_reasons":metrics.reasons,"poll_timeouts":metrics.timeouts,
-        "pipeline_timing":metrics.timing_report(),"acquisition":config.acquisition,"message_timestamp":config.message_timestamp(),
+        "imu":metrics.imu.as_ref().map(|i|i.report()),"pipeline_timing":metrics.timing_report(),"acquisition":config.acquisition,"message_timestamp":config.message_timestamp(),
         "pairing":{"clock":match config.policy.clock {PairClock::Device=>"device",PairClock::System=>"system"},"max_delta_us":config.policy.max_delta_us,"source":"single-sdk-pipeline-single-frameset","hardware_sync_verified":false,"independent_stream_indices_allowed":true},
         "queue":{"capacity":queue.stats().capacity,"high_water":queue.stats().high_water,"pairs_dropped_oldest":queue.stats().dropped,"policy":"whole-pair-drop-oldest","wait_p99_ns":p99,"wait_percentile_scope":"fixed-histogram-bucket-upper-bound"},
         "normalization":{"enabled":config.normalize,"frames":metrics.normalization_frames,"pixels":metrics.normalization_pixels,"invalid_zero_samples":metrics.zero_samples,"nonzero_clamped_to_one_mm":metrics.clamped_samples,"conversion_wall_ns":metrics.normalization_ns,"owned_copy_including_unit_scale":config.normalize},

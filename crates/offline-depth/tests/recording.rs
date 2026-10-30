@@ -124,6 +124,7 @@ fn fixture_v2(root: &Path, observed: bool, counts: bool) -> RecordingRecord {
     };
     let e = reference(root, "tagged.json", &serde_json::to_vec(&evidence).unwrap());
     let record = RecordingRecord {
+        imu: Vec::new(),
         sequence: 1,
         evidence: e,
         color,

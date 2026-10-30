@@ -24,8 +24,8 @@ version are compatibility checks, not authentication or a complete ABI proof.
 Validate the binary's provenance, architecture, dependent extensions and exact
 ABI against the deployed build before hardware use. Missing symbols fail loading.
 
-The safe adapter uses polling only, exact explicit video stream requests and no
-callback crossing Rust's unwind boundary. SDK frames keep their parent session
+The safe adapter polls video and can opt into independent bounded IMU callbacks.
+It uses exact explicit profiles and catches panics at the callback boundary. SDK frames keep their parent session
 and dynamic library alive, with owned reference releases on drop. Native frame
 storage is only exposed through a borrowed immutable slice. SDK stop/delete can
 still block or fail; this wrapper cannot add cancellation guarantees to native
@@ -53,3 +53,15 @@ projection convention, not as a measured stereo rectification.
 Hardware-independent tests compile a small C dynamic-library fixture and exercise
 actual symbol loading and teardown. They require `cc`; they do not execute the
 vendor SDK or establish camera correctness.
+
+## Optional IMU ABI
+
+The IMU function subset and packed 12-byte XYZ return value are transcribed from
+[SDK v2.10.6 headers](https://github.com/orbbec/OrbbecSDK_v2/tree/v2.10.6/include/libobsensor/h).
+Symbols are resolved only when IMU is explicitly requested. Accelerometer and
+gyroscope sensor/profile failures propagate; no profile fallback is selected.
+Callback frames own one SDK reference and release it on every path. Both sensors
+must quiesce before their userdata can be freed: the SDK ImuStreamer snapshots
+callbacks before dispatch. If either stop fails, the entire bounded IMU session
+is retained until process exit so a late foreign callback cannot use freed data
+or an unloaded library. The service supervisor retains its process shutdown bound.

@@ -1,6 +1,7 @@
 //! Versioned recording boundary. Observed associations never become SDK framesets.
 use super::*;
 mod chunked;
+use capture_contract::imu::{ImuConfig, ImuProgress, ImuSample};
 use capture_contract::timing::StageStats;
 use capture_contract::{DepthRepresentation, QuantizationPolicy};
 use capture_observer::{DecodedCameraInfo, MetadataProvenance, ObservedAssociation};
@@ -59,6 +60,8 @@ pub enum TaggedEvidence {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordingRecord {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imu: Vec<ImuSample>,
     pub sequence: u64,
     pub evidence: FileRef,
     pub color: StoredImage,
@@ -82,6 +85,48 @@ pub struct SnapshotAssociation {
     pub version: u32,
     pub native_snapshot_id: capture_contract::SnapshotId,
     pub ros_snapshot_id: capture_contract::SnapshotId,
+}
+fn imu_config(snapshot: &SnapshotEnvelope) -> Result<Option<ImuConfig>> {
+    snapshot
+        .content
+        .configuration
+        .get("capture")
+        .unwrap_or(&snapshot.content.configuration)
+        .get("imu")
+        .map(|v| {
+            let config: ImuConfig = serde_json::from_value(v.clone())?;
+            config.validate()?;
+            Ok(config)
+        })
+        .transpose()
+}
+fn validate_imu(
+    samples: &[ImuSample],
+    snapshot: &SnapshotEnvelope,
+    progress: &mut ImuProgress,
+) -> Result<()> {
+    require(samples.len() <= 128, "IMU_BATCH_LIMIT")?;
+    if !samples.is_empty() {
+        let config = imu_config(snapshot)?.ok_or(OfflineError::Invalid("IMU_CONFIG_REQUIRED"))?;
+        let acquisition: capture_contract::AcquisitionPolicy = serde_json::from_value(
+            snapshot
+                .content
+                .configuration
+                .get("capture")
+                .unwrap_or(&snapshot.content.configuration)["acquisition"]
+                .clone(),
+        )?;
+        let global =
+            acquisition.resolve()?.message_timestamp == capture_contract::MessageTimestamp::Global;
+        for sample in samples {
+            require(
+                !global || sample.global_timestamp_us.is_some(),
+                "IMU_GLOBAL_TIMESTAMP_REQUIRED",
+            )?;
+            progress.accept(sample, &config)?;
+        }
+    }
+    Ok(())
 }
 fn validate_snapshot_association(
     native: &SnapshotEnvelope,
@@ -159,6 +204,8 @@ pub struct RecordingDirectorySource {
     chunk_reader: Mutex<Option<chunked::CachedChunk>>,
     digest: ring::digest::Context,
     seen: u64,
+    imu_progress: ImuProgress,
+    imu_validated: u64,
     previous: Option<Progress>,
     finished: bool,
 }
@@ -228,6 +275,8 @@ impl RecordingDirectorySource {
             chunk_reader: Mutex::new(None),
             digest: ring::digest::Context::new(&ring::digest::SHA256),
             seen: 0,
+            imu_progress: ImuProgress::default(),
+            imu_validated: 0,
             previous: None,
             finished: false,
         })
@@ -410,6 +459,11 @@ impl RecordingDirectorySource {
             .read_until(b'\n', &mut self.line)?;
         require(n <= 65536, "RECORDING_INDEX_LINE_LIMIT")?;
         if n == 0 {
+            require(
+                imu_config(&self.snapshot)?.is_none_or(|c| !c.enabled)
+                    || self.imu_progress.has_both(),
+                "IMU_STREAMS_MISSING",
+            )?;
             self.finish_chunk()?;
             if let Some(chunks) = self.recovered_chunks {
                 require(
@@ -431,6 +485,8 @@ impl RecordingDirectorySource {
             "RECORDING_INDEX_COUNT",
         )?;
         let record: RecordingRecord = parse(&self.line)?;
+        validate_imu(&record.imu, &self.snapshot, &mut self.imu_progress)?;
+        self.imu_validated += record.imu.len() as u64;
         self.check_ranges(&record)?;
         record.storage_representation.validate()?;
         let evidence_json = self.file(&record.evidence, 4 * 1024 * 1024)?;
@@ -814,6 +870,7 @@ struct RawIoStats {
     finish: StageStats,
     uncommitted_pairs_peak: u64,
     uncommitted_payload_bytes_peak: u64,
+    validation_imu_samples: u64,
     payload_write_calls: u64,
     index_write_calls: u64,
     index_flushes: u64,
@@ -851,6 +908,7 @@ impl RawRecordingDiagnostics {
     fn verified(&self, source: &RecordingDirectorySource) {
         let scratch = source.validation.lock().unwrap_or_else(|e| e.into_inner());
         let mut stats = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        stats.validation_imu_samples += source.imu_validated;
         stats.validation_image_bytes = stats
             .validation_image_bytes
             .saturating_add(scratch.image_bytes);
@@ -866,6 +924,7 @@ impl RawRecordingDiagnostics {
             "failed_calls":stats.failures,"durable_pairs":stats.durable_pairs,"checkpoints":stats.checkpoints,"payload_files":stats.payload_files,"validation_image_bytes":stats.validation_image_bytes,
             "validation_buffer_peak_bytes":stats.validation_buffer_peak_bytes,
             "uncommitted_pairs_peak":stats.uncommitted_pairs_peak,"uncommitted_payload_bytes_peak":stats.uncommitted_payload_bytes_peak,
+            "validation_imu_samples":stats.validation_imu_samples,
             "payload_write_calls":stats.payload_write_calls,"index_write_calls":stats.index_write_calls,
             "index_flushes":stats.index_flushes})
     }
@@ -879,6 +938,7 @@ pub struct RawRecordingWriter {
     final_path: PathBuf,
     snapshot: SnapshotEnvelope,
     records: fs::File,
+    imu_progress: ImuProgress,
     evidence_buffer: Vec<u8>,
     record_buffer: Vec<u8>,
     digest: ring::digest::Context,
@@ -945,6 +1005,7 @@ impl RawRecordingWriter {
             final_path,
             snapshot,
             records,
+            imu_progress: ImuProgress::default(),
             evidence_buffer: Vec::new(),
             record_buffer: Vec::new(),
             digest: ring::digest::Context::new(&ring::digest::SHA256),
@@ -987,10 +1048,21 @@ impl RawRecordingWriter {
         depth: &[u8],
         endian: StorageEndian,
     ) -> Result<()> {
+        self.append_with_imu(pair, color, depth, endian, &[])
+    }
+    pub fn append_with_imu(
+        &mut self,
+        pair: &BoundPairEvidence,
+        color: &[u8],
+        depth: &[u8],
+        endian: StorageEndian,
+        imu: &[ImuSample],
+    ) -> Result<()> {
         require(!self.failed, "RECORDING_ALREADY_FAILED")?;
         let diagnostics = self.diagnostics.clone();
-        let result =
-            diagnostics.measure("append", || self.append_inner(pair, color, depth, endian));
+        let result = diagnostics.measure("append", || {
+            self.append_inner(pair, color, depth, endian, imu)
+        });
         if result.is_err() {
             self.failed = true;
         }
@@ -1002,7 +1074,9 @@ impl RawRecordingWriter {
         color: &[u8],
         depth: &[u8],
         endian: StorageEndian,
+        imu: &[ImuSample],
     ) -> Result<()> {
+        validate_imu(imu, &self.snapshot, &mut self.imu_progress)?;
         pair.validate()
             .map_err(|_| OfflineError::Invalid("PAIR_EVIDENCE_INVALID"))?;
         require(
@@ -1063,6 +1137,7 @@ impl RawRecordingWriter {
         let color = store("color", &pair.color, color_file)?;
         let depth = store("depth", &pair.depth, depth_file)?;
         let record = RecordingRecord {
+            imu: imu.to_vec(),
             sequence,
             evidence,
             color,

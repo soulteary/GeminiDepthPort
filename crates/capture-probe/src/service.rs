@@ -852,6 +852,11 @@ impl Status<'_> {
             persistence["submission_errors"] = json!(self.persistence_errors);
             persistence["coalesced_partial_updates"] = json!(self.coalesced_partial_status);
             let mut value = json!({"version":1,"kind":"capture-service-status","state":state,"ready":state=="ready","reason":reason,"last_failure_reason":self.last_failure,"session_id":self.session,"instance_id":self.instance,"snapshot_id":self.snapshot.as_ref().map(|s|&s.0),"snapshot_path":self.snapshot.as_ref().map(|s|&s.1),"quality":self.quality.as_ref().map(ServiceQuality::references),"usb_recovery":self.usb_recovery,"raw_recording":self.raw.as_ref().map(crate::raw_recording::RawRecorder::status),"generation":self.config.settings.generation,"config_sha256":self.config.hash,"pid":std::process::id(),"heartbeat_sequence":self.heartbeat,"updated_unix_ms":unix_ms(),"uptime_ms":self.started.elapsed().as_millis(),"restart_attempt":self.restarts,"last_pair_age_ms":last_pair.map(|v|v.elapsed().as_millis()),"pairs_accepted":metrics.accepted,"pairs_rejected":metrics.rejected,"rejection_reasons":metrics.reasons,"pairs_published":metrics.published_pairs,"individual_publish_calls":metrics.publish_calls,"unpaired_images_published":metrics.unpaired_images_published,"publish_failures":metrics.publish_failures,"stamp_failures":metrics.stamp_failures,"framesets_observed":metrics.framesets,"missing_pairs":metrics.missing,"skew_rejections":metrics.skew,"monotonic_rejections":metrics.monotonic,"poll_timeouts":metrics.timeouts,"pipeline_timing":metrics.timing_report(),"acquisition_effective":self.config.capture.acquisition,"message_timestamp":self.config.capture.message_timestamp(),"readiness_basis":if self.config.capture.preserve_images() {"both-streams-published"} else {"accepted-rgbd-pairs"},"native_recording_scope":"complete-rgbd-pairs-only","physical_sync_verified":false,"delivery_verified":false});
+            value["imu"] = metrics
+                .imu
+                .as_ref()
+                .map(|i| i.report())
+                .unwrap_or(Value::Null);
             value["status_persistence"] = persistence;
             let health = json!({"quality":value["quality"]["state"],
                 "raw_state":value["raw_recording"]["state"],"raw_reason":value["raw_recording"]["reason"]});
@@ -995,6 +1000,7 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                 return Err(error.into());
             }
         };
+        let mut imu = crate::imu::RuntimeImu::open(&config.capture, &pipeline)?;
         let mut ros = None;
         let mut queue = LatestQueue::new(config.capture.capacity)?;
         let mut guard = PairGuard::default();
@@ -1046,7 +1052,19 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                 }
                 let wait_started = Instant::now();
                 metrics.before_sdk_wait(wait_started);
+                if let Some(imu) = &mut imu {
+                    let samples = imu.tick(&mut metrics, !startup)?;
+                    if let Some(raw) = &mut status.raw {
+                        raw.buffer_imu(samples)?;
+                    }
+                }
                 let wait_result = pipeline.wait(config.capture.poll_ms);
+                if let Some(imu) = &mut imu {
+                    let samples = imu.tick(&mut metrics, !startup)?;
+                    if let Some(raw) = &mut status.raw {
+                        raw.buffer_imu(samples)?;
+                    }
+                }
                 let returned_at = Instant::now();
                 let returned_unix = rgbd::unix_ns();
                 metrics.sdk_wait_finished(wait_started, returned_at);
@@ -1688,7 +1706,9 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                     last_pair = Some(Instant::now());
                     consecutive += 1;
                 }
-                if consecutive >= config.settings.ready_min_pairs {
+                if consecutive >= config.settings.ready_min_pairs
+                    && metrics.imu.as_ref().is_none_or(|i| i.ready())
+                {
                     state = "ready";
                     had_ready = true;
                 }
@@ -1702,7 +1722,19 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
         while queue.pop().is_some() {}
         metrics.queue(queue.stats());
         // This native stop can hang; the parent supervisor enforces shutdown deadline.
-        let stopped = pipeline.stop();
+        let imu_stopped = (|| -> Result<()> {
+            if let Some(imu) = &mut imu {
+                let samples = imu.stop(&mut metrics, opened.elapsed() >= warmup)?;
+                if let Some(raw) = &mut status.raw {
+                    raw.buffer_imu(samples)?;
+                }
+            }
+            Ok(())
+        })();
+        let stopped = pipeline
+            .stop()
+            .map_err(anyhow::Error::from)
+            .and(imu_stopped);
         result?;
         stopped?;
         Ok(())

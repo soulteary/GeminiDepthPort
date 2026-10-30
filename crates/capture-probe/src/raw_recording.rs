@@ -142,6 +142,8 @@ struct Shared {
     state: State,
     reason: Option<&'static str>,
     submitted: u64,
+    imu_submitted: u64,
+    imu_outside_recording: u64,
     written: u64,
     payload_bytes: u64,
     overflows: u64,
@@ -152,6 +154,7 @@ struct Shared {
     disk: RawRecordingDiagnostics,
 }
 struct OwnedPair {
+    imu: Vec<capture_contract::imu::ImuSample>,
     evidence: BoundPairEvidence,
     color: Vec<u8>,
     depth: Vec<u8>,
@@ -276,6 +279,7 @@ impl Drop for WorkerQueueGuard {
 }
 
 pub(crate) struct RawRecorder {
+    pending_imu: Vec<capture_contract::imu::ImuSample>,
     settings: RawSettings,
     session: String,
     name: String,
@@ -303,6 +307,7 @@ struct TestGate {
 impl RawRecorder {
     pub fn new(settings: RawSettings, session: &str) -> Self {
         Self {
+            pending_imu: Vec::new(),
             name: format!("{}-{session}", settings.name),
             settings,
             session: session.into(),
@@ -310,6 +315,8 @@ impl RawRecorder {
                 state: State::Waiting,
                 reason: None,
                 submitted: 0,
+                imu_submitted: 0,
+                imu_outside_recording: 0,
                 written: 0,
                 payload_bytes: 0,
                 overflows: 0,
@@ -337,6 +344,18 @@ impl RawRecorder {
     }
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
         self.shared.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    pub fn buffer_imu(&mut self, samples: Vec<capture_contract::imu::ImuSample>) -> Result<()> {
+        if matches!(self.lock().state, State::Waiting | State::Recording) {
+            if self.pending_imu.len() + samples.len() > 128 {
+                self.fail("RAW_IMU_QUEUE_OVERFLOW");
+                anyhow::bail!("raw IMU batch overflow");
+            }
+            self.pending_imu.extend(samples);
+        } else {
+            self.lock().imu_outside_recording += samples.len() as u64;
+        }
+        Ok(())
     }
     pub fn active(&self) -> bool {
         self.lock().state == State::Recording
@@ -464,11 +483,12 @@ impl RawRecorder {
                     let mut written = 0u64;
                     while let Some(pair) = rx.recv() {
                         ensure!(!abort.load(Ordering::Acquire), "raw aborted");
-                        writer.append(
+                        writer.append_with_imu(
                             &pair.evidence,
                             &pair.color,
                             &pair.depth,
                             StorageEndian::Little,
+                            &pair.imu,
                         )?;
                         rx.written();
                         written += 1;
@@ -586,7 +606,9 @@ impl RawRecorder {
             .0
             .checked_add(lengths.1)
             .context("raw length overflow")? as u64;
+        let imu_count = self.pending_imu.len() as u64;
         let message = OwnedPair {
+            imu: std::mem::take(&mut self.pending_imu),
             evidence: pair.evidence,
             color: pair.pair.color.payload,
             depth: pair.pair.depth.payload,
@@ -608,6 +630,7 @@ impl RawRecorder {
                 let target = self.settings.max_pairs;
                 let mut s = self.lock();
                 s.submitted += 1;
+                s.imu_submitted += imu_count;
                 s.payload_bytes = s.payload_bytes.saturating_add(payload_bytes);
                 if s.state == State::Failed {
                     drop(s);
@@ -672,7 +695,7 @@ impl RawRecorder {
     }
     pub fn status(&self) -> Value {
         let s = self.lock();
-        json!({"version":1,"state":s.state.as_str(),"reason":s.reason,"session_id":self.session,"max_pairs":self.settings.max_pairs,"max_bytes":self.settings.max_bytes,"queue_capacity":self.settings.queue_capacity,"submitted_pairs":s.submitted,"written_pairs":s.written,"payload_bytes_submitted":s.payload_bytes,"whole_pair_queue_overflows":s.overflows,"writer_queue":self.queue.as_ref().map(|q| q.report()),"disk_stages":s.disk.report(),"startup_framesets_excluded":s.excluded_startup,"waiting_framesets_excluded":s.waiting_framesets,"checkpoint_pipeline":self.settings.checkpoint_pipeline,"storage_format":if self.settings.chunked {"recording-directory-v3"}else{"recording-directory-v2"},"native_snapshot_id":s.native_snapshot,"ros_snapshot_id":s.ros_snapshot,"job_path":self.settings.directory.join(&self.name),"partial_path":self.settings.directory.join(format!("{}.partial",self.name)),"business_validity":null,"recording_protection_released":false})
+        json!({"version":1,"state":s.state.as_str(),"reason":s.reason,"session_id":self.session,"max_pairs":self.settings.max_pairs,"max_bytes":self.settings.max_bytes,"queue_capacity":self.settings.queue_capacity,"submitted_pairs":s.submitted,"written_pairs":s.written,"imu_samples_submitted":s.imu_submitted,"imu_samples_outside_recording_excluded":s.imu_outside_recording,"imu_samples_pending":self.pending_imu.len(),"payload_bytes_submitted":s.payload_bytes,"whole_pair_queue_overflows":s.overflows,"writer_queue":self.queue.as_ref().map(|q| q.report()),"disk_stages":s.disk.report(),"startup_framesets_excluded":s.excluded_startup,"waiting_framesets_excluded":s.waiting_framesets,"checkpoint_pipeline":self.settings.checkpoint_pipeline,"storage_format":if self.settings.chunked {"recording-directory-v3"}else{"recording-directory-v2"},"native_snapshot_id":s.native_snapshot,"ros_snapshot_id":s.ros_snapshot,"job_path":self.settings.directory.join(&self.name),"partial_path":self.settings.directory.join(format!("{}.partial",self.name)),"business_validity":null,"recording_protection_released":false})
     }
 }
 impl Drop for RawRecorder {
@@ -1437,6 +1460,24 @@ mod tests {
         assert_eq!(sink.status()["state"], "complete");
         assert_eq!(sink.status()["checkpoint_pipeline"], true);
         assert_eq!(sink.status()["disk_stages"]["durable_pairs"], 16);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn pending_imu_overflow_fails_without_dropping_samples_silently() {
+        let dir = directory();
+        let mut recorder = RawRecorder::new(settings(&dir, 1, 1_000_000), &"a".repeat(32));
+        let sample = capture_contract::imu::ImuSample {
+            kind: capture_contract::imu::ImuKind::Accel,
+            sequence: 1,
+            device_timestamp_us: 1,
+            system_timestamp_us: 1,
+            global_timestamp_us: None,
+            xyz: [0.; 3],
+            frame_id: "accel_frame".into(),
+        };
+        assert!(recorder.buffer_imu(vec![sample; 129]).is_err());
+        assert_eq!(recorder.status()["state"], "failed");
+        assert_eq!(recorder.status()["reason"], "RAW_IMU_QUEUE_OVERFLOW");
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]

@@ -14,6 +14,8 @@ use std::{
     ptr::{self, NonNull},
     rc::Rc,
 };
+mod imu;
+pub use imu::{ImuFrameRaw, ImuPublisher};
 mod auxiliary;
 pub use auxiliary::{AuxBinding, RosAuxPublisher, StaticTransform};
 

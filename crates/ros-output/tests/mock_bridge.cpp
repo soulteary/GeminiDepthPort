@@ -114,3 +114,15 @@ extern "C" int32_t gdp_ros_publish_observed(void *handle, const gdp_ros_frame *f
   return source==1 && !global_timestamp_us ? gdp_ros_publish(handle, frame) : gdp_ros_publish_timestamped(handle, frame, global_timestamp_us, source);
 }
 #endif
+
+#ifndef MOCK_NO_IMU
+#include "gdp_ros_imu.h"
+struct ImuMock {std::string accel,gyro;};
+extern "C" int32_t gdp_ros_imu_create(const char*,const char*,const char*,const char*,const char *a,const char *g,void **out){
+ *out=nullptr;if(std::getenv("GDP_ROS_IMU_CREATE_ERROR"))return 2;*out=new ImuMock{a,g};if(std::getenv("GDP_ROS_IMU_CREATE_WITH_HANDLE"))return 2;event("imu-create");return 0;}
+extern "C" int32_t gdp_ros_imu_publish(void *h,const gdp_ros_imu_frame *f){
+ if(!h||!f||f->abi_version!=1||f->struct_size!=sizeof(*f)||f->kind<1||f->kind>2)return 1;
+ if(std::getenv("GDP_ROS_IMU_PUBLISH_ERROR"))return 2;
+ event(f->kind==1?"imu-accel-publish":"imu-gyro-publish");return 0;}
+extern "C" void gdp_ros_imu_destroy(void *h){delete static_cast<ImuMock*>(h);event("imu-destroy");}
+#endif

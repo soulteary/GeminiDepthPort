@@ -78,6 +78,22 @@ def main():
     require(hashlib.sha256(Path('/opt/orbbec-sdk/lib/libOrbbecSDK.so.2.10.6').read_bytes()).hexdigest()
             == manifest['sdk_sha256'], 'actual SDK version file differs')
     with tempfile.TemporaryDirectory(prefix='capture-image-smoke-', dir='/tmp') as directory:
+        previous_directory = os.getcwd()
+        try:
+            os.chdir(directory)
+            # Resolve optional IMU extensions in the pinned deployable image without
+            # creating a Context, enumerating devices or starting any sensor.
+            sdk_api = ctypes.CDLL(sdk)
+            for symbol in ('ob_device_get_sensor', 'ob_delete_sensor', 'ob_sensor_get_stream_profile_list',
+                           'ob_stream_profile_list_get_accel_stream_profile', 'ob_stream_profile_list_get_gyro_stream_profile',
+                           'ob_sensor_start', 'ob_sensor_stop', 'ob_frame_get_type',
+                           'ob_accel_frame_get_value', 'ob_gyro_frame_get_value'):
+                require(hasattr(sdk_api, symbol), 'pinned SDK IMU extension missing')
+            bridge_api = ctypes.CDLL(bridge)
+            for symbol in ('gdp_ros_imu_create', 'gdp_ros_imu_publish', 'gdp_ros_imu_destroy'):
+                require(hasattr(bridge_api, symbol), 'IMU bridge extension missing')
+        finally:
+            os.chdir(previous_directory)
         config = {'version': 1, 'sdk_library': sdk, 'serial': 'SYNTHETIC_NO_DEVICE_ACCESS',
                   'color': {'width': 2, 'height': 2, 'fps': 30, 'frame_id': 'synthetic_color_optical'},
                   'depth': {'width': 2, 'height': 2, 'fps': 30, 'frame_id': 'synthetic_depth_optical', 'unit_policy': 'normalize-mm'},

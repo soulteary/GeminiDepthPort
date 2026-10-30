@@ -1,10 +1,12 @@
-//! Thread-confined, polling-only SDK ownership adapter.
+//! Thread-confined video polling and optional bounded IMU callback adapter.
 //! SDK objects and frames retain their loaded library. No Send/Sync is asserted.
 //! Software aggregation and global timestamp mapping are explicit opt-ins. This
 //! adapter does not configure exposure, hardware synchronization, or depth filters.
 use orbbec_sys as sys;
 mod calibration;
+mod imu;
 pub use calibration::{Extrinsics, SessionCalibration, StreamCalibration};
+pub use imu::ImuCapture;
 use std::{
     cell::Cell,
     ffi::{CStr, CString},

@@ -134,6 +134,7 @@ mod tests {
             fps: 30,
         };
         Config {
+            imu: None,
             sdk_library: "/capture/lib/libOrbbecSDK.so".into(),
             serial: "observed_device".into(),
             color: StreamConfig {

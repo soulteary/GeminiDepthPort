@@ -243,6 +243,8 @@ mod tests {
     use super::*;
     #[test]
     fn calibration_struct_layout_matches_packed_sdk_headers() {
+        assert_eq!(std::mem::size_of::<ImuValue>(), 12);
+        assert_eq!(std::mem::align_of::<ImuValue>(), 1);
         assert_eq!(std::mem::size_of::<CameraIntrinsic>(), 20);
         assert_eq!(std::mem::size_of::<CameraDistortion>(), 36);
         assert_eq!(std::mem::size_of::<Extrinsic>(), 48);
@@ -262,5 +264,53 @@ mod tests {
     #[test]
     fn missing_library_is_error() {
         assert!(Api::load("/does-not-exist/libOrbbecSDK.so").is_err());
+    }
+}
+
+/// IMU subset transcribed from Orbbec SDK v2.10.6 C headers. Optional at load.
+#[repr(C, packed)]
+#[derive(Clone, Copy, Default)]
+pub struct ImuValue {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+pub type ImuCallback = unsafe extern "C" fn(*mut Handle, *mut c_void);
+#[derive(Clone, Copy)]
+pub struct ImuApi {
+    pub sensor: unsafe extern "C" fn(*mut Handle, c_int, ErrorOut) -> *mut Handle,
+    pub delete_sensor: unsafe extern "C" fn(*mut Handle, ErrorOut),
+    pub profiles: unsafe extern "C" fn(*const Handle, ErrorOut) -> *mut Handle,
+    pub delete_profiles: unsafe extern "C" fn(*mut Handle, ErrorOut),
+    pub delete_profile: unsafe extern "C" fn(*mut Handle, ErrorOut),
+    pub accel_profile: unsafe extern "C" fn(*const Handle, c_int, c_int, ErrorOut) -> *mut Handle,
+    pub gyro_profile: unsafe extern "C" fn(*const Handle, c_int, c_int, ErrorOut) -> *mut Handle,
+    pub start: unsafe extern "C" fn(*mut Handle, *const Handle, ImuCallback, *mut c_void, ErrorOut),
+    pub stop: unsafe extern "C" fn(*mut Handle, ErrorOut),
+    pub frame_type: unsafe extern "C" fn(*const Handle, ErrorOut) -> c_int,
+    pub accel: unsafe extern "C" fn(*const Handle, ErrorOut) -> ImuValue,
+    pub gyro: unsafe extern "C" fn(*const Handle, ErrorOut) -> ImuValue,
+}
+impl Api {
+    pub fn imu_api(&self) -> Result<ImuApi, String> {
+        macro_rules! get {
+            ($s:literal) => {
+                unsafe { self._library.symbol(concat!($s, "\0").as_bytes())? }
+            };
+        }
+        Ok(ImuApi {
+            sensor: get!("ob_device_get_sensor"),
+            delete_sensor: get!("ob_delete_sensor"),
+            profiles: get!("ob_sensor_get_stream_profile_list"),
+            delete_profiles: get!("ob_delete_stream_profile_list"),
+            delete_profile: get!("ob_delete_stream_profile"),
+            accel_profile: get!("ob_stream_profile_list_get_accel_stream_profile"),
+            gyro_profile: get!("ob_stream_profile_list_get_gyro_stream_profile"),
+            start: get!("ob_sensor_start"),
+            stop: get!("ob_sensor_stop"),
+            frame_type: get!("ob_frame_get_type"),
+            accel: get!("ob_accel_frame_get_value"),
+            gyro: get!("ob_gyro_frame_get_value"),
+        })
     }
 }
