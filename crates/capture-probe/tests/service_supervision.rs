@@ -2790,6 +2790,11 @@ fn imu_is_published_even_while_video_framesets_are_incomplete() {
     let f = fixture();
     enable_imu(&f);
     acquisition(&f, "complete", false);
+    // Test stream independence, not 200 Hz backlog during shared-runner fsync.
+    let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    config["imu"]["accel_rate_hz"] = json!(25);
+    config["imu"]["gyro_rate_hz"] = json!(25);
+    fs::write(&f.config, config.to_string()).unwrap();
     let mut child = acquisition_child(&f, &[("GDP_MOCK_MISSING_COLOR", "1")]);
     let status = wait_status(&f, &mut child, |v| {
         v["unpaired_images_published"].as_u64().unwrap_or(0) >= 5 && v["imu"]["ready"] == true

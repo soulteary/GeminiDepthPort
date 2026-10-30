@@ -38,6 +38,10 @@ fn imu_child() {
     invalid.queue_capacity = 0;
     assert!(pipeline.start_imu(invalid, true).is_err());
     let mut requested = config();
+    if mode == "slow" {
+        requested.accel_rate_hz = 25;
+        requested.gyro_rate_hz = 25;
+    }
     if mode != "stale" && mode != "gyro-stale" {
         requested.stale_timeout_ms = 5000;
     }
@@ -71,7 +75,7 @@ fn imu_child() {
     } else if mode == "stale" || mode == "gyro-stale" {
         std::thread::sleep(Duration::from_millis(140));
         assert!(imu.drain().is_err());
-    } else if mode != "normal" {
+    } else if mode != "normal" && mode != "slow" {
         let deadline = Instant::now() + Duration::from_secs(3);
         let error = loop {
             match imu.drain() {
@@ -95,6 +99,10 @@ fn imu_child() {
             assert!(Instant::now() < deadline);
             for sample in imu.drain().unwrap() {
                 assert_eq!(sample.xyz, [1., 2., 9.800000190734863]);
+                assert_eq!(
+                    sample.device_timestamp_us,
+                    sample.sequence * if mode == "slow" { 40000 } else { 5000 }
+                );
                 counts[sample.kind.slot()] += 1;
             }
             std::thread::sleep(Duration::from_millis(2));
@@ -114,6 +122,7 @@ fn optional_imu_abi_covers_callbacks_boundedness_errors_and_cleanup() {
     fs::create_dir_all(&root).unwrap();
     for (mode, env) in [
         ("normal", ""),
+        ("slow", ""),
         ("unsupported", "GDP_MOCK_IMU_UNSUPPORTED"),
         ("profile", "GDP_MOCK_IMU_PROFILE_ERROR"),
         ("start", "GDP_MOCK_IMU_START_ERROR"),
