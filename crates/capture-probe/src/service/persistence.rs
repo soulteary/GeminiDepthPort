@@ -19,6 +19,32 @@ struct State {
     error: Option<String>,
     closing: bool,
     wall: capture_contract::timing::StageStats,
+    #[cfg(test)]
+    render_gate: Option<Arc<(std::sync::Barrier, std::sync::Barrier)>>,
+}
+struct Report {
+    wall: capture_contract::timing::StageStats,
+    errors: u64,
+    submitted: u64,
+    completed: u64,
+    pending: usize,
+    coalesced: u64,
+    #[cfg(test)]
+    render_gate: Option<Arc<(std::sync::Barrier, std::sync::Barrier)>>,
+}
+impl Report {
+    fn value(self) -> Value {
+        #[cfg(test)]
+        if let Some(gate) = &self.render_gate {
+            gate.0.wait();
+            gate.1.wait();
+        }
+        json!({"wall":self.wall.report(),"errors":self.errors,
+            "submitted_sequence":self.submitted,"completed_sequence":self.completed,
+            "pending_snapshots":self.pending,"pending_capacity":1,
+            "coalesced_snapshots":self.coalesced,
+            "scope":"completed background batches; quality files precede service status; critical updates wait for fsync"})
+    }
 }
 type Shared = Arc<(Mutex<State>, Condvar)>;
 pub(super) struct Persistence {
@@ -106,13 +132,21 @@ impl Persistence {
         );
         Ok(())
     }
+    fn snapshot(shared: &Shared) -> Report {
+        let state = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        Report {
+            wall: state.wall.clone(),
+            errors: u64::from(state.error.is_some()),
+            submitted: state.submitted,
+            completed: state.completed,
+            pending: usize::from(state.pending.is_some()),
+            coalesced: state.coalesced,
+            #[cfg(test)]
+            render_gate: state.render_gate.clone(),
+        }
+    }
     pub(super) fn report(&self) -> Value {
-        let state = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
-        json!({"wall":state.wall.report(),"errors":u64::from(state.error.is_some()),
-            "submitted_sequence":state.submitted,"completed_sequence":state.completed,
-            "pending_snapshots":usize::from(state.pending.is_some()),"pending_capacity":1,
-            "coalesced_snapshots":state.coalesced,
-            "scope":"completed background batches; quality files precede service status; critical updates wait for fsync"})
+        Self::snapshot(&self.shared).value()
     }
 }
 impl Drop for Persistence {
@@ -132,6 +166,38 @@ mod tests {
     use std::{sync::mpsc, time::Duration};
     fn batch(n: u64) -> Batch {
         vec![(PathBuf::from("status"), json!(n))]
+    }
+    #[test]
+    fn critical_write_completes_while_report_formatting_is_paused() {
+        let (tx, rx) = mpsc::channel();
+        let mut writer = Persistence::with_writer(move |batch| {
+            tx.send(batch[0].1.clone()).unwrap();
+            Ok(())
+        })
+        .unwrap();
+        let gate = Arc::new((std::sync::Barrier::new(2), std::sync::Barrier::new(2)));
+        writer.shared.0.lock().unwrap().render_gate = Some(gate.clone());
+        let shared = writer.shared.clone();
+        let reporting = std::thread::spawn(move || Persistence::snapshot(&shared).value());
+        gate.0.wait();
+        let unlocked = writer.shared.0.try_lock().is_ok();
+        if unlocked {
+            writer.submit(batch(1), true).unwrap();
+            assert_eq!(rx.recv().unwrap(), json!(1));
+        }
+        gate.1.wait();
+        let old = reporting.join().unwrap();
+        writer.shared.0.lock().unwrap().render_gate = None;
+        assert!(
+            unlocked,
+            "report formatting must not hold persistence state"
+        );
+        assert_eq!(old["submitted_sequence"], 0);
+        assert_eq!(old["completed_sequence"], 0);
+        let fresh = writer.report();
+        assert_eq!(fresh["submitted_sequence"], 1);
+        assert_eq!(fresh["completed_sequence"], 1);
+        assert_eq!(fresh["wall"]["samples"], 1);
     }
     #[test]
     fn stalled_io_does_not_block_updates_and_critical_state_fences_the_latest_batch() {

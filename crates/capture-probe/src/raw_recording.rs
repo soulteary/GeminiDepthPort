@@ -147,6 +147,7 @@ impl State {
         }
     }
 }
+#[derive(Clone)]
 struct Shared {
     state: State,
     reason: Option<&'static str>,
@@ -226,6 +227,30 @@ struct QueueState {
     discarded: u64,
     wait: StageStats,
 }
+// Only bounded counters/histogram data; never clone queued frames or IMU arrays.
+struct QueueReport {
+    queued_pairs: usize,
+    queued_bytes: u64,
+    oldest_age_ns: Option<u64>,
+    high_water_pairs: usize,
+    high_water_bytes: u64,
+    inflight_pairs: u64,
+    inflight_bytes: u64,
+    dequeued: u64,
+    discarded: u64,
+    closed: bool,
+    wait: StageStats,
+}
+impl QueueReport {
+    fn report(self, capacity: usize) -> Value {
+        json!({"capacity_pairs":capacity,"queued_pairs":self.queued_pairs,"queued_payload_bytes":self.queued_bytes,
+            "oldest_queued_age_ns":self.oldest_age_ns,
+            "high_water_pairs":self.high_water_pairs,"high_water_payload_bytes":self.high_water_bytes,
+            "inflight_pairs":self.inflight_pairs,"inflight_payload_bytes":self.inflight_bytes,
+            "dequeued_pairs":self.dequeued,"discarded_pairs":self.discarded,"closed":self.closed,
+            "wait":self.wait.report(),"scope":"owned-whole-pair-fifo; excludes SDK and ROS queues"})
+    }
+}
 enum QueueSendError {
     Full,
     Disconnected,
@@ -234,6 +259,8 @@ struct RecordingQueue {
     state: Mutex<QueueState>,
     available: Condvar,
     capacity: usize,
+    #[cfg(test)]
+    report_gate: Mutex<Option<Arc<TestGate>>>,
 }
 impl RecordingQueue {
     fn new(capacity: usize) -> Arc<Self> {
@@ -252,6 +279,8 @@ impl RecordingQueue {
             }),
             available: Condvar::new(),
             capacity,
+            #[cfg(test)]
+            report_gate: Mutex::new(None),
         })
     }
     fn send(&self, pair: OwnedPair) -> std::result::Result<(), QueueSendError> {
@@ -311,14 +340,32 @@ impl RecordingQueue {
         drop(abandoned);
         self.available.notify_all();
     }
-    fn report(&self) -> Value {
+    fn snapshot(&self) -> QueueReport {
         let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        json!({"capacity_pairs":self.capacity,"queued_pairs":s.pairs.len(),"queued_payload_bytes":s.bytes,
-            "oldest_queued_age_ns":s.pairs.front().map(|pair|pair.enqueued.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64),
-            "high_water_pairs":s.high_water_pairs,"high_water_payload_bytes":s.high_water_bytes,
-            "inflight_pairs":s.inflight_pairs,"inflight_payload_bytes":s.inflight_bytes,
-            "dequeued_pairs":s.dequeued,"discarded_pairs":s.discarded,"closed":s.closed,
-            "wait":s.wait.report(),"scope":"owned-whole-pair-fifo; excludes SDK and ROS queues"})
+        QueueReport {
+            queued_pairs: s.pairs.len(),
+            queued_bytes: s.bytes,
+            oldest_age_ns: s
+                .pairs
+                .front()
+                .map(|pair| pair.enqueued.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64),
+            high_water_pairs: s.high_water_pairs,
+            high_water_bytes: s.high_water_bytes,
+            inflight_pairs: s.inflight_pairs,
+            inflight_bytes: s.inflight_bytes,
+            dequeued: s.dequeued,
+            discarded: s.discarded,
+            closed: s.closed,
+            wait: s.wait.clone(),
+        }
+    }
+    fn report(&self) -> Value {
+        #[cfg(test)]
+        if let Some(gate) = self.report_gate.lock().unwrap().clone() {
+            gate.started.wait();
+            gate.resume.wait();
+        }
+        self.snapshot().report(self.capacity)
     }
 }
 struct RecordingSender(Arc<RecordingQueue>);
@@ -775,7 +822,8 @@ impl RawRecorder {
         }
     }
     pub fn status(&self) -> Value {
-        let s = self.lock();
+        // Do not nest queue/IO locks or build JSON while holding capture state.
+        let s = self.lock().clone();
         json!({"version":1,"state":s.state.as_str(),"reason":s.reason,"session_id":self.session,"max_pairs":self.settings.max_pairs,"max_bytes":self.settings.max_bytes,"queue_capacity":self.settings.queue_capacity,"submitted_pairs":s.submitted,"written_pairs":s.written,"imu_samples_submitted":s.imu_submitted,"imu_samples_outside_recording_excluded":s.imu_outside_recording,"imu_samples_pending":self.pending_imu.len(),"imu_buffers":self.imu_pool.as_ref().map(|pool|pool.report()),"payload_bytes_submitted":s.payload_bytes,"whole_pair_queue_overflows":s.overflows,"writer_queue":self.queue.as_ref().map(|q| q.report()),"disk_stages":s.disk.report(),"startup_framesets_excluded":s.excluded_startup,"waiting_framesets_excluded":s.waiting_framesets,"checkpoint_pipeline":self.settings.checkpoint_pipeline,"storage_format":if self.settings.chunked {"recording-directory-v3"}else{"recording-directory-v2"},"native_snapshot_id":s.native_snapshot,"ros_snapshot_id":s.ros_snapshot,"job_path":self.settings.directory.join(&self.name),"partial_path":self.settings.directory.join(format!("{}.partial",self.name)),"business_validity":null,"recording_protection_released":false})
     }
 }
@@ -983,6 +1031,49 @@ mod tests {
             clock: frame_core::PairClock::Device,
             max_delta_us: 20_000,
         }
+    }
+    #[test]
+    fn paused_queue_report_does_not_hold_recording_state_and_queue_snapshot_is_owned() {
+        let dir = directory();
+        let mut sink = RawRecorder::new(settings(&dir, 2, 1_000_000), "report-test");
+        let queue = RecordingQueue::new(2);
+        sink.queue = Some(queue.clone());
+        let gate = Arc::new(TestGate {
+            started: std::sync::Barrier::new(2),
+            resume: std::sync::Barrier::new(2),
+        });
+        *queue.report_gate.lock().unwrap() = Some(gate.clone());
+        std::thread::scope(|scope| {
+            let reporting = scope.spawn(|| sink.status());
+            gate.started.wait();
+            let unlocked = if let Ok(mut state) = sink.shared.try_lock() {
+                state.written = 1;
+                true
+            } else {
+                false
+            };
+            gate.resume.wait();
+            let old = reporting.join().unwrap();
+            assert!(
+                unlocked,
+                "status must release recording state before queue/IO reporting"
+            );
+            assert_eq!(old["written_pairs"], 0);
+        });
+        *queue.report_gate.lock().unwrap() = None;
+        assert_eq!(sink.status()["written_pairs"], 1);
+        let snapshot = queue.snapshot();
+        let mut state = queue.state.lock().unwrap();
+        state.dequeued = 7;
+        state.wait.observe(std::time::Duration::from_millis(4));
+        let old = snapshot.report(queue.capacity);
+        assert_eq!(old["dequeued_pairs"], 0);
+        assert_eq!(old["wait"]["samples"], 0);
+        drop(state);
+        assert_eq!(queue.report()["dequeued_pairs"], 7);
+        assert_eq!(queue.report()["wait"]["samples"], 1);
+        drop(sink);
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn bounded_native_target_finishes_independently_with_original_counts_and_distinct_snapshot() {

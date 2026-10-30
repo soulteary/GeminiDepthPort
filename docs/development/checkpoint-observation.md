@@ -128,3 +128,10 @@ real-camera/perf acceptance must use the actual Linux host and storage load.
 
 For post-capture reader CPU breakdown, see
 [Recording reader CPU profile](recording-reader-profile.md).
+
+Status reporting copies bounded scalar/histogram snapshots under the recording,
+queue, IO-statistics and persistence-statistics locks. Quantiles and report JSON
+construction run after releasing those locks; queue payloads and pending status
+batches are not cloned. Snapshot groups are sampled independently, not as one
+transaction. Cadence, critical durability waits and atomic file publication are
+unchanged. See the [lock contention and service A/B results](../validation/reports/status-report-lock-ab-20261030.md).

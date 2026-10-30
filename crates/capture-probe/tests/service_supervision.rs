@@ -2978,3 +2978,103 @@ fn checkpoint_observation_benchmark() {
     }
     fs::write(std::env::var_os("GDP_CHECKPOINT_BENCH_OUTPUT").unwrap(),serde_json::to_vec_pretty(&json!({"modes":["baseline","observation_disabled","observation_enabled","enabled_plus_sampler"],"pairs":180,"repeats":5,"synthetic_sdk":true,"synthetic_ros_bridge":true,"width":640,"height":400,"imu_hz":200,"rows":rows})).unwrap()).unwrap();
 }
+
+#[test]
+#[ignore = "explicit release status report lock A/B; no noisy CI thresholds"]
+fn status_report_lock_ab_benchmark() {
+    let before = std::env::var_os("GDP_STATUS_LOCK_BEFORE").unwrap();
+    let mut rows = Vec::new();
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
+    for repeat in 0..5 {
+        for observation in [false, true] {
+            for candidate in if repeat % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            } {
+                let f = large_imu_benchmark_fixture();
+                configure_runtime_quality(&f, 240, 1024 * 1024 * 1024);
+                enable_imu(&f);
+                let mut config: Value =
+                    serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+                config["imu"]["accel_rate_hz"] = json!(200);
+                config["imu"]["gyro_rate_hz"] = json!(200);
+                config["raw_recording"]["checkpoint_pipeline"] = json!(true);
+                config["raw_recording"]["checkpoint_observation"] = json!(observation);
+                config["service"]["heartbeat_ms"] = json!(50);
+                assert_eq!(config["service"]["heartbeat_ms"], 50);
+                fs::write(&f.config, config.to_string()).unwrap();
+                let service = if candidate {
+                    std::ffi::OsStr::new(env!("CARGO_BIN_EXE_capture-service"))
+                } else {
+                    before.as_os_str()
+                };
+                let mut child = Command::new(service)
+                    .args(["--config", f.config.to_str().unwrap()])
+                    .env("GDP_MOCK_WAIT_DELAY_MS", "33")
+                    .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+                    .env("GDP_ROS_MOCK_EVENTS", &f.events)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap();
+                let ready = wait_status(&f, &mut child, |v| v["ready"] == true);
+                let worker = ready["pid"].as_u64().unwrap() as u32;
+                let a = process_measurement(child.id());
+                let b = process_measurement(worker);
+                let started = Instant::now();
+                let tracking = std::cell::RefCell::new((
+                    ready["heartbeat_sequence"].as_u64().unwrap(),
+                    Instant::now(),
+                    Vec::new(),
+                ));
+                let final_status = wait_status_for(
+                    &f,
+                    &mut child,
+                    |v| {
+                        let seq = v["heartbeat_sequence"].as_u64().unwrap();
+                        let mut tracking = tracking.borrow_mut();
+                        if seq != tracking.0 {
+                            let elapsed = tracking.1.elapsed().as_secs_f64() * 1000.;
+                            tracking.2.push(elapsed);
+                            tracking.1 = Instant::now();
+                            tracking.0 = seq;
+                        }
+                        v["raw_recording"]["state"] == "complete"
+                    },
+                    Duration::from_secs(30),
+                );
+                let wall = started.elapsed().as_secs_f64();
+                let c = process_measurement(child.id());
+                let d = process_measurement(worker);
+                let gaps = tracking.into_inner().2;
+                let raw = &final_status["raw_recording"];
+                assert_eq!(raw["written_pairs"], 240);
+                assert_eq!(raw["whole_pair_queue_overflows"], 0);
+                assert_eq!(final_status["pairs_rejected"], 0);
+                assert_eq!(final_status["missing_pairs"], 0);
+                assert_eq!(
+                    raw["disk_stages"]["validation_image_bytes"]
+                        .as_u64()
+                        .unwrap(),
+                    raw["payload_bytes_submitted"].as_u64().unwrap() * 2
+                );
+                assert_eq!(
+                    raw["disk_stages"]["validation_imu_samples"]
+                        .as_u64()
+                        .unwrap(),
+                    raw["imu_samples_submitted"].as_u64().unwrap() * 2
+                );
+                assert!(final_status["imu"]["queue_high_water"].as_u64().unwrap() <= 128);
+                stop(&mut child);
+                let stopped = status(&f).unwrap();
+                assert_eq!(stopped["state"], "stopped");
+                assert_eq!(stopped["raw_recording"]["state"], "complete");
+                rows.push(json!({"variant":if candidate {"after"}else{"before"},"observation":observation,"repeat":repeat,
+                    "wall_seconds":wall,"cpu_cores":((c.0-a.0)+(d.0-b.0)) as f64/hz/wall,"worker_peak_rss_kib":d.1,"supervisor_peak_rss_kib":c.1,
+                    "heartbeat_observed_gaps_ms":gaps,"pipeline_timing":final_status["pipeline_timing"],"status_persistence":stopped["status_persistence"],"raw_recording":raw,"imu":final_status["imu"]}));
+            }
+        }
+    }
+    fs::write(std::env::var_os("GDP_STATUS_LOCK_OUTPUT").unwrap(),serde_json::to_vec_pretty(&json!({"kind":"status-report-lock-ab","repeats":5,"runs":20,"target_pairs":240,"width":640,"height":400,"heartbeat_ms":50,"sdk_wait_delay_ms":33,"imu_requested_hz_per_stream":200,"rows":rows,"limits":"synthetic SDK/C ABI bridge; no USB/real DDS/actual disk latency; worker+supervisor CPU from readiness to recording complete; VmHWM separate process peaks; heartbeat gaps are polling observations, not exact write intervals"})).unwrap()).unwrap();
+}

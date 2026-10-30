@@ -1015,7 +1015,7 @@ impl Default for RawRecordingDiagnostics {
         Self::with_checkpoint_observation(false)
     }
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct RawIoStats {
     write: StageStats,
     fsync: StageStats,
@@ -1035,6 +1035,8 @@ struct RawIoStats {
     checkpoints: u64,
     payload_files: u64,
     failures: std::collections::BTreeMap<&'static str, u64>,
+    #[cfg(test)]
+    render_gate: Option<Arc<(std::sync::Barrier, std::sync::Barrier)>>,
 }
 impl RawRecordingDiagnostics {
     pub fn with_checkpoint_observation(enabled: bool) -> Self {
@@ -1079,7 +1081,21 @@ impl RawRecordingDiagnostics {
     }
     pub fn report(&self) -> serde_json::Value {
         let observation = self.1.report();
-        let stats = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let stats = self.snapshot();
+        stats.report(observation)
+    }
+    fn snapshot(&self) -> RawIoStats {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+impl RawIoStats {
+    fn report(&self, observation: serde_json::Value) -> serde_json::Value {
+        #[cfg(test)]
+        if let Some(gate) = &self.render_gate {
+            gate.0.wait();
+            gate.1.wait();
+        }
+        let stats = self;
         let mut value = serde_json::json!({"clock":"monotonic-duration","scope":"native-writer-only; write-success-is-not-durability",
             "write":stats.write.report(),"fsync":stats.fsync.report(),"rename":stats.rename.report(),
             "verification":stats.verification.report(),"append":stats.append.report(),"finish_total":stats.finish.report(),
@@ -1563,6 +1579,48 @@ fn write_private_observed(
 mod streaming_hash_tests {
     use super::*;
     #[test]
+    fn paused_io_report_keeps_old_snapshot_and_does_not_block_writer_stats() {
+        let diagnostics = RawRecordingDiagnostics::default();
+        diagnostics.measure("write", || Ok::<_, ()>(())).unwrap();
+        assert!(diagnostics.measure("fsync", || Err::<(), _>(())).is_err());
+        let gate = Arc::new((std::sync::Barrier::new(2), std::sync::Barrier::new(2)));
+        diagnostics.0.lock().unwrap().render_gate = Some(gate.clone());
+        let other = diagnostics.clone();
+        let reporting = std::thread::spawn(move || other.report());
+        gate.0.wait();
+        let unlocked = if let Ok(mut state) = diagnostics.0.try_lock() {
+            state.write.observe(std::time::Duration::from_millis(9));
+            state.render_gate = None;
+            true
+        } else {
+            false
+        };
+        gate.1.wait();
+        let old = reporting.join().unwrap();
+        diagnostics.0.lock().unwrap().render_gate = None;
+        assert!(
+            unlocked,
+            "histogram/JSON formatting must not hold writer stats"
+        );
+        assert_eq!(old["write"]["samples"], 1);
+        assert_eq!(old["failed_calls"]["fsync"], 1);
+        let fresh = diagnostics.report();
+        assert_eq!(fresh["write"]["samples"], 2);
+        assert_eq!(
+            fresh["write"]["total_ns"]
+                .as_str()
+                .unwrap()
+                .parse::<u128>()
+                .unwrap()
+                - old["write"]["total_ns"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<u128>()
+                    .unwrap(),
+            9_000_000
+        );
+    }
+    #[test]
     fn streaming_hash_matches_whole_extent_hash_at_buffer_boundaries() {
         let data: Vec<u8> = (0..131089).map(|n| (n % 251) as u8).collect();
         let mut buffer = Vec::new();
@@ -1577,5 +1635,53 @@ mod streaming_hash_tests {
         }
         let mut truncated = std::io::Cursor::new(&data[..100]);
         assert!(hash_extent(&mut truncated, 101, &mut buffer).is_err());
+    }
+    #[test]
+    #[ignore = "explicit release mutex contention experiment, not hardware throughput"]
+    fn report_mutex_contention_benchmark() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let diagnostics = RawRecordingDiagnostics::default();
+        {
+            let mut state = diagnostics.0.lock().unwrap();
+            for n in 1..=1024 {
+                let ns = n * 5000;
+                state.write.observe_ns(ns);
+                state.fsync.observe_ns(ns);
+                state.rename.observe_ns(ns);
+                state.verification.observe_ns(ns);
+                state.append.observe_ns(ns);
+                state.finish.observe_ns(ns);
+            }
+        }
+        let done = Arc::new(AtomicBool::new(false));
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let writer = diagnostics.clone();
+        let worker_done = done.clone();
+        let worker_start = start.clone();
+        let updating = std::thread::spawn(move || {
+            let mut waits = StageStats::default();
+            let mut updates = 0;
+            worker_start.wait();
+            while !worker_done.load(Ordering::Relaxed) {
+                let began = Instant::now();
+                let mut state = writer.0.lock().unwrap();
+                let wait = began.elapsed();
+                state.payload_write_calls += 1;
+                drop(state);
+                waits.observe(wait);
+                updates += 1;
+            }
+            (waits, updates)
+        });
+        start.wait();
+        let began = Instant::now();
+        for _ in 0..2000 {
+            std::hint::black_box(diagnostics.report());
+        }
+        let elapsed = began.elapsed().as_secs_f64();
+        done.store(true, Ordering::Relaxed);
+        let (waits, updates) = updating.join().unwrap();
+        assert!(updates > 0);
+        std::fs::write(std::env::var_os("GDP_REPORT_LOCK_OUTPUT").unwrap(),serde_json::to_vec_pretty(&serde_json::json!({"report_calls":2000,"elapsed_seconds":elapsed,"updates":updates,"writer_mutex_wait":waits.report(),"scope":"continuous synthetic stats updater and reporter; not append latency, capture CPU, or disk throughput"})).unwrap()).unwrap();
     }
 }
