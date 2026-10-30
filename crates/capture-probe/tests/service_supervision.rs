@@ -2526,12 +2526,14 @@ fn enable_imu(f: &Fixture) {
 #[test]
 fn imu_service_publishes_both_streams_and_preserves_samples_in_native_recording() {
     let f = fixture();
-    configure_runtime_quality(&f, 80, 2_000_000);
+    // This verifies ROS/IMU persistence, not shared-runner checkpoint throughput.
+    // Dedicated recording tests exercise cross-chunk checkpoints/backpressure.
+    configure_runtime_quality(&f, 31, 2_000_000);
     enable_imu(&f);
     let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
     config["startup_discovery_seconds"] = json!(0.05);
     fs::write(&f.config, config.to_string()).unwrap();
-    let mut child = launch(&f);
+    let mut child = acquisition_child(&f, &[("GDP_MOCK_WAIT_DELAY_MS", "33")]);
     let done = wait_status(&f, &mut child, |v| {
         v["ready"] == true && v["raw_recording"]["state"] == "complete"
     });
