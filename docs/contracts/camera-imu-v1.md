@@ -203,3 +203,6 @@ ABI 依据 [SDK v2.10.6 C headers](https://github.com/orbbec/OrbbecSDK_v2/tree/v
 性能影响需区分合成回调/发布边界开销与真实 USB、SDK 调度和 DDS 传输成本。
 本轮数据见 [IMU 性能报告](../validation/reports/camera-imu-ab-20261030.md)。本机没有连接
 实际相机，物理采样率、轴向、噪声、硬件时间一致性与长时稳定性仍须实机验证。
+
+针对 `45992a4` 的三相机实机流程、逐样本 DDS/native 对照与 SIGKILL 恢复验收见
+[IMU 实机长测](../validation/imu-long-run-45992a4.md)。

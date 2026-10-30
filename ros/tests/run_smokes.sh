@@ -12,6 +12,7 @@ python3 /ws/ros/tests/smoke_aux.py \
 
 python3 /ws/ros/tests/smoke_imu.py
 python3 /ws/ros/tests/smoke_context.py
+python3 /ws/ros/tests/smoke_long_run.py
 
 python3 /ws/ros/tests/diagnostics_smoke.py
 

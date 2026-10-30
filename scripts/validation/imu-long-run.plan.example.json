@@ -1,0 +1,32 @@
+{
+  "commit": "45992a4c0e81dd7a23b0b0f17fafd14a24d926b7",
+  "cameras": [
+    {
+      "name": "a",
+      "container": "gdp-test-a",
+      "namespace": "/camera_a",
+      "config_host": "/srv/gdp-test/a/capture.json",
+      "status_host": "/srv/gdp-test/a/status.json",
+      "recording_host": "/srv/gdp-test/a/raw/ACTUAL_SESSION",
+      "binary_sha256": "TRUSTED_CAPTURE_SERVICE_SHA256"
+    },
+    {
+      "name": "b",
+      "container": "gdp-test-b",
+      "namespace": "/camera_b",
+      "config_host": "/srv/gdp-test/b/capture.json",
+      "status_host": "/srv/gdp-test/b/status.json",
+      "recording_host": "/srv/gdp-test/b/raw/ACTUAL_SESSION",
+      "binary_sha256": "TRUSTED_CAPTURE_SERVICE_SHA256"
+    },
+    {
+      "name": "c",
+      "container": "gdp-test-c",
+      "namespace": "/camera_c",
+      "config_host": "/srv/gdp-test/c/capture.json",
+      "status_host": "/srv/gdp-test/c/status.json",
+      "recording_host": "/srv/gdp-test/c/raw/ACTUAL_SESSION",
+      "binary_sha256": "TRUSTED_CAPTURE_SERVICE_SHA256"
+    }
+  ]
+}
