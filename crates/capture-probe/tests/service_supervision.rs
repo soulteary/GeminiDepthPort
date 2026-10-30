@@ -1144,6 +1144,7 @@ fn faults_after_readiness_abort_raw_output_and_never_publish_invalid_frames() {
         // snapshot initialization on a shared CI runner.
         let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
         config["service"]["heartbeat_timeout_ms"] = json!(3000);
+        config["service"]["idle_timeout_ms"] = json!(3000);
         fs::write(&f.config, config.to_string()).unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_capture-service"))
             .args(["--config", f.config.to_str().unwrap()])
@@ -1349,6 +1350,9 @@ fn zero_system_clock_after_readiness_rejects_pairs_and_keeps_raw_output_incomple
     configure_runtime_quality(&f, 1_000_000, 100_000_000);
     let mut value: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
     value["pairing"]["clock"] = json!("system");
+    // Exercise the injected clock fault, not shared-runner scheduling/fsync stalls.
+    value["service"]["heartbeat_timeout_ms"] = json!(3000);
+    value["service"]["idle_timeout_ms"] = json!(3000);
     fs::write(&f.config, value.to_string()).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_capture-service"))
         .args(["--config", f.config.to_str().unwrap()])
@@ -1558,6 +1562,8 @@ fn native_recording_reports_thread_exhaustion_queue_backpressure_and_snapshot_li
         let f = fixture();
         configure_runtime_quality(&f, 1_000_000, 100_000_000);
         let mut value: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+        // Allow the deliberately stalled fsync to reach the queue-overflow fault.
+        value["service"]["idle_timeout_ms"] = json!(3000);
         value["service"]["heartbeat_timeout_ms"] = json!(3000);
         value["service"]["shutdown_timeout_ms"] = json!(3000);
         fs::write(&f.config, value.to_string()).unwrap();
