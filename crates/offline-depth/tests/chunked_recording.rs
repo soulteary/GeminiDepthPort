@@ -332,8 +332,14 @@ mod io_faults;
 fn checkpoint_child() {
     let root = std::path::PathBuf::from(std::env::var_os("GDP_CHUNK_ROOT").unwrap());
     let (snapshot, pair, pixels) = fixture();
-    let mut writer =
-        RawRecordingWriter::begin_chunked(&root, "capture", snapshot, 1_000_000).unwrap();
+    let mut writer = RawRecordingWriter::begin_chunked_with_diagnostics(
+        &root,
+        "capture",
+        snapshot,
+        1_000_000,
+        RawRecordingDiagnostics::with_checkpoint_observation(true),
+    )
+    .unwrap();
     for n in 1..=32 {
         append(&mut writer, &pair, &pixels, n);
     }
@@ -353,7 +359,9 @@ fn checkpoint_child() {
         }
     }
     assert!(result.and_then(|_| writer.checkpoint()).is_err());
-    assert_eq!(writer.diagnostics().report()["durable_pairs"], 32);
+    let report = writer.diagnostics().report();
+    assert_eq!(report["durable_pairs"], 32);
+    fs::write(root.join("observation.json"), report.to_string()).unwrap();
     drop(writer);
 }
 #[cfg(target_os = "linux")]
@@ -420,6 +428,29 @@ fn checkpoint_write_sync_and_rename_failures_never_promote_an_unverified_prefix(
             String::from_utf8_lossy(&output.stderr)
         );
         io_faults::assert_injected(&marker, op);
+        if op != "writev" {
+            let phase = match (op, suffix, nth) {
+                ("write", _, _) => "index_flush",
+                ("fsync", "/payload-00000000000000000002.bin", _) => "payload_sync",
+                ("fsync", "/records.jsonl", _) => "index_sync",
+                ("fsync", "/.checkpoint.tmp", _) => "checkpoint_write",
+                ("rename", _, _) => "checkpoint_rename",
+                (_, _, "2") => "checkpoint_directory_sync",
+                _ => "directory_sync",
+            };
+            let report: Value =
+                serde_json::from_slice(&fs::read(root.path().join("observation.json")).unwrap())
+                    .unwrap();
+            let obs = &report["checkpoint_observation"];
+            assert_eq!(obs["stages"][phase]["errors"], 1, "{phase}: {obs}");
+            assert!(
+                obs["events"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|e| e["phase"] == phase && e["ok"] == false)
+            );
+        }
         let stage = root.path().join("capture.partial");
         assert_eq!(read_all(&stage, true).len(), expected, "{op} {suffix}");
         assert!(!stage.join("COMPLETE").exists());
@@ -1520,5 +1551,97 @@ fn borrowed_shared_imu_batches_keep_index_bytes_and_readback_hashes_identical() 
             fs::read(paths[0].join("records.jsonl")).unwrap(),
             fs::read(paths[1].join("records.jsonl")).unwrap()
         );
+    }
+}
+
+#[test]
+fn checkpoint_observation_preserves_artifacts_and_both_readbacks() {
+    for pipeline in [false, true] {
+        let (snapshot, pair, pixels) = fixture();
+        let dir = tempfile::tempdir().unwrap();
+        let mut artifacts = Vec::new();
+        for enabled in [false, true] {
+            let diagnostics = RawRecordingDiagnostics::with_checkpoint_observation(enabled);
+            let mut writer = RawRecordingWriter::begin_chunked_with_diagnostics(
+                dir.path(),
+                if enabled { "on" } else { "off" },
+                snapshot.clone(),
+                1_000_000,
+                diagnostics.clone(),
+            )
+            .unwrap();
+            if pipeline {
+                writer.enable_checkpoint_pipeline().unwrap();
+            }
+            for n in 1..=33 {
+                append(&mut writer, &pair, &pixels, n);
+            }
+            let path = writer.finish().unwrap();
+            let report = diagnostics.report();
+            assert_eq!(
+                report["validation_image_bytes"],
+                33 * (4 + pixels.len()) * 2
+            );
+            assert_eq!(report["durable_pairs"], 33);
+            let obs = &report["checkpoint_observation"];
+            assert_eq!(obs["enabled"], enabled);
+            assert!(obs["active"].as_array().unwrap().is_empty());
+            if enabled {
+                for phase in [
+                    "index_flush",
+                    "payload_sync",
+                    "index_sync",
+                    "directory_sync",
+                    "prepare",
+                    "readback",
+                    "checkpoint_write",
+                    "checkpoint_rename",
+                    "checkpoint_directory_sync",
+                    "final_readback",
+                ] {
+                    assert!(
+                        obs["stages"][phase]["wall"]["samples"].as_u64().unwrap() > 0,
+                        "{phase}: {obs}"
+                    );
+                    assert_eq!(obs["stages"][phase]["errors"], 0);
+                }
+                assert_eq!(
+                    obs["stages"]["readback"]["wall"]["samples"],
+                    report["checkpoints"]
+                );
+                assert_eq!(obs["stages"]["final_readback"]["wall"]["samples"], 1);
+                if pipeline {
+                    assert_eq!(
+                        obs["stages"]["verify_wait"]["wall"]["samples"],
+                        report["checkpoints"].as_u64().unwrap() - 1
+                    );
+                    assert_eq!(
+                        obs["stages"]["verify_dispatch"]["wall"]["samples"],
+                        report["checkpoints"].as_u64().unwrap() - 1
+                    );
+                }
+                for event in obs["events"].as_array().unwrap() {
+                    assert_eq!(event["ok"], true);
+                    assert!(event["info"]["prefix_pairs"].as_u64().unwrap() <= 33);
+                    assert!(event["wall_ns"].is_u64());
+                    #[cfg(target_os = "linux")]
+                    assert!(event["tid"].as_u64().unwrap() > 0);
+                }
+            } else {
+                assert!(obs["events"].as_array().unwrap().is_empty());
+            }
+            let mut files = fs::read_dir(&path)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect::<Vec<_>>();
+            files.sort();
+            artifacts.push(
+                files
+                    .into_iter()
+                    .map(|name| (name.clone(), fs::read(path.join(name)).unwrap()))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        assert_eq!(artifacts[0], artifacts[1]);
     }
 }

@@ -25,6 +25,7 @@ use std::{
 pub(crate) struct RawSettings {
     pub chunked: bool,
     pub checkpoint_pipeline: bool,
+    pub checkpoint_observation: bool,
     pub directory: PathBuf,
     pub name: String,
     pub queue_capacity: usize,
@@ -42,6 +43,7 @@ impl RawSettings {
                 "max_pairs",
                 "max_bytes",
                 "checkpoint_pipeline",
+                "checkpoint_observation",
                 "storage_format"
             ]
             .contains(&k.as_str()))
@@ -66,6 +68,11 @@ impl RawSettings {
             None => false,
             Some(Value::Bool(v)) => *v,
             _ => anyhow::bail!("checkpoint pipeline must be boolean"),
+        };
+        let checkpoint_observation = match m.get("checkpoint_observation") {
+            None => false,
+            Some(Value::Bool(v)) => *v,
+            _ => anyhow::bail!("checkpoint observation must be boolean"),
         };
         ensure!(
             !checkpoint_pipeline || chunked,
@@ -110,6 +117,7 @@ impl RawSettings {
         Ok(Self {
             chunked,
             checkpoint_pipeline,
+            checkpoint_observation,
             directory,
             name,
             queue_capacity,
@@ -355,6 +363,8 @@ struct TestGate {
 }
 impl RawRecorder {
     pub fn new(settings: RawSettings, session: &str) -> Self {
+        let disk =
+            RawRecordingDiagnostics::with_checkpoint_observation(settings.checkpoint_observation);
         Self {
             pending_imu: Vec::new(),
             imu_pool: None,
@@ -374,7 +384,7 @@ impl RawRecorder {
                 waiting_framesets: 0,
                 native_snapshot: None,
                 ros_snapshot: None,
-                disk: RawRecordingDiagnostics::default(),
+                disk,
             })),
             abort: Arc::new(AtomicBool::new(false)),
             sender: None,
@@ -922,6 +932,7 @@ mod tests {
         RawSettings {
             chunked: true,
             checkpoint_pipeline: false,
+            checkpoint_observation: true,
             directory: directory.into(),
             name: "native".into(),
             queue_capacity: 2,
@@ -1110,7 +1121,20 @@ mod tests {
     #[test]
     fn explicit_raw_configuration_refuses_ambiguous_or_unbounded_settings() {
         let base = json!({"directory":"/private/raw","name":"sample","queue_capacity":2,"max_pairs":30,"max_bytes":1_000_000});
-        assert!(RawSettings::parse(&base).is_ok());
+        assert!(!RawSettings::parse(&base).unwrap().checkpoint_observation);
+        for enabled in [false, true] {
+            let mut v = base.clone();
+            v["checkpoint_observation"] = json!(enabled);
+            assert_eq!(
+                RawSettings::parse(&v).unwrap().checkpoint_observation,
+                enabled
+            );
+        }
+        for bad in [json!(null), json!(1), json!("false")] {
+            let mut v = base.clone();
+            v["checkpoint_observation"] = bad;
+            assert!(RawSettings::parse(&v).is_err());
+        }
         for (field, bad) in [
             ("queue_capacity", json!(0)),
             ("max_pairs", json!(0)),

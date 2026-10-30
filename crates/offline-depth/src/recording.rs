@@ -1,6 +1,7 @@
 //! Versioned recording boundary. Observed associations never become SDK framesets.
 use super::*;
 mod chunked;
+mod telemetry;
 use capture_contract::imu::{
     ImuProgress, ImuSample, ImuSampleFields, SharedImuSample, ValidatedImuConfig,
 };
@@ -14,6 +15,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Instant,
 };
+use telemetry::{CheckpointInfo, Phase};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -886,8 +888,13 @@ pub fn process(
 }
 
 /// Runtime-only IO diagnostics, excluded from recording files and content IDs.
-#[derive(Clone, Default)]
-pub struct RawRecordingDiagnostics(Arc<Mutex<RawIoStats>>);
+#[derive(Clone)]
+pub struct RawRecordingDiagnostics(Arc<Mutex<RawIoStats>>, telemetry::Observation);
+impl Default for RawRecordingDiagnostics {
+    fn default() -> Self {
+        Self::with_checkpoint_observation(false)
+    }
+}
 #[derive(Default)]
 struct RawIoStats {
     write: StageStats,
@@ -910,6 +917,12 @@ struct RawIoStats {
     failures: std::collections::BTreeMap<&'static str, u64>,
 }
 impl RawRecordingDiagnostics {
+    pub fn with_checkpoint_observation(enabled: bool) -> Self {
+        Self(
+            Arc::new(Mutex::new(RawIoStats::default())),
+            telemetry::Observation::new(enabled),
+        )
+    }
     fn measure<T, E>(
         &self,
         stage: &'static str,
@@ -945,8 +958,9 @@ impl RawRecordingDiagnostics {
             .max(scratch.buffer.capacity());
     }
     pub fn report(&self) -> serde_json::Value {
+        let observation = self.1.report();
         let stats = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        serde_json::json!({"clock":"monotonic-duration","scope":"native-writer-only; write-success-is-not-durability",
+        let mut value = serde_json::json!({"clock":"monotonic-duration","scope":"native-writer-only; write-success-is-not-durability",
             "write":stats.write.report(),"fsync":stats.fsync.report(),"rename":stats.rename.report(),
             "verification":stats.verification.report(),"append":stats.append.report(),"finish_total":stats.finish.report(),
             "failed_calls":stats.failures,"durable_pairs":stats.durable_pairs,"checkpoints":stats.checkpoints,"payload_files":stats.payload_files,"validation_image_bytes":stats.validation_image_bytes,
@@ -954,7 +968,9 @@ impl RawRecordingDiagnostics {
             "uncommitted_pairs_peak":stats.uncommitted_pairs_peak,"uncommitted_payload_bytes_peak":stats.uncommitted_payload_bytes_peak,
             "validation_imu_samples":stats.validation_imu_samples,
             "payload_write_calls":stats.payload_write_calls,"index_write_calls":stats.index_write_calls,
-            "index_flushes":stats.index_flushes})
+            "index_flushes":stats.index_flushes});
+        value["checkpoint_observation"] = observation;
+        value
     }
 }
 
@@ -1323,11 +1339,19 @@ impl RawRecordingWriter {
             record_count: self.count,
         };
         self.write_budgeted("manifest.json", &serde_json::to_vec(&manifest)?)?;
-        self.diagnostics.measure("verification", || -> Result<()> {
-            let mut verify = RecordingDirectorySource::open(&self.stage)?;
-            while verify.validate_next()? {}
-            self.diagnostics.verified(&verify);
-            Ok(())
+        let info = CheckpointInfo {
+            checkpoint_id: self.chunked.as_ref().map_or(0, |s| s.chunks),
+            prefix_pairs: self.count,
+            payload_bytes: None,
+            asynchronous: false,
+        };
+        self.diagnostics.1.measure(info, Phase::FinalReadback, || {
+            self.diagnostics.measure("verification", || -> Result<()> {
+                let mut verify = RecordingDirectorySource::open(&self.stage)?;
+                while verify.validate_next()? {}
+                self.diagnostics.verified(&verify);
+                Ok(())
+            })
         })?;
         let _commit_guard = acquire()?;
         self.diagnostics

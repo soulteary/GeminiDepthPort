@@ -2531,7 +2531,10 @@ fn imu_service_publishes_both_streams_and_preserves_samples_in_native_recording(
     configure_runtime_quality(&f, 31, 2_000_000);
     enable_imu(&f);
     let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
-    config["startup_discovery_seconds"] = json!(0.05);
+    // At 25 Hz, a 50 ms window can elapse before the first scheduled callback.
+    // Allow multiple callback periods while retaining the startup exclusion assertion.
+    config["startup_discovery_seconds"] = json!(0.3);
+    config["service"]["heartbeat_timeout_ms"] = json!(3000);
     fs::write(&f.config, config.to_string()).unwrap();
     let mut child = acquisition_child(&f, &[("GDP_MOCK_WAIT_DELAY_MS", "33")]);
     let done = wait_status(&f, &mut child, |v| {
@@ -2873,4 +2876,105 @@ fn old_imu_bridges_keep_isolated_contexts_without_losing_capture_readiness() {
             .lines()
             .any(|v| v == "context-create")
     );
+}
+
+#[test]
+#[ignore = "explicit release checkpoint instrumentation/sampler overhead experiment"]
+fn checkpoint_observation_benchmark() {
+    let mut rows = Vec::new();
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
+    for repeat in 0..5 {
+        let modes = if repeat % 2 == 0 {
+            [0, 1, 2, 3]
+        } else {
+            [3, 2, 1, 0]
+        };
+        for mode in modes {
+            let f = large_imu_benchmark_fixture();
+            configure_runtime_quality(&f, 180, 1024 * 1024 * 1024);
+            enable_imu(&f);
+            let mut value: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+            value["imu"]["accel_rate_hz"] = json!(200);
+            value["imu"]["gyro_rate_hz"] = json!(200);
+            value["raw_recording"]["checkpoint_pipeline"] = json!(true);
+            if mode > 0 {
+                value["raw_recording"]["checkpoint_observation"] = json!(mode >= 2);
+            }
+            fs::write(&f.config, value.to_string()).unwrap();
+            let service = if mode == 0 {
+                std::env::var_os("GDP_CHECKPOINT_BEFORE").unwrap()
+            } else {
+                env!("CARGO_BIN_EXE_capture-service").into()
+            };
+            let mut child = Command::new(service)
+                .args(["--config", f.config.to_str().unwrap()])
+                .env("GDP_MOCK_WAIT_DELAY_MS", "33")
+                .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+                .env("GDP_ROS_MOCK_EVENTS", &f.events)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let ready = wait_status(&f, &mut child, |v| v["ready"] == true);
+            let worker = ready["pid"].as_u64().unwrap() as u32;
+            let out = f.config.parent().unwrap().join("probe-output");
+            let mut sampler = if mode == 3 {
+                Some(
+                    Command::new("python3")
+                        .args([
+                            "/work/scripts/validation/checkpoint_probe.py",
+                            "--host-status",
+                            f.status.to_str().unwrap(),
+                            "--pid",
+                            &worker.to_string(),
+                            "--seconds",
+                            "60",
+                            "--output",
+                            out.to_str().unwrap(),
+                        ])
+                        .stdout(Stdio::null())
+                        .spawn()
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            let a = process_measurement(child.id());
+            let b = process_measurement(worker);
+            let started = Instant::now();
+            let final_status = wait_status_for(
+                &f,
+                &mut child,
+                |v| v["raw_recording"]["state"] == "complete",
+                Duration::from_secs(30),
+            );
+            let wall = started.elapsed().as_secs_f64();
+            let c = process_measurement(child.id());
+            let d = process_measurement(worker);
+            let sample = if let Some(ref mut sampler) = sampler {
+                unsafe {
+                    libc::kill(sampler.id() as i32, libc::SIGINT);
+                };
+                assert!(sampler.wait().unwrap().success());
+                serde_json::from_slice::<Value>(&fs::read(out.join("summary.json")).unwrap())
+                    .unwrap()
+            } else {
+                Value::Null
+            };
+            assert_eq!(final_status["raw_recording"]["written_pairs"], 180);
+            assert_eq!(
+                final_status["raw_recording"]["disk_stages"]["validation_imu_samples"]
+                    .as_u64()
+                    .unwrap(),
+                final_status["raw_recording"]["imu_samples_submitted"]
+                    .as_u64()
+                    .unwrap()
+                    * 2
+            );
+            assert_eq!(final_status["pairs_rejected"], 0);
+            rows.push(json!({"mode":mode,"repeat":repeat,"wall_seconds":wall,"cpu_cores":((c.0-a.0)+(d.0-b.0)) as f64/hz/wall,"worker_peak_rss_kib":d.1,"raw_recording":final_status["raw_recording"],"sampler":sample}));
+            stop(&mut child);
+        }
+    }
+    fs::write(std::env::var_os("GDP_CHECKPOINT_BENCH_OUTPUT").unwrap(),serde_json::to_vec_pretty(&json!({"modes":["baseline","observation_disabled","observation_enabled","enabled_plus_sampler"],"pairs":180,"repeats":5,"synthetic_sdk":true,"synthetic_ros_bridge":true,"width":640,"height":400,"imu_hz":200,"rows":rows})).unwrap()).unwrap();
 }

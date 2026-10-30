@@ -24,6 +24,7 @@ struct PendingCheckpoint {
     raw: Vec<u8>,
     payload_bytes: u64,
     pairs: u64,
+    info: CheckpointInfo,
 }
 impl Chunked {
     pub(super) fn pending_credits(&self) -> (u64, u64) {
@@ -422,64 +423,94 @@ impl RawRecordingWriter {
         self.seal_checkpoint(false)
     }
     fn seal_checkpoint(&mut self, asynchronous: bool) -> Result<()> {
-        self.flush_index()?;
-        let Some(state) = self.chunked.as_mut() else {
+        let info = self.chunked.as_ref().and_then(|s| {
+            s.active.as_ref().map(|c| CheckpointInfo {
+                checkpoint_id: s.chunks,
+                prefix_pairs: self.count,
+                payload_bytes: Some(c.bytes),
+                asynchronous,
+            })
+        });
+        let Some(info) = info else {
+            self.flush_index()?;
             return Ok(());
         };
-        let Some(chunk) = state.active.take() else {
+        let diagnostics = self.diagnostics.clone();
+        diagnostics
+            .1
+            .measure(info, Phase::IndexFlush, || self.flush_index())?;
+        let Some(chunk) = self.chunked.as_mut().unwrap().active.take() else {
             return Ok(());
         };
-        self.diagnostics
-            .measure("fsync", || chunk.file.sync_all())?;
-        self.diagnostics
-            .measure("fsync", || self.records.sync_all())?;
-        self.diagnostics
-            .measure("fsync", || fs::File::open(&self.stage)?.sync_all())?;
-        let checkpoint = Checkpoint {
-            version: 3,
-            binding: self.snapshot.content.binding.clone(),
-            snapshot_sha256: sha256(&self.snapshot.to_bytes()?),
-            record_count: self.count,
-            index_bytes: state.index_bytes,
-            records_sha256: lower_hex(self.digest.clone().finish().as_ref()),
-            chunks: state.chunks,
-        };
-        let prefix = state.verified.take();
-        let raw = serde_json::to_vec(&checkpoint)?;
-        self.reserve_bytes(raw.len())?;
+        diagnostics.1.measure(info, Phase::PayloadSync, || {
+            diagnostics.measure("fsync", || chunk.file.sync_all())
+        })?;
+        diagnostics.1.measure(info, Phase::IndexSync, || {
+            diagnostics.measure("fsync", || self.records.sync_all())
+        })?;
+        diagnostics.1.measure(info, Phase::DirectorySync, || {
+            diagnostics.measure("fsync", || fs::File::open(&self.stage)?.sync_all())
+        })?;
+        let (checkpoint, prefix, raw) =
+            diagnostics
+                .1
+                .measure(info, Phase::Prepare, || -> Result<_> {
+                    let state = self.chunked.as_mut().unwrap();
+                    let checkpoint = Checkpoint {
+                        version: 3,
+                        binding: self.snapshot.content.binding.clone(),
+                        snapshot_sha256: sha256(&self.snapshot.to_bytes()?),
+                        record_count: self.count,
+                        index_bytes: state.index_bytes,
+                        records_sha256: lower_hex(self.digest.clone().finish().as_ref()),
+                        chunks: state.chunks,
+                    };
+                    let prefix = state.verified.take();
+                    let raw = serde_json::to_vec(&checkpoint)?;
+                    self.reserve_bytes(raw.len())?;
+                    Ok((checkpoint, prefix, raw))
+                })?;
         if asynchronous {
             let stage = self.stage.clone();
-            let diagnostics = self.diagnostics.clone();
-            let work: Checkpoint = parse(&raw)?;
-            let task = std::thread::Builder::new()
-                .name("recording-checkpoint-verify".into())
-                .spawn(move || verify_checkpoint(stage, &work, prefix, diagnostics))?;
+            let work_diagnostics = diagnostics.clone();
+            let task = diagnostics
+                .1
+                .measure(info, Phase::VerifyDispatch, || -> Result<_> {
+                    let work: Checkpoint = parse(&raw)?;
+                    Ok(std::thread::Builder::new()
+                        .name("recording-checkpoint-verify".into())
+                        .spawn(move || {
+                            verify_checkpoint(stage, &work, prefix, work_diagnostics, info)
+                        })?)
+                })?;
             self.chunked.as_mut().unwrap().pending = Some(PendingCheckpoint {
                 task,
                 checkpoint,
                 raw,
                 payload_bytes: chunk.bytes,
                 pairs: chunk.pairs,
+                info,
             });
             Ok(())
         } else {
-            let verified = verify_checkpoint(
-                self.stage.clone(),
-                &checkpoint,
-                prefix,
-                self.diagnostics.clone(),
-            )?;
-            self.commit_checkpoint(checkpoint, raw, verified)
+            let verified =
+                verify_checkpoint(self.stage.clone(), &checkpoint, prefix, diagnostics, info)?;
+            self.commit_checkpoint(checkpoint, raw, verified, info)
         }
     }
     fn complete_pending(&mut self) -> Result<()> {
         let pending = self.chunked.as_mut().and_then(|s| s.pending.take());
         if let Some(pending) = pending {
-            let verified = pending
-                .task
-                .join()
-                .map_err(|_| OfflineError::Invalid("RECORDING_VERIFIER_PANIC"))??;
-            self.commit_checkpoint(pending.checkpoint, pending.raw, verified)?;
+            let verified =
+                self.diagnostics
+                    .1
+                    .measure(pending.info, Phase::VerifyWait, || -> Result<_> {
+                        pending
+                            .task
+                            .join()
+                            .map_err(|_| OfflineError::Invalid("RECORDING_VERIFIER_PANIC"))?
+                    })?;
+            self.commit_checkpoint(pending.checkpoint, pending.raw, verified, pending.info)?;
         }
         Ok(())
     }
@@ -488,15 +519,28 @@ impl RawRecordingWriter {
         checkpoint: Checkpoint,
         raw: Vec<u8>,
         verified: VerifiedPrefix,
+        info: CheckpointInfo,
     ) -> Result<()> {
         let previous = self.chunked.as_ref().unwrap().checkpoint_bytes;
         let temporary = self.stage.join(".checkpoint.tmp");
-        write_private_observed(&temporary, &raw, &self.diagnostics)?;
-        self.diagnostics.measure("rename", || {
-            fs::rename(&temporary, self.stage.join("checkpoint.json"))
-        })?;
         self.diagnostics
-            .measure("fsync", || fs::File::open(&self.stage)?.sync_all())?;
+            .1
+            .measure(info, Phase::CheckpointWrite, || {
+                write_private_observed(&temporary, &raw, &self.diagnostics)
+            })?;
+        self.diagnostics
+            .1
+            .measure(info, Phase::CheckpointRename, || {
+                self.diagnostics.measure("rename", || {
+                    fs::rename(&temporary, self.stage.join("checkpoint.json"))
+                })
+            })?;
+        self.diagnostics
+            .1
+            .measure(info, Phase::CheckpointDirectorySync, || {
+                self.diagnostics
+                    .measure("fsync", || fs::File::open(&self.stage)?.sync_all())
+            })?;
         self.used_bytes -= previous;
         let state = self.chunked.as_mut().unwrap();
         state.checkpoint_bytes = raw.len() as u64;
@@ -547,48 +591,51 @@ fn verify_checkpoint(
     checkpoint: &Checkpoint,
     prefix: Option<VerifiedPrefix>,
     diagnostics: RawRecordingDiagnostics,
+    info: CheckpointInfo,
 ) -> Result<VerifiedPrefix> {
-    diagnostics.measure("verification", || -> Result<VerifiedPrefix> {
-        let manifest = RecordingManifest {
-            version: 3,
-            source_kind: "recording-directory-v3".into(),
-            snapshot: "snapshot.json".into(),
-            binding: checkpoint.binding.clone(),
-            records: "records.jsonl".into(),
-            records_sha256: checkpoint.records_sha256.clone(),
-            record_count: checkpoint.record_count,
-        };
-        let mut source = RecordingDirectorySource::open_manifest(
-            fs::canonicalize(&stage)?,
-            manifest,
-            checkpoint.index_bytes,
-            false,
-        )?;
-        if let Some(prefix) = &prefix {
-            source
-                .reader
-                .get_mut()
-                .get_mut()
-                .seek(SeekFrom::Start(prefix.index_bytes))?;
-            source
-                .reader
-                .get_mut()
-                .set_limit(checkpoint.index_bytes - prefix.index_bytes);
-            source.seen = prefix.count;
-            source.digest = prefix.digest.clone();
-            source.previous = prefix.previous.clone();
-            source.imu_progress = prefix.imu.clone();
-            source.chunk_position = prefix.position;
-        }
-        while source.validate_next()? {}
-        diagnostics.verified(&source);
-        Ok(VerifiedPrefix {
-            imu: source.imu_progress,
-            count: source.seen,
-            index_bytes: checkpoint.index_bytes,
-            digest: source.digest,
-            previous: source.previous,
-            position: source.chunk_position,
+    diagnostics.1.measure(info, Phase::Readback, || {
+        diagnostics.measure("verification", || -> Result<VerifiedPrefix> {
+            let manifest = RecordingManifest {
+                version: 3,
+                source_kind: "recording-directory-v3".into(),
+                snapshot: "snapshot.json".into(),
+                binding: checkpoint.binding.clone(),
+                records: "records.jsonl".into(),
+                records_sha256: checkpoint.records_sha256.clone(),
+                record_count: checkpoint.record_count,
+            };
+            let mut source = RecordingDirectorySource::open_manifest(
+                fs::canonicalize(&stage)?,
+                manifest,
+                checkpoint.index_bytes,
+                false,
+            )?;
+            if let Some(prefix) = &prefix {
+                source
+                    .reader
+                    .get_mut()
+                    .get_mut()
+                    .seek(SeekFrom::Start(prefix.index_bytes))?;
+                source
+                    .reader
+                    .get_mut()
+                    .set_limit(checkpoint.index_bytes - prefix.index_bytes);
+                source.seen = prefix.count;
+                source.digest = prefix.digest.clone();
+                source.previous = prefix.previous.clone();
+                source.imu_progress = prefix.imu.clone();
+                source.chunk_position = prefix.position;
+            }
+            while source.validate_next()? {}
+            diagnostics.verified(&source);
+            Ok(VerifiedPrefix {
+                imu: source.imu_progress,
+                count: source.seen,
+                index_bytes: checkpoint.index_bytes,
+                digest: source.digest,
+                previous: source.previous,
+                position: source.chunk_position,
+            })
         })
     })
 }

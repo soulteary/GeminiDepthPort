@@ -119,3 +119,6 @@ cargo test -p capture-probe --test service_supervision --offline -- --nocapture
 
 These Linux-only tests are excluded on macOS, where live workers intentionally
 refuse to start. They verify supervision mechanics, not physical camera recovery.
+
+Checkpoint phase timing and a bounded Linux host sampler are documented in
+[Recording checkpoint observation](checkpoint-observation.md).
