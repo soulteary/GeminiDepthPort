@@ -355,6 +355,7 @@ class CliProcessTests(unittest.TestCase):
             result=cli.rt.read_json(root/'result.json')
             self.assertTrue(result['ok']);self.assertTrue(result['hardware_acceptance_verified'])
             self.assertEqual(result['uid'],os.getuid());self.assertTrue((root/'capture-stopped').exists())
+            self.assertGreater(result['command_timings_ns']['audit'],0)
             self.assertEqual((root/'capture/recording.partial').read_bytes(),b'synthetic original evidence')
             self.assert_reaped(root)
 

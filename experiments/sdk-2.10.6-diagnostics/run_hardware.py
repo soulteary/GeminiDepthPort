@@ -190,6 +190,7 @@ class Runner:
         except ProcessLookupError:child.wait(timeout=5)
 
     def command(self, args, name, timeout):
+        started = time.monotonic_ns()
         child = self.spawn(args, name);path = self.children[-1][1];log = self.logs[-1]
         deadline = time.monotonic()+timeout
         try:
@@ -199,6 +200,7 @@ class Runner:
             rt.require(child.returncode == 0, 'COMMAND_FAILED:'+name+':'+str(child.returncode))
         finally:
             self.terminate(child);log.close();self.logs.remove(log)
+            self.result.setdefault('command_timings_ns', {})[name] = time.monotonic_ns()-started
 
     def snapshot(self, label):
         value = hw.status(self.run)

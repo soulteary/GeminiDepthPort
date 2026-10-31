@@ -102,3 +102,5 @@ GDP 全工作区回归另核对时间戳、两轮实际读回、逐帧/索引哈
 
 
 一键运行三相机测试：使用 [run_hardware.py / ONE-CLICK.md](ONE-CLICK.md)，统一 root UID 自动等待健康、采样、录制完成和两轮读回/DDS 验收，失败保留证据并提供独立回滚命令。
+
+至少三轮 on/off 自动交替及指标汇总见 [run_ab.py / AB.md](AB.md)。

@@ -79,3 +79,5 @@ sudo python3 experiments/sdk-2.10.6-diagnostics/run_hardware.py rollback \
 `tests/test_sdk_one_click.py` 使用受控状态/时钟/SDK 工具替身，测试 UID/平台与 Docker 拒绝、目标预算、健康/完成超时、采样失败、两轮/哈希验收、SDK 缺口区分、信号取消、部分启动与身份检查回滚；另启动真实子进程验证超时后的进程回收与日志保留。它不打开真实相机，不把模拟结果当作三相机实机验收。既有 SDK 镜像与原生读回/恢复实现保持不变；现场仍需运行上述命令获得本机结果。
 
 验证结果与模拟/实机边界见 [ONE-CLICK-REPORT.md](ONE-CLICK-REPORT.md)。
+
+至少三轮 on/off 自动交替及指标汇总见 [run_ab.py / AB.md](AB.md)。
