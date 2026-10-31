@@ -99,3 +99,6 @@ GDP 全工作区回归另核对时间戳、两轮实际读回、逐帧/索引哈
 
 
 三相机实机实验：见 [HARDWARE.md](HARDWARE.md)，使用 `build_runtime.sh` 构建和 `hardware.py` 控制；公开基础构建、镜像烟测和回归结果见 [RUNTIME-REPORT.md](RUNTIME-REPORT.md)。
+
+
+一键运行三相机测试：使用 [run_hardware.py / ONE-CLICK.md](ONE-CLICK.md)，统一 root UID 自动等待健康、采样、录制完成和两轮读回/DDS 验收，失败保留证据并提供独立回滚命令。

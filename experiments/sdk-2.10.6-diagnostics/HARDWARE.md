@@ -2,6 +2,8 @@
 
 本入口只用于受控实验。生产 `capture.Dockerfile`、官方 SDK 来源、Rust 生产 runtime 门禁、时间戳校验与录制代码均未修改。诊断补丁仍是第一阶段原补丁，默认关闭，未调整配对窗口、队列、同步或丢弃策略；它用于定位原因，不承诺消除 66 ms 缺口。
 
+完整自动流程推荐使用 [一键实机入口](ONE-CLICK.md)，它统一 UID、自动等待、采样、验收并保留回滚入口。下文为分步高级操作。
+
 ## 构建与身份绑定
 
 在仓库根目录执行，构建机器需要 Docker、Git 和公开网络。无需提前准备任何 GDP 本地基础镜像。默认构建 Linux AMD64；ARM64 机器显式选择 `linux/arm64`。不要将不同架构的 SDK 库混用。
@@ -35,7 +37,7 @@ docker run --rm --network none --read-only --cap-drop ALL \
 
 ## 准备三台相机
 
-实机宿主应为原生 Linux，Docker Compose v2，USB/udev 已按现有 GDP 部署正确授权。使用本机拥有 Docker 权限、也拥有采集目录的同一用户准备与启动；采样读取 `/proc`/perf 需要更高权限时只提升采样命令，不改变采集 UID。rootless Docker 的 UID 映射必须先验证；不能将私有诊断目录改成 0777。
+实机宿主应为原生 Linux，Docker Compose v2，USB/udev 已按现有 GDP 部署正确授权。下面实机控制命令统一使用 `sudo`/root UID，准备、容器、采样与审计保持同一 UID，避免私有目录被不同 UID 的观察器挂载后无法读取。rootless Docker 的 UID 映射必须先验证；不能将私有诊断目录改成 0777。
 
 复制 [三相机计划模板](three-camera.plan.example.json)，填入三台相机**已验证**的 `capture.json` 和对应 `health.json` 绝对路径。保留原文件，模板只指向它们，不修改源配置。源配置须包含：
 
@@ -43,15 +45,15 @@ docker run --rm --network none --read-only --cap-drop ALL \
 - `imu.enabled=true`、`pairing.clock=device`，显式 Global 采集策略与 `ros.stamp_source=sdk-global-unix`。
 - 当前主线生成的 `quality_policy` 和匹配的 `quality_runtime`。原生录制要求完整帧对采集策略；`complete` 策略允许发布不成对图像，当前原生帧对录制器会拒绝它。需要更换策略时应先独立验证并提供相应源配置，工具不会静默改变采集策略。
 
-例如第一轮测量 120 秒，可设每台 4,500 对，预留启动、DDS 发现和收尾余量。实际是否覆盖完整测量窗口以状态和记录为准。字节限额须高于预计载荷，磁盘空闲容量还需覆盖索引、检查点和三台相机总量；达到字节上限不是正常完成验收。下面每台 128 GiB 只是示例限额。
+例如手动第一轮测量 120 秒，建议设每台 9,000 对（约 300 秒），预留启动、DDS 发现和收尾余量；一键入口会按健康等待上限自动计算更保守的目标。实际是否覆盖完整测量窗口以状态和记录为准。字节限额须高于预计载荷，磁盘空闲容量还需覆盖索引、检查点和三台相机总量；达到字节上限不是正常完成验收。下面每台 128 GiB 只是示例限额。
 
 ```bash
-python3 experiments/sdk-2.10.6-diagnostics/hardware.py prepare \
+sudo python3 experiments/sdk-2.10.6-diagnostics/hardware.py prepare \
   --plan /srv/sdk-test/three-camera.json \
   --image local/gdp-sdk-diagnostics:2.10.6 \
   --run-dir /srv/sdk-test/on-01 \
   --diagnostics-root /dev/shm/gdp-sdk-on-01 \
-  --mode on --pairs 4500 --max-bytes 137438953472 --ros-domain-id 78
+  --mode on --pairs 9000 --max-bytes 137438953472 --ros-domain-id 78
 ```
 
 `prepare` 不启动相机。它运行无网络、无 USB 的镜像自检和三份真实服务配置校验，复制并绑定源配置，在新目录生成 `compose.json`。仅更新实验 SDK/bridge 摘要、实验状态/控制/录制路径和身份，禁用重启，设置显式录制限额并开启检查点观测。已有队列容量及 checkpoint pipeline 设置保留；源配置未定义时队列为 16、pipeline 关闭。源健康检查内容保持不变，但要求两路真实图像 topic、frame ID、尺寸与可靠 QoS 一致；发现加采样时长之和须小于 24 秒，以符合健康检查截止时间。
@@ -63,9 +65,9 @@ python3 experiments/sdk-2.10.6-diagnostics/hardware.py prepare \
 先通过生产 GDP 原有保护/停止流程释放相机，再启动实验。工具发现已有容器挂载 USB 时拒绝启动，不会替用户停止生产采集。USB 未通过容器暴露的其他宿主进程需由现场确认已退出。
 
 ```bash
-python3 experiments/sdk-2.10.6-diagnostics/hardware.py start \
+sudo python3 experiments/sdk-2.10.6-diagnostics/hardware.py start \
   --run-dir /srv/sdk-test/on-01 --execute
-python3 experiments/sdk-2.10.6-diagnostics/hardware.py status \
+sudo python3 experiments/sdk-2.10.6-diagnostics/hardware.py status \
   --run-dir /srv/sdk-test/on-01
 ```
 
@@ -83,9 +85,9 @@ sudo python3 experiments/sdk-2.10.6-diagnostics/hardware.py sample \
 测量完成后继续等待三台 `raw_recording.state=complete`，再停止实验并做两轮独立读回。提前停止会留下 partial，不能冒充正常完成。
 
 ```bash
-python3 experiments/sdk-2.10.6-diagnostics/hardware.py stop --run-dir /srv/sdk-test/on-01
-python3 experiments/sdk-2.10.6-diagnostics/hardware.py audit --run-dir /srv/sdk-test/on-01
-python3 experiments/sdk-2.10.6-diagnostics/hardware.py verify-dds \
+sudo python3 experiments/sdk-2.10.6-diagnostics/hardware.py stop --run-dir /srv/sdk-test/on-01
+sudo python3 experiments/sdk-2.10.6-diagnostics/hardware.py audit --run-dir /srv/sdk-test/on-01
+sudo python3 experiments/sdk-2.10.6-diagnostics/hardware.py verify-dds \
   --run-dir /srv/sdk-test/on-01 --trim-seconds 5
 ```
 
@@ -102,11 +104,11 @@ python3 experiments/sdk-2.10.6-diagnostics/hardware.py verify-dds \
 另准备新目录与足够长的录制目标，启动并等健康。只选择本轮实验中一台相机，在尚有 `.partial` 且检查点已写入时注入 SIGKILL：
 
 ```bash
-python3 experiments/sdk-2.10.6-diagnostics/hardware.py crash \
+sudo python3 experiments/sdk-2.10.6-diagnostics/hardware.py crash \
   --run-dir /srv/sdk-test/crash-01 --camera b --execute
-python3 experiments/sdk-2.10.6-diagnostics/hardware.py audit \
+sudo python3 experiments/sdk-2.10.6-diagnostics/hardware.py audit \
   --run-dir /srv/sdk-test/crash-01 --camera b --recovered
-python3 experiments/sdk-2.10.6-diagnostics/hardware.py rollback \
+sudo python3 experiments/sdk-2.10.6-diagnostics/hardware.py rollback \
   --run-dir /srv/sdk-test/crash-01
 ```
 
