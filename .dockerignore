@@ -36,3 +36,13 @@
 !native/
 !native/usb-recovery/
 !native/usb-recovery/**
+
+# Explicit, isolated SDK diagnostics image; production Dockerfiles do not COPY it.
+!experiments/
+!experiments/sdk-2.10.6-diagnostics/
+!experiments/sdk-2.10.6-diagnostics/sdk-diagnostics.patch
+!experiments/sdk-2.10.6-diagnostics/public-c-exports.txt
+!experiments/sdk-2.10.6-diagnostics/experiment_runtime.py
+!experiments/sdk-2.10.6-diagnostics/entrypoint.sh
+!experiments/sdk-2.10.6-diagnostics/collect.py
+!experiments/sdk-2.10.6-diagnostics/health.py

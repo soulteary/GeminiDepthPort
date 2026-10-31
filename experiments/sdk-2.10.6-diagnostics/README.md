@@ -53,7 +53,7 @@ bash experiments/sdk-2.10.6-diagnostics/build.sh \
   /absolute/OrbbecSDK_v2-git /var/tmp/gdp-sdk-build-01
 ```
 
-当前开发构建器复用本地 `gdp-coverage-90-env:local`（Debian bookworm/GCC）；Dockerfile 列出新增的 CMake/SDK 依赖。它是实验环境，不是生产镜像。对系统时间超前的 Debian 发布文件仅设置本次 apt 命令四小时容差，未更改主机时间或全局 apt 配置。复制到干净机器时需要先准备该本地基础镜像，或采用同等明确记录的 Debian/GCC 环境；记录实际镜像 ID、编译器和构建 flags。
+开发构建器现基于公开 `ubuntu:22.04`，不再依赖 GDP 私有/本地基础镜像。原阶段一开销报告来自当时记录的 Debian/GCC 环境，仍保留其原始结果；更换工具链后应重新跑 on/off/before，不能将旧报告当作新镜像实机数据。
 
 脚本 git archive 原始提交，再复制后应用补丁；原版与补丁的 SDK 都以 Release、相同依赖/选项构建，未改配对和 USB 参数。源码提取和驱动复制在构建容器内使用当前文件时间，避免宿主机/虚拟机时间偏差造成 Make 反复重建。SDK 本身会在 libuvc 源树生成配置头，因此实验副本可写。不要把生成文件混入补丁。
 
@@ -91,8 +91,11 @@ sudo python3 experiments/sdk-2.10.6-diagnostics/collect.py \
 
 采样器保存 SDK 原快照、读取时主机的 wall/monotonic 锚点和新增的事件样本，区分开始前已覆盖的事件与采样期间未观察到的事件。事件遗漏不等于录制丢样；累计诊断计数才用于数量分析。SDK 只在 5 秒刷新时提供新信息，提高读文件频率不会获得逐帧时间分辨率。使用 Unix/monotonic 配对锚点检查 Linux time namespace/NTP 差异后，再与 GDP `checkpoint_probe.py` 的队列、fsync/验证阶段和 CPU profile 关联；嵌套 span 不相加。
 
-现场先确认实际 SDK 库二进制摘要和实验补丁身份。GDP 的生产 runtime 有固定 SDK 来源/哈希门禁，本实验不绕过门禁、不修改原生产 manifest、不将自编译库伪装成厂商发布库。若要进入受控 GDP 容器，必须另做显式实验镜像/manifest 绑定评估；本阶段只完成 SDK 诊断与合成验证。
+现场先确认实际 SDK 库二进制摘要和实验补丁身份。GDP 的生产 runtime 有固定 SDK 来源/哈希门禁，本实验不绕过门禁、不修改原生产 manifest、不将自编译库伪装成厂商发布库。现已提供独立的三相机实验镜像、runtime 绑定和启动/采样/回滚工具，操作见 [实机实验说明](HARDWARE.md)。生产管理入口继续拒绝实验 SDK；第一阶段报告仍仅描述 SDK 合成验证。
 
 GDP 全工作区回归另核对时间戳、两轮实际读回、逐帧/索引哈希、写入/提交故障和 SIGKILL/前缀恢复；SDK 诊断不改变这些路径。它也不能修复或证明已经消除物理采样率差异、66 ms 缺口或断电持久性。
 
 实际结果、测量口径修正与限制见 [实验报告](REPORT.md)。原版吞吐驱动的复现补丁 probe-metric-v1.patch 只回退计时完成后的内存读数；不修改 SDK。
+
+
+三相机实机实验：见 [HARDWARE.md](HARDWARE.md)，使用 `build_runtime.sh` 构建和 `hardware.py` 控制；公开基础构建、镜像烟测和回归结果见 [RUNTIME-REPORT.md](RUNTIME-REPORT.md)。

@@ -1,0 +1,7 @@
+{
+  "cameras": [
+    {"name": "a", "capture_config": "/srv/gdp-verified/a/capture.json", "health_config": "/srv/gdp-verified/a/health.json"},
+    {"name": "b", "capture_config": "/srv/gdp-verified/b/capture.json", "health_config": "/srv/gdp-verified/b/health.json"},
+    {"name": "c", "capture_config": "/srv/gdp-verified/c/capture.json", "health_config": "/srv/gdp-verified/c/health.json"}
+  ]
+}

@@ -1,0 +1,83 @@
+{
+  "amd64_build_verified": false,
+  "experiment": "sdk-2.10.6-diagnostics-v1",
+  "gdp_revision": "f40f316b00e3e9cbf80f1597448a9ce589652ee5",
+  "hardware_opened": false,
+  "image_id": "sha256:c0adf9ecac1ec98e69f4a45faf5539bbcf6f42fd33804a3e161cbf312d723634",
+  "inventory_files": 189,
+  "negative_checks": [
+    {
+      "case": "sdk-bytes",
+      "expected": "RUNTIME_FILE_INVENTORY",
+      "rejected": true
+    },
+    {
+      "case": "patch-bytes",
+      "expected": "RUNTIME_FILE_INVENTORY",
+      "rejected": true
+    },
+    {
+      "case": "manifest-kind",
+      "expected": "EXPERIMENT_RUNTIME_KIND",
+      "rejected": true
+    },
+    {
+      "case": "unbound-default-start",
+      "rejected": true
+    }
+  ],
+  "new_hardware_performance_measurement": false,
+  "ok": true,
+  "physical_camera_acceptance_verified": false,
+  "production_sdk_changed": false,
+  "runtime_sha256": "e346461be4ed5d8a980b936c8812e3dc90c6678b4f52664b757abaa5d4b8c40b",
+  "scope": "public-base runtime packaging, SDK version/ABI and binary/config binding only; no physical camera or performance claim",
+  "sdk_source": {
+    "architecture": "arm64",
+    "commit": "575347ca742d219ef61b1e214e97043f17f48d23",
+    "compiler": "c++ (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0",
+    "experiment": "sdk-2.10.6-diagnostics-v1",
+    "installed_public_header_count": 34,
+    "installed_public_headers_sha256": "e086a916c9804ca2b19d17ad40e3df1e8e7de67bb65a980ee30874496aa95511",
+    "patch_sha256": "0db54c7c1bcafa9d18cd51bddcd4cf0d0c733c967ff0f9542f7796b770a0757c",
+    "public_c_exports": 406,
+    "public_exports_sha256": "e910a9c1d5cda06f0b303dc9f0b680d47bc65feb9bb6f0cc701e65d1bb8c0f08",
+    "public_header_count": 33,
+    "public_headers_sha256": "b6753f9d936617db43f09e90bcef483ac3d8da74e97d4eb908217f09cbe684a8",
+    "repository": "https://github.com/orbbec/OrbbecSDK_v2",
+    "sdk_sha256": "107533c9c69b13dbc9f1279fd27614a114c8f99aec459a2edbf2d17665c52229",
+    "sdk_version": "2.10.6",
+    "version": 1
+  },
+  "tested_platform": "linux/arm64",
+  "validation": {
+    "compose_config_valid": true,
+    "production_source_and_gate_diff_empty": true,
+    "python": {
+      "failed": 0,
+      "skipped": 1,
+      "tests": 347
+    },
+    "ros": {
+      "actual_dds": true,
+      "corruption_rejected": true,
+      "hardware_opened": false,
+      "imu_rosbag2_readback": true,
+      "synthetic_devices": true,
+      "three_shared_sessions": true
+    },
+    "rust": {
+      "failed": 0,
+      "ignored": 29,
+      "passed": 632,
+      "scope": "unchanged current mainline workspace, including real process/fault/recovery tests"
+    },
+    "three_full_config_validation": {
+      "hardware_started": false,
+      "imu": true,
+      "native_v3": true,
+      "passed": 3,
+      "sdk_global": true
+    }
+  }
+}
