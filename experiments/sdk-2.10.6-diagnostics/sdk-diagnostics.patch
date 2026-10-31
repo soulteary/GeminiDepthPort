@@ -1,0 +1,438 @@
+diff --git a/src/pipeline/FrameAggregator.cpp b/src/pipeline/FrameAggregator.cpp
+index c35d732..84469d0 100644
+--- a/src/pipeline/FrameAggregator.cpp
++++ b/src/pipeline/FrameAggregator.cpp
+@@ -58,6 +58,7 @@ FrameAggregator::~FrameAggregator() noexcept {
+ void FrameAggregator::updateConfig(std::shared_ptr<const Config> config, const bool matchingRateFirst) {
+     std::unique_lock<std::recursive_mutex> lk(srcFrameQueueMutex_);
+     frameAggregateOutputMode_ = config->getFrameAggregateOutputMode();
++    if(diagnostics_) diagnostics_->configuration(frameAggregateOutputMode_);
+     matchingRateFirst_        = matchingRateFirst;
+     reset();
+     auto profiles = config->getEnabledStreamProfileList();
+@@ -91,21 +92,26 @@ void FrameAggregator::updateConfig(std::shared_ptr<const Config> config, const b
+         }
+ 
+         auto halfTspGap = static_cast<uint32_t>(500.0f / fps + 0.5);  // +0.5 to complete rounding
++        if(diagnostics_) diagnostics_->streamConfiguration(STREAM_FRAME_TYPE_MAP.find(profile->getType())->second, (uint32_t)maxSyncQueueSize, maxNormalModeQueueSize_, halfTspGap);
+         srcFrameQueueMap_.insert(
+             { STREAM_FRAME_TYPE_MAP.find(profile->getType())->second, { std::queue<std::shared_ptr<const Frame>>(), (uint32_t)maxSyncQueueSize, halfTspGap } });
+     }
+ }
+ 
+ void FrameAggregator::pushFrame(std::shared_ptr<const Frame> frame) {
++    const auto diagnosticWait = diagnostics_ ? diagnostics_->beforeLock() : 0;
+     std::unique_lock<std::recursive_mutex> lk(srcFrameQueueMutex_);
++    auto diagnosticHold = diagnostics_ ? diagnostics_->acquired(CaptureDiagnostics::AggregatorPush, diagnosticWait) : CaptureDiagnostics::Hold(nullptr, CaptureDiagnostics::AggregatorPush, 0);
+     withEmptyQueue_ = false;
+     // auto tmp = frame->getSystemTimeStamp();
+     // LOG_INFO("Type: {}, AggFrameTimeStamp: {}", frame->getType(), frame->getSystemTimeStamp());
+     auto frameType = frame->getType();
++    if(diagnostics_) diagnostics_->input(frameType);
+     for(auto &item: srcFrameQueueMap_) {
+         if(item.first == frameType) {
+             item.second.queue.push(frame);
+             uint32_t maxQueueSize_ = frameSyncMode_ == FrameSyncModeDisable ? maxNormalModeQueueSize_ : item.second.maxSyncQueueSize_;
++            if(diagnostics_) diagnostics_->queue(frameType, item.second.queue.size(), maxQueueSize_);
+             // auto size = item.second.queue.size();
+             // LOG_INFO("Type: {}, queueSize: {}", frame->getType(), size);
+             if(item.second.queue.size() >= maxQueueSize_) {
+@@ -167,6 +173,10 @@ void FrameAggregator::tryAggregator() {
+ 
+                     auto tarTsp = getFrameTimestampMsec(tarFrame, frameSyncMode_);
+                     if(tarTsp - refTsp > tspHalfGap) {
++                        if(diagnostics_) {
++                            diagnostics_->count(CaptureDiagnostics::CandidateOutsideWindow);
++                            diagnostics_->event(CaptureDiagnostics::OutsideWindow, tarFrame->getType(), tarFrame->getNumber(), refTsp, tarTsp);
++                        }
+                         break;
+                     }
+                     refTsp        = tarTsp;  // After dequeuing, save the current reference timestamp to use as a reference for the next loop.
+@@ -209,6 +219,10 @@ void FrameAggregator::tryAggregator() {
+                                 withOverflowQueue_ = false;
+                             }
+                         }
++                        else if(diagnostics_) {
++                            diagnostics_->count(CaptureDiagnostics::CandidateOutsideWindow);
++                            diagnostics_->event(CaptureDiagnostics::OutsideWindow, tarFrame->getType(), tarFrame->getNumber(), refTsp, tarTsp);
++                        }
+                     }
+ 
+                     if(item.second.queue.empty()) {
+@@ -272,22 +286,40 @@ void FrameAggregator::tryAggregator() {
+ void FrameAggregator::outputFrameset(std::shared_ptr<const FrameSet> frameSet) {
+     if(frameSet != nullptr) {
+         if(srcFrameQueueMap_.size() == 1 || frameAggregateOutputMode_ == OB_FRAME_AGGREGATE_OUTPUT_ANY_SITUATION) {
++            if(diagnostics_) {
++                diagnostics_->count(CaptureDiagnostics::EmittedSets);
++                if(frameCnt_ != srcFrameQueueMap_.size()) diagnostics_->count(CaptureDiagnostics::PartialSets);
++            }
+             FrameSetCallbackFunc_(frameSet);
+         }
+         else if(frameAggregateOutputMode_ == OB_FRAME_AGGREGATE_OUTPUT_COLOR_FRAME_REQUIRE && withColorFrame_) {
++            if(diagnostics_) {
++                diagnostics_->count(CaptureDiagnostics::EmittedSets);
++                if(frameCnt_ != srcFrameQueueMap_.size()) diagnostics_->count(CaptureDiagnostics::PartialSets);
++            }
+             FrameSetCallbackFunc_(frameSet);
+         }
+         else if(frameAggregateOutputMode_ == OB_FRAME_AGGREGATE_OUTPUT_ALL_TYPE_FRAME_REQUIRE && frameCnt_ == srcFrameQueueMap_.size()) {
++            if(diagnostics_) {
++                diagnostics_->count(CaptureDiagnostics::EmittedSets);
++                if(frameCnt_ != srcFrameQueueMap_.size()) diagnostics_->count(CaptureDiagnostics::PartialSets);
++            }
+             FrameSetCallbackFunc_(frameSet);
+         }
+         else if(frameAggregateOutputMode_ == OB_FRAME_AGGREGATE_OUTPUT_DISABLE) {
++            if(diagnostics_) {
++                diagnostics_->count(CaptureDiagnostics::EmittedSets);
++                if(frameCnt_ != srcFrameQueueMap_.size()) diagnostics_->count(CaptureDiagnostics::PartialSets);
++            }
+             FrameSetCallbackFunc_(frameSet);
+         }
+         else {
++            if(diagnostics_) diagnostics_->count(CaptureDiagnostics::PolicyDroppedSets);
+             uint32_t count = frameSet->getCount();
+             for(uint32_t i = 0; i < count; i++) {
+                 auto frame = frameSet->getFrame(i);
+                 if(frame != nullptr) {
++                    if(diagnostics_ && diagnostics_->enabled()) diagnostics_->policyDrop(frame->getType(), frame->getNumber(), frame->getTimeStampUsec(), frame->getSystemTimeStampUsec());
+                     std::string typeStr = libobsensor::utils::obFrameToStr(frame->getType());
+                     LOG_DEBUG("The frame {} was dropped, frameCnt:{}, system timestamp:{}, device timestamp:{}, index:{}", typeStr, frameCnt_,
+                               frame->getSystemTimeStampUsec(), frame->getTimeStampUsec(), frame->getNumber());
+@@ -304,6 +336,7 @@ void FrameAggregator::enableFrameSync(FrameSyncMode mode) {
+     if(frameSyncMode_ != mode) {
+         std::unique_lock<std::recursive_mutex> lk(srcFrameQueueMutex_);
+         frameSyncMode_ = mode;
++        if(diagnostics_) diagnostics_->sync(mode);
+         clearAllFrameQueue();
+     }
+ }
+@@ -321,6 +354,7 @@ void FrameAggregator::clearAllFrameQueue() {
+     for(auto &item: srcFrameQueueMap_) {
+         auto &queue = item.second.queue;
+         while(!queue.empty()) {
++            if(diagnostics_) diagnostics_->count(CaptureDiagnostics::FlushedFrames);
+             queue.pop();
+         }
+     }
+@@ -340,6 +374,7 @@ void FrameAggregator::clearFrameQueue(OBFrameType frameType) {
+         if(frameType == item.first) {
+             auto &queue = item.second.queue;
+             while(!queue.empty()) {
++                if(diagnostics_) diagnostics_->count(CaptureDiagnostics::FlushedFrames);
+                 queue.pop();
+             }
+             break;
+diff --git a/src/pipeline/FrameAggregator.hpp b/src/pipeline/FrameAggregator.hpp
+index 6e57fe2..dbec29e 100644
+--- a/src/pipeline/FrameAggregator.hpp
++++ b/src/pipeline/FrameAggregator.hpp
+@@ -6,6 +6,7 @@
+ #include "libobsensor/h/ObTypes.h"
+ #include "frame/Frame.hpp"
+ #include "Config.hpp"
++#include "utils/CaptureDiagnostics.hpp"
+ 
+ #include <map>
+ #include <queue>
+@@ -38,6 +39,7 @@ public:
+     void pushFrame(std::shared_ptr<const Frame> frame);
+     void enableFrameSync(FrameSyncMode mode);
+     void setCallback(FrameCallback callback);
++    void setCaptureDiagnostics(CaptureDiagnostics *diagnostics) { diagnostics_ = diagnostics; }
+ 
+     void clearFrameQueue(OBFrameType frameType);
+     void clearAllFrameQueue();
+@@ -50,6 +52,7 @@ private:
+     void tryAggregator();
+ 
+ private:
++    CaptureDiagnostics *diagnostics_ = nullptr;
+     FrameSyncMode                           frameSyncMode_;
+     std::map<OBFrameType, SourceFrameQueue> srcFrameQueueMap_;
+     std::recursive_mutex                    srcFrameQueueMutex_;
+diff --git a/src/pipeline/Pipeline.cpp b/src/pipeline/Pipeline.cpp
+index 0a1ad6c..0f6b5ea 100644
+--- a/src/pipeline/Pipeline.cpp
++++ b/src/pipeline/Pipeline.cpp
+@@ -45,6 +45,7 @@ Pipeline::Pipeline(std::shared_ptr<IDevice> dev) : device_(dev), config_(nullptr
+     });
+ 
+     frameAggregator_ = std::make_shared<FrameAggregator>(maxFrameDelay_);
++    frameAggregator_->setCaptureDiagnostics(&diagnostics_);
+     frameAggregator_->setCallback([&](std::shared_ptr<const Frame> frame) { outputFrame(frame); });
+     frameAggregator_->setPipelineStatusCollector(statusCollector_);
+ 
+@@ -294,7 +295,9 @@ void Pipeline::startStream() {
+ }
+ 
+ void Pipeline::onFrameCallback(std::shared_ptr<const Frame> frame) {
++    const auto diagnosticWait = diagnostics_.beforeLock();
+     std::unique_lock<std::mutex> lk(streamMutex_);
++    auto diagnosticHold = diagnostics_.acquired(CaptureDiagnostics::PipelineCallback, diagnosticWait);
+     if(streamState_ != STREAM_STATE_STOPPED && streamState_ != STREAM_STATE_STOPPING) {
+         if(streamState_ == STREAM_STATE_STARTING) {
+             streamState_ = STREAM_STATE_STREAMING;
+@@ -323,15 +326,24 @@ void Pipeline::outputFrame(std::shared_ptr<const Frame> frame) {
+         if(outputFrameQueue_->fulled()) {
+             LOG_WARN_INTVL("[{}] Output frameset queue is full, drop oldest frameset!", GetCurrentSN());
+             statusCollector_->reportSdkStatus(OB_SDK_STATUS_FRAME_QUEUE_OVERFLOW);
+-            outputFrameQueue_->dequeue();
++            if(diagnostics_.enabled()) {
++                const auto dropped = outputFrameQueue_->dequeue();
++                if(dropped) {
++                    diagnostics_.count(CaptureDiagnostics::OutputQueueDroppedSets);
++                    diagnostics_.event(CaptureDiagnostics::OutputQueue, -1, 0, maxFrameQueueSize_, 0);
++                }
++            }
++            else outputFrameQueue_->dequeue();
+         }
+-        outputFrameQueue_->enqueue(std::move(frame));
++        const bool enqueued = outputFrameQueue_->enqueue(std::move(frame));
++        if(!enqueued) diagnostics_.count(CaptureDiagnostics::OutputEnqueueFailures);
+     }
+ }
+ 
+ std::shared_ptr<const Frame> Pipeline::waitForFrame(uint32_t timeout_ms) {
+     auto frame = outputFrameQueue_->dequeue(timeout_ms);
+     if(!frame) {
++        diagnostics_.count(CaptureDiagnostics::WaitTimeouts);
+         LOG_WARN_INTVL("[{}] Wait for frame timeout, you can try to increase the wait time! current timeout={}", GetCurrentSN(), timeout_ms);
+         statusCollector_->reportSdkStatus(OB_SDK_STATUS_FRAME_WAIT_TIMEOUT);
+         return nullptr;
+diff --git a/src/pipeline/Pipeline.hpp b/src/pipeline/Pipeline.hpp
+index 94b8ff4..063e512 100644
+--- a/src/pipeline/Pipeline.hpp
++++ b/src/pipeline/Pipeline.hpp
+@@ -3,6 +3,7 @@
+ 
+ #pragma once
+ #include "IPipeline.hpp"
++#include "utils/CaptureDiagnostics.hpp"
+ #include "IDevice.hpp"
+ #include "IFrame.hpp"
+ #include "frame/FrameQueue.hpp"
+@@ -64,6 +65,7 @@ private:
+     void enableHardwareD2C(bool enable);
+ 
+ private:
++    CaptureDiagnostics diagnostics_; // Declared first: outlives callbacks and aggregator.
+     std::shared_ptr<IDevice>      device_;
+     std::shared_ptr<const Config> config_;
+ 
+diff --git a/src/shared/utils/CaptureDiagnostics.hpp b/src/shared/utils/CaptureDiagnostics.hpp
+new file mode 100644
+index 0000000..e003e47
+--- /dev/null
++++ b/src/shared/utils/CaptureDiagnostics.hpp
+@@ -0,0 +1,209 @@
++// Copyright (c) 2026 GDP contributors. Licensed under the MIT License.
++#pragma once
++// Experimental Linux diagnostics only. No installed header or exported API.
++#include <array>
++#include <cstdint>
++#include <cerrno>
++#include <atomic>
++#include <chrono>
++#include <condition_variable>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <memory>
++#include <locale>
++#include <mutex>
++#include <sstream>
++#include <thread>
++#if defined(__linux__)
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
++namespace libobsensor {
++class CaptureDiagnostics {
++public:
++    enum Counter { InputFrames, EmittedSets, PartialSets, PolicyDroppedSets, PolicyDroppedFrames,
++                   CandidateOutsideWindow, AggregateQueueLimitHits, OutputQueueDroppedSets,
++                   OutputEnqueueFailures, WaitTimeouts, FlushedFrames, CounterCount };
++    enum Lock { PipelineCallback, AggregatorPush, LockCount };
++    enum Reason { OutsideWindow, QueueLimit, OutputPolicy, OutputQueue };
++private:
++    struct Histogram {
++        std::array<std::atomic<uint64_t>, 64> buckets;
++        std::atomic<uint64_t> count, total, maximum;
++        Histogram() : count(0), total(0), maximum(0) { for(auto &v : buckets) v.store(0); }
++        static void max(std::atomic<uint64_t> &v, uint64_t n) noexcept {
++            uint64_t old = v.load(std::memory_order_relaxed);
++            while(old < n && !v.compare_exchange_weak(old, n, std::memory_order_relaxed)) {}
++        }
++        void observe(uint64_t n) noexcept {
++            unsigned bucket = 0;
++            for(uint64_t v = n; v >>= 1;) ++bucket;
++            buckets[bucket].fetch_add(1, std::memory_order_relaxed);
++            total.fetch_add(n, std::memory_order_relaxed);
++            max(maximum, n);
++            count.fetch_add(1, std::memory_order_relaxed);
++        }
++        void json(std::ostream &o) const {
++            o << "{\"count\":" << count.load() << ",\"total_ns\":" << total.load() << ",\"max_ns\":" << maximum.load() << ",\"log2_ns_buckets\":[";
++            for(size_t i=0; i<buckets.size(); ++i) { if(i) o << ','; o << buckets[i].load(); }
++            o << "]}";
++        }
++    };
++    struct Event { uint64_t id, monotonic_ns, sequence, a, b; int reason, stream; };
++    struct State {
++        std::array<std::atomic<uint64_t>, CounterCount> counters;
++        std::array<std::atomic<uint64_t>, 16> inputs, policyDrops, queuePeaks;
++        std::array<Histogram, LockCount> waits, holds;
++        std::array<Event, 64> events;
++        std::atomic_flag eventLock = ATOMIC_FLAG_INIT;
++        std::atomic<uint64_t> eventSkipped, sinkErrors, syncMode, outputMode;
++        std::array<std::atomic<uint64_t>,16> syncLimits, normalLimits, halfGaps;
++        std::atomic<uint64_t> eventCount;
++        uint64_t instance, epoch;
++        std::string fileName;
++        int directory;
++        bool registered;
++        static std::atomic<unsigned> &active() { static std::atomic<unsigned> n(0); return n; }
++        static uint64_t nextInstance() { static std::atomic<uint64_t> n(1); return n.fetch_add(1); }
++        std::atomic<bool> stopping;
++        std::mutex wakeMutex;
++        std::condition_variable wake;
++        std::thread reporter;
++        State() : events(), eventSkipped(0), sinkErrors(0), syncMode(0), outputMode(0), eventCount(0), instance(nextInstance()), epoch(now()), directory(-1), registered(false), stopping(false) {
++            for(auto &v : counters) v.store(0);
++            for(auto &v : inputs) v.store(0);
++            for(auto &v : policyDrops) v.store(0);
++            for(auto &v : queuePeaks) v.store(0);
++            for(auto &v : syncLimits) v.store(0);
++            for(auto &v : normalLimits) v.store(0);
++            for(auto &v : halfGaps) v.store(0);
++        }
++        ~State() {
++            stopping.store(true);
++            wake.notify_all();
++            if(reporter.joinable()) reporter.join();
++            if(registered) active().fetch_sub(1);
++#if defined(__linux__)
++            if(directory >= 0) ::close(directory);
++#endif
++        }
++        bool snapshot() noexcept {
++#if defined(__linux__)
++            try {
++                std::ostringstream o;
++                o.imbue(std::locale::classic());
++                o << "{\"version\":1,\"sdk_base\":\"575347ca742d219ef61b1e214e97043f17f48d23\",\"pid\":" << ::getpid()
++                  << ",\"instance\":" << instance << ",\"snapshot_unix_ns\":" << static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count()) << ",\"snapshot_monotonic_ns\":" << now() << ",\"clock\":\"steady-ns\",\"counters\":{";
++                const char *names[] = {"input_frames","emitted_sets","partial_sets","policy_dropped_sets","policy_dropped_frames","candidate_outside_window","aggregate_queue_limit_hits","output_queue_dropped_sets","output_enqueue_failures","wait_timeouts","flushed_frames"};
++                for(size_t i=0;i<CounterCount;++i) { if(i) o << ','; o << '"' << names[i] << "\":" << counters[i].load(); }
++                o << "},\"sync_mode\":" << syncMode.load() << ",\"aggregate_output_mode\":" << outputMode.load() << ",\"streams\":[";
++                for(size_t i=0;i<inputs.size();++i) { if(i) o << ','; o << "{\"type\":" << i << ",\"input\":" << inputs[i].load() << ",\"policy_dropped\":" << policyDrops[i].load() << ",\"aggregate_queue_peak\":" << queuePeaks[i].load() << ",\"sync_queue_limit\":" << syncLimits[i].load() << ",\"normal_queue_limit\":" << normalLimits[i].load() << ",\"half_gap_ms\":" << halfGaps[i].load() << '}'; }
++                o << "],\"locks\":[";
++                for(size_t i=0;i<LockCount;++i) { if(i) o << ','; o << "{\"site\":\"" << (i==0 ? "pipeline_callback" : "aggregator_push") << "\",\"wait\":"; waits[i].json(o); o << ",\"hold\":"; holds[i].json(o); o << '}'; }
++                o << "],\"event_skipped_contention\":" << eventSkipped.load() << ",\"sink_errors\":" << sinkErrors.load() << ",\"events\":[";
++                std::array<Event,64> copy;
++                uint64_t n=eventCount.load(std::memory_order_relaxed);
++                bool copied=!eventLock.test_and_set(std::memory_order_acquire);
++                if(copied) { n=eventCount.load(std::memory_order_relaxed); copy=events; eventLock.clear(std::memory_order_release); }
++                const uint64_t first=n>64 ? n-64 : 0;
++                for(uint64_t i=first;copied && i<n;++i) { if(i!=first) o << ','; const auto &e=copy[i%64]; o << "{\"id\":"<<e.id<<",\"monotonic_ns\":"<<e.monotonic_ns<<",\"reason\":"<<e.reason<<",\"stream\":"<<e.stream<<",\"sequence\":"<<e.sequence<<",\"a\":"<<e.a<<",\"b\":"<<e.b<<'}'; }
++                o << "],\"events_snapshot_available\":" << (copied?"true":"false") << ",\"events_total\":"<<n<<",\"events_overwritten\":"<<(n>64?n-64:0)<<"}\n";
++                const std::string text=o.str();
++                if(text.size()>65536) return false;
++                const std::string &name=fileName;
++                const std::string temp=name+".tmp";
++                const int fd=::openat(directory,temp.c_str(),O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
++                if(fd<0) return false;
++                size_t done=0;
++                while(done<text.size()) { const ssize_t nbytes=::write(fd,text.data()+done,text.size()-done); if(nbytes<0 && errno==EINTR) continue; if(nbytes<=0) break; done+=static_cast<size_t>(nbytes); }
++                const bool closed=::close(fd)==0;
++                bool ok=closed && done==text.size() && ::renameat(directory,temp.c_str(),directory,name.c_str())==0;
++                if(!ok) ::unlinkat(directory,temp.c_str(),0);
++                return ok;
++            } catch(...) { return false; }
++#else
++            return false;
++#endif
++        }
++        void start() {
++            reporter=std::thread([this] {
++                for(;;) {
++                    if(!snapshot()) {
++                        if(sinkErrors.fetch_add(1)==0) std::fputs("SDK capture diagnostics sink failed; capture policy unchanged\n",stderr);
++                    }
++                    std::unique_lock<std::mutex> lock(wakeMutex);
++                    if(stopping.load()) break;
++                    wake.wait_for(lock,std::chrono::seconds(5),[this] { return stopping.load(); });
++                }
++                if(!snapshot()) sinkErrors.fetch_add(1);
++            });
++        }
++    };
++    std::unique_ptr<State> state_;
++public:
++    static uint64_t now() noexcept {
++        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
++    }
++    CaptureDiagnostics() noexcept {
++#if defined(__linux__)
++        const char *enabled=std::getenv("OB_GDP_DIAGNOSTICS");
++        if(!enabled || std::strcmp(enabled,"1")!=0) return;
++        const char *path=std::getenv("OB_GDP_DIAGNOSTICS_DIR");
++        if(!path || path[0]!='/') { std::fputs("SDK capture diagnostics requires private absolute directory; disabled\n",stderr); return; }
++        try {
++            std::unique_ptr<State> s(new State);
++            s->directory=::open(path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
++            struct stat info;
++            if(s->directory<0 || ::fstat(s->directory,&info)!=0 || info.st_uid!=::geteuid() || (info.st_mode&0077)!=0) {
++                std::fputs("SDK capture diagnostics directory rejected; disabled\n",stderr); return;
++            }
++            s->fileName="sdk-diag-"+std::to_string(::getpid())+"-"+std::to_string(s->epoch)+"-"+std::to_string(s->instance)+".json";
++            const int reserved=::openat(s->directory,s->fileName.c_str(),O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
++            if(reserved<0) { std::fputs("SDK capture diagnostics unique sink rejected; disabled\n",stderr); return; }
++            ::close(reserved);
++            if(State::active().fetch_add(1)>=16) { State::active().fetch_sub(1); ::unlinkat(s->directory,s->fileName.c_str(),0); std::fputs("SDK capture diagnostics instance limit reached; disabled\n",stderr); return; }
++            s->registered=true;
++            s->start(); state_=std::move(s);
++        } catch(...) { std::fputs("SDK capture diagnostics initialization failed; disabled\n",stderr); }
++#endif
++    }
++    bool enabled() const noexcept { return static_cast<bool>(state_); }
++    uint64_t beforeLock() const noexcept { return state_ ? now() : 0; }
++    class Hold {
++        State *state_; Lock site_; uint64_t started_;
++    public:
++        Hold(State *state,Lock site,uint64_t before) noexcept : state_(state),site_(site),started_(state?now():0) { if(state_) state_->waits[site_].observe(started_-before); }
++        Hold(Hold &&other) noexcept : state_(other.state_),site_(other.site_),started_(other.started_) { other.state_=nullptr; }
++        ~Hold() { if(state_) state_->holds[site_].observe(now()-started_); }
++        Hold(const Hold &)=delete;
++    };
++    Hold acquired(Lock site,uint64_t before) noexcept { return Hold(state_.get(),site,before); }
++    void configuration(uint64_t mode) noexcept { if(state_) state_->outputMode.store(mode,std::memory_order_relaxed); }
++    void sync(uint64_t mode) noexcept { if(state_) state_->syncMode.store(mode,std::memory_order_relaxed); }
++    void streamConfiguration(int type,uint64_t syncLimit,uint64_t normalLimit,uint64_t halfGap) noexcept {
++        if(state_ && type>=0 && type<16) { state_->syncLimits[type].store(syncLimit);state_->normalLimits[type].store(normalLimit);state_->halfGaps[type].store(halfGap); }
++    }
++    void count(Counter counter,uint64_t n=1) noexcept { if(state_) state_->counters[counter].fetch_add(n,std::memory_order_relaxed); }
++    void input(int type) noexcept { if(state_) { count(InputFrames); if(type>=0 && type<16) state_->inputs[type].fetch_add(1,std::memory_order_relaxed); } }
++    void queue(int type,uint64_t size,uint64_t limit) noexcept {
++        if(!state_) return;
++        if(type>=0 && type<16) Histogram::max(state_->queuePeaks[type],size);
++        if(size>=limit) { count(AggregateQueueLimitHits); event(QueueLimit,type,0,size,limit); }
++    }
++    void policyDrop(int type,uint64_t sequence,uint64_t device,uint64_t system) noexcept {
++        if(!state_) return;
++        count(PolicyDroppedFrames);
++        if(type>=0 && type<16) state_->policyDrops[type].fetch_add(1,std::memory_order_relaxed);
++        event(OutputPolicy,type,sequence,device,system);
++    }
++    void event(Reason reason,int stream,uint64_t sequence,uint64_t a,uint64_t b) noexcept {
++        if(!state_) return;
++        if(state_->eventLock.test_and_set(std::memory_order_acquire)) { state_->eventSkipped.fetch_add(1,std::memory_order_relaxed); return; }
++        const uint64_t n=state_->eventCount.fetch_add(1,std::memory_order_relaxed);
++        state_->events[n%64]=Event{n+1,now(),sequence,a,b,static_cast<int>(reason),stream};
++        state_->eventLock.clear(std::memory_order_release);
++    }
++};
++} // namespace libobsensor

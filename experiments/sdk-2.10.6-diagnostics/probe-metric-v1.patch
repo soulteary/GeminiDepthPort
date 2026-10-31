@@ -1,0 +1,13 @@
+--- a/probe.cpp
++++ b/probe.cpp
+@@ -80,9 +80,5 @@
+     const double wall=(ns()-started)/1e9,used=cpu()-cpuStart;
+     std::sort(delays.begin(),delays.end());
+     struct rusage r;getrusage(RUSAGE_SELF,&r);
+-    uint64_t peak=0;
+-    std::ifstream status("/proc/self/status");std::string line;
+-    while(std::getline(status,line)) if(line.compare(0,6,"VmHWM:")==0) { std::istringstream field(line);std::string key;field>>key>>peak; }
+-    if(!peak) { std::cerr<<"VmHWM unavailable\n";return 3; }
+-    std::cout<<"{\"scenario\":\""<<mode<<"\",\"iterations\":"<<loops<<",\"pace_us\":"<<pace<<",\"output_sets\":"<<outputSets<<",\"output_frames\":"<<outputFrames<<",\"behavior_digest\":"<<digest<<",\"cpu_seconds\":"<<used<<",\"wall_seconds\":"<<wall<<",\"cpu_cores\":"<<used/wall<<",\"peak_rss_kib\":"<<peak<<",\"rusage_maxrss_kib\":"<<r.ru_maxrss<<",\"callback_p99_ns\":"<<delays[(delays.size()*99-1)/100]<<",\"hardware_verified\":false}\n";
++    std::cout<<"{\"scenario\":\""<<mode<<"\",\"iterations\":"<<loops<<",\"pace_us\":"<<pace<<",\"output_sets\":"<<outputSets<<",\"output_frames\":"<<outputFrames<<",\"behavior_digest\":"<<digest<<",\"cpu_seconds\":"<<used<<",\"wall_seconds\":"<<wall<<",\"cpu_cores\":"<<used/wall<<",\"peak_rss_kib\":"<<r.ru_maxrss<<",\"callback_p99_ns\":"<<delays[(delays.size()*99-1)/100]<<",\"hardware_verified\":false}\n";
+ }
