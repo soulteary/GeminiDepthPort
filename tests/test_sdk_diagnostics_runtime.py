@@ -72,6 +72,24 @@ def bound(manifest):
     return cfg,bind,env
 
 
+def runtime_identity_fixture(root,status):
+    """Pin a synthetic live worker before testing subsequent offline readers."""
+    cp=root/'a/config';cp.mkdir(parents=True,exist_ok=True)
+    binding={'run_id':'b'*32,'instance_id':'d'*64,'capture_sha256':'e'*64,'image_id':'sha256:'+'c'*64}
+    hw.write(cp/'experiment.json',binding)
+    status.update(generation='b'*32,instance_id='f'*64,config_sha256='e'*64,
+                  session_id='a'*32,pid=17,restart_attempt=0,state='ready',updated_unix_ms=time.time_ns()//10**6)
+    camera={'name':'a','container':'exp-a','status':str(root/'a/status.json')}
+    run={'run_id':'b'*32,'image_id':binding['image_id'],'cameras':[camera]}
+    hw.write(root/'run.json',run)
+    live={'Id':'exact-id','Image':binding['image_id'],'State':{'Running':True,'StartedAt':'2026-10-31T00:00:00Z','Pid':100}}
+    process={'container_init_pid':100,'pid_namespace':'pid:[fixture]','worker_host_pid':117,'worker_start_ticks':50,
+             'supervisor_host_pid':107,'supervisor_namespace_pid':7,'supervisor_start_ticks':40}
+    with patch.object(hw,'own_container',return_value=live),patch.object(hw,'observe_runtime_process',return_value=process):
+        hw.validate_runtime_identity(argparse.Namespace(run_dir=root),camera,status,binding)
+    return binding,run,camera,dict(live,State=dict(live['State'],Running=False))
+
+
 class RuntimeBindingTests(unittest.TestCase):
     def test_manifest_binds_actual_sdk_patch_all_artifacts_and_licenses(self):
         with tempfile.TemporaryDirectory() as d:
@@ -191,6 +209,19 @@ class HardwareTests(unittest.TestCase):
                 self.assertEqual(run['image_id'],'sha256:'+'c'*64);image.assert_not_called()
                 with self.assertRaisesRegex(ValueError,'PREPARED_FILE_CHANGED'):hw.load_run(a.run_dir)
 
+    def test_healthcheck_initializes_ros_without_bypassing_existing_validator(self):
+        with tempfile.TemporaryDirectory() as d:
+            a,manifest=self.prepare_fixture(Path(d))
+            with patch.object(hw,'image_manifest',return_value=('sha256:'+'c'*64,manifest)),patch.object(hw,'command',return_value='{}'):
+                hw.prepare(a)
+            compose=rt.read_json(a.run_dir/'compose.json')
+            for service in compose['services'].values():
+                self.assertEqual(service['healthcheck']['test'],['CMD','/bin/bash','-c',
+                    'source /opt/ros/humble/setup.bash && exec python3 '+rt.HOME+'/health.py'])
+                self.assertEqual(service['healthcheck']['timeout'],'30s')
+                self.assertEqual(service['healthcheck']['retries'],3)
+                self.assertEqual(service['healthcheck']['start_period'],'60s')
+
     def test_duplicate_serial_or_missing_imu_rejected_before_hardware_start(self):
         for fault in ('serial','imu'):
             with tempfile.TemporaryDirectory() as d:
@@ -239,33 +270,29 @@ class HardwareTests(unittest.TestCase):
 
     def test_status_cannot_redirect_auditor_to_other_run(self):
         with tempfile.TemporaryDirectory() as d:
-            root=Path(d);cp=root/'a/config';cp.mkdir(parents=True)
-            hw.write(cp/'experiment.json',{'run_id':'b'*32,'instance_id':'d'*64,'capture_sha256':'e'*64})
-            s={'generation':'b'*32,'instance_id':'d'*64,'config_sha256':'e'*64,
-               'raw_recording':{'partial_path':'/recordings/capture-abc.partial','job_path':'/recordings/capture-abc'}}
-            a=argparse.Namespace(run_dir=root);c={'name':'a'}
-            self.assertEqual(hw.recording_path(a,c,s,True),root/'a/recordings/capture-abc.partial')
-            s['raw_recording']['partial_path']='/recordings/../other/capture-abc.partial'
-            with self.assertRaises(ValueError):hw.recording_path(a,c,s,True)
-            s['generation']='other'
-            with self.assertRaises(ValueError):hw.recording_path(a,c,s,True)
+            root=Path(d);s={'raw_recording':{'partial_path':'/recordings/capture-abc.partial','job_path':'/recordings/capture-abc'}}
+            _,_,c,stopped=runtime_identity_fixture(root,s)
+            a=argparse.Namespace(run_dir=root)
+            with patch.object(hw,'own_container',return_value=stopped):
+                self.assertEqual(hw.recording_path(a,c,s,True),root/'a/recordings/capture-abc.partial')
+                s['raw_recording']['partial_path']='/recordings/../other/capture-abc.partial'
+                with self.assertRaises(ValueError):hw.recording_path(a,c,s,True)
+                s['generation']='other'
+                with self.assertRaises(ValueError):hw.recording_path(a,c,s,True)
 
 
 class NativeAuditControlTests(unittest.TestCase):
     def case(self,root,recovered=False):
-        cp=root/'a/config';cp.mkdir(parents=True)
-        binding={'run_id':'b'*32,'instance_id':'d'*64,'capture_sha256':'e'*64}
-        hw.write(cp/'experiment.json',binding)
         raw={'partial_path':'/recordings/capture-abc.partial','job_path':'/recordings/capture-abc','state':'complete',
              'whole_pair_queue_overflows':0,'written_pairs':2,'max_pairs':2,'imu_samples_submitted':4}
-        status={'generation':'b'*32,'instance_id':'d'*64,'config_sha256':'e'*64,'raw_recording':raw}
+        status={'raw_recording':raw}
+        _,run,_,self.stopped=runtime_identity_fixture(root,status)
         hw.write(root/'a/status.json',status)
         path=root/'a/recordings'/('capture-abc.partial' if recovered else 'capture-abc');path.mkdir(parents=True)
         hw.write(path/'checkpoint.json',{'record_count':2})
         if not recovered:(path/'COMPLETE').touch()
         else:hw.write(root/'a/crash.json',{'container_id':'exact-id','checkpoint':{'record_count':1}})
         a=argparse.Namespace(run_dir=root,camera='a',recovered=recovered,max_audit_mib=16)
-        run={'image_id':'sha256:'+'c'*64,'cameras':[{'name':'a','status':str(root/'a/status.json')}]}
         summary={'kind':'summary','audit_version':2,'native_hashes_verified':True,'independent_audit_passes':2,
                  'ok':True,'recovered':recovered,'pairs':2,'imu':[2,2]}
         return a,run,path,summary
@@ -281,7 +308,7 @@ class NativeAuditControlTests(unittest.TestCase):
         for recovered in (False,True):
             with self.subTest(recovered=recovered),tempfile.TemporaryDirectory() as d:
                 a,run,path,summary=self.case(Path(d),recovered);before=(path/'checkpoint.json').read_bytes()
-                with patch.object(hw,'own_container',return_value={'Id':'exact-id','State':{'Running':False}}), \
+                with patch.object(hw,'own_container',return_value=self.stopped), \
                      patch.object(hw.subprocess,'Popen',return_value=self.child(summary)) as popen, \
                      patch.object(hw.subprocess,'run',return_value=argparse.Namespace(returncode=1)) as refusal:
                     result=hw.audit(a,run);self.assertTrue(result['ok'])
@@ -295,13 +322,13 @@ class NativeAuditControlTests(unittest.TestCase):
         for key,value in (('independent_audit_passes',1),('native_hashes_verified',False),('imu',[1,2]),('pairs',1)):
             with self.subTest(key=key),tempfile.TemporaryDirectory() as d:
                 a,run,path,summary=self.case(Path(d));summary[key]=value
-                with patch.object(hw,'own_container',return_value={'Id':'exact-id','State':{'Running':False}}), \
+                with patch.object(hw,'own_container',return_value=self.stopped), \
                      patch.object(hw.subprocess,'Popen',return_value=self.child(summary)),self.assertRaises(ValueError):hw.audit(a,run)
 
     def test_ordinary_reader_accepting_partial_is_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             a,run,path,summary=self.case(Path(d),True)
-            with patch.object(hw,'own_container',return_value={'Id':'exact-id','State':{'Running':False}}), \
+            with patch.object(hw,'own_container',return_value=self.stopped), \
                  patch.object(hw.subprocess,'Popen',return_value=self.child(summary)), \
                  patch.object(hw.subprocess,'run',return_value=argparse.Namespace(returncode=0)), \
                  self.assertRaisesRegex(ValueError,'NORMAL_READER_ACCEPTED'):hw.audit(a,run)

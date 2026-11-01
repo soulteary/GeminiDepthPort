@@ -11,8 +11,10 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 
@@ -136,7 +138,10 @@ def prepare(a):
             'labels':{LABEL:rt.EXPERIMENT,RUN:run_id},'stop_signal':'SIGINT',
             'stop_grace_period':str(max(30,(config['service']['shutdown_timeout_ms']+999)//1000+5))+'s',
             'logging':{'driver':'json-file','options':{'max-size':'10m','max-file':'2'}},
-            'healthcheck':{'test':['CMD','python3',rt.HOME+'/health.py'],'interval':'30s','timeout':'30s',
+            # Docker executes healthchecks without the image entrypoint. Load
+            # ROS here too, so the unchanged real-consumer check can import rclpy.
+            'healthcheck':{'test':['CMD','/bin/bash','-c',
+                'source /opt/ros/humble/setup.bash && exec python3 '+rt.HOME+'/health.py'],'interval':'30s','timeout':'30s',
                            'start_period':'60s','retries':3}}
         for p in cp.iterdir():files[str(p.relative_to(a.run_dir))]=rt.sha(p)
         records.append({'name':name,'container':container,'namespace':config['ros']['namespace'],
@@ -209,10 +214,153 @@ def status(run):
     return {'ok':True,'cameras':rows,'acceptance_verified':False}
 
 
+def _process_record(pid,proc=Path('/proc')):
+    """Read only the process identity and the one relevant environment value."""
+    rt.require(type(pid) is int and pid>1,'RUNTIME_PROCESS_PID')
+    root=proc/str(pid)
+    def identity():
+        fields=(root/'stat').read_text().rsplit(') ',1)[1].split()
+        rt.require(fields[0]!='Z','RUNTIME_PROCESS_EXITED')
+        return int(fields[1]),int(fields[19])
+    parent,started=identity()
+    args=[v.decode() for v in (root/'cmdline').read_bytes().split(b'\0') if v]
+    environment=(root/'environ').read_bytes().split(b'\0')
+    tokens=[v.split(b'=',1)[1].decode() for v in environment if v.startswith(b'GDP_CAPTURE_INSTANCE_ID=')]
+    namespace=[]
+    for line in (root/'status').read_text().splitlines():
+        if line.startswith('NSpid:'):namespace=list(map(int,line.split()[1:]));break
+    rt.require(namespace and len(tokens)==1,'RUNTIME_PROCESS_ENVIRONMENT')
+    executable=(root/'exe').stat();expected=(root/'root'/rt.SERVICE.lstrip('/')).stat()
+    rt.require((executable.st_dev,executable.st_ino)==(expected.st_dev,expected.st_ino),'RUNTIME_PROCESS_EXECUTABLE')
+    rt.require(identity()==(parent,started),'RUNTIME_PROCESS_REPLACED')
+    return {'host_pid':pid,'namespace_pid':namespace[-1],'parent_host_pid':parent,'start_ticks':started,
+            'pid_namespace':os.readlink(root/'ns/pid'),'args':args,'instance_environment':tokens[0]}
+
+
+def _argument(args,name):
+    rt.require(args.count(name)==1 and args.index(name)+1<len(args),'RUNTIME_PROCESS_ARGUMENT:'+name)
+    return args[args.index(name)+1]
+
+
+def observe_runtime_process(info,status,binding,previous=None,proc=Path('/proc')):
+    """Bind the supervisor-generated instance to its real container worker.
+
+    The prepared instance is a launch token in the supervisor environment. The
+    production supervisor deliberately gives its worker a different instance.
+    No process is started and no complete environment is returned or persisted.
+    """
+    init=info['State']['Pid'];rt.require(type(init) is int and init>1,'RUNTIME_CONTAINER_NOT_LIVE')
+    wanted=os.readlink(proc/str(init)/'ns/pid')
+    host_pid=previous.get('worker_host_pid') if previous else None
+    if host_pid is None:
+        queue=[init];seen=set()
+        while queue and len(seen)<128:
+            pid=queue.pop(0)
+            if pid in seen:continue
+            seen.add(pid)
+            try:
+                root=proc/str(pid)
+                if os.readlink(root/'ns/pid')==wanted:
+                    for line in (root/'status').read_text().splitlines():
+                        if line.startswith('NSpid:') and int(line.split()[-1])==status['pid']:
+                            host_pid=pid;break
+                if host_pid is not None:break
+                queue.extend(int(v) for v in (root/'task'/str(pid)/'children').read_text().split())
+            except (FileNotFoundError,ProcessLookupError):continue
+        rt.require(host_pid is not None,'RUNTIME_WORKER_NOT_FOUND')
+    worker=_process_record(host_pid,proc)
+    supervisor=_process_record(worker['parent_host_pid'],proc)
+    rt.require(worker['namespace_pid']==status['pid'] and worker['pid_namespace']==supervisor['pid_namespace']==wanted,
+               'RUNTIME_WORKER_NAMESPACE')
+    rt.require(worker['args'].count('--worker')==1 and '--worker' not in supervisor['args'],'RUNTIME_PROCESS_ROLE')
+    rt.require(_argument(worker['args'],'--config')=='/config/capture.json'
+               and _argument(supervisor['args'],'--config')=='/config/capture.json'
+               and _argument(worker['args'],'--expected-config-sha')==binding['capture_sha256']
+               and _argument(worker['args'],'--restart-attempt')=='0'
+               and _argument(worker['args'],'--supervisor-pid')==str(supervisor['namespace_pid']),
+               'RUNTIME_PROCESS_CONFIG')
+    rt.require(worker['instance_environment']==status['instance_id']
+               and supervisor['instance_environment']==binding['instance_id'],'RUNTIME_PROCESS_INSTANCE')
+    # Recheck both identities after reading the chain to reject PID reuse.
+    rt.require(_process_record(host_pid,proc)==worker and _process_record(supervisor['host_pid'],proc)==supervisor,
+               'RUNTIME_PROCESS_REPLACED')
+    return {'container_init_pid':init,'pid_namespace':wanted,
+            'worker_host_pid':host_pid,'worker_start_ticks':worker['start_ticks'],
+            'supervisor_host_pid':supervisor['host_pid'],'supervisor_namespace_pid':supervisor['namespace_pid'],
+            'supervisor_start_ticks':supervisor['start_ticks']}
+
+
+def _read_runtime_identity(path):
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    try:
+        info=os.fstat(fd)
+        rt.require(stat.S_ISREG(info.st_mode) and info.st_uid==os.geteuid()
+                   and not info.st_mode&0o077 and info.st_size<=16384,'PRIVATE_RUNTIME_IDENTITY')
+        return json.loads(os.read(fd,16385),object_pairs_hook=rt.pairs)
+    finally:os.close(fd)
+
+
+def _pin_runtime_identity(path,value):
+    # Hard-link an fsynced private temporary file: concurrent observers cannot
+    # replace an existing pin or read a partially written identity.
+    fd,name=tempfile.mkstemp(prefix='.runtime-identity-',dir=path.parent)
+    try:
+        with os.fdopen(fd,'w') as output:
+            json.dump(value,output,sort_keys=True);output.write('\n');output.flush();os.fsync(output.fileno())
+        try:os.link(name,path)
+        except FileExistsError:pass
+        directory=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY)
+        try:os.fsync(directory)
+        finally:os.close(directory)
+    finally:os.unlink(name)
+    return _read_runtime_identity(path)
+
+
+def validate_runtime_identity(a,c,status,binding):
+    rt.require(status.get('generation')==binding['run_id'] and status.get('config_sha256')==binding['capture_sha256'],
+               'STATUS_BINDING')
+    run=rt.read_json(a.run_dir/'run.json')
+    cameras=[camera for camera in run['cameras'] if camera['name']==c['name']]
+    rt.require(len(cameras)==1 and cameras[0]['container']==c['container'],'RUNTIME_CAMERA_BINDING')
+    rt.require(run['run_id']==binding['run_id'] and run['image_id']==binding['image_id'],'RUNTIME_RUN_BINDING')
+    rt.require(re.fullmatch('[a-f0-9]{64}',status.get('instance_id','')) is not None
+               and re.fullmatch('[a-f0-9]{32}',status.get('session_id','')) is not None
+               and type(status.get('pid')) is int and status['pid']>1
+               and type(status.get('restart_attempt')) is int and status['restart_attempt']==0,'RUNTIME_STATUS_IDENTITY')
+    info=own_container(run,c)
+    def anchor(value):
+        started=value['State']['StartedAt']
+        rt.require(isinstance(started,str) and started and not started.startswith('0001-'),'RUNTIME_CONTAINER_START')
+        return {'container_id':value['Id'],'image_id':value['Image'],'container_started_at':started}
+    expected={'version':1,**anchor(info),'run_id':binding['run_id'],'config_sha256':binding['capture_sha256'],
+              'launch_instance_id':binding['instance_id'],'instance_id':status['instance_id'],
+              'session_id':status['session_id'],'worker_pid':status['pid']}
+    path=a.run_dir/c['name']/'runtime-identity.json'
+    try:pinned=_read_runtime_identity(path)
+    except FileNotFoundError:pinned=None
+    if pinned is not None:
+        rt.require(all(pinned.get(key)==value for key,value in expected.items()),'RUNTIME_IDENTITY_CHANGED')
+    if info['State']['Running']:
+        now=time.time_ns()//10**6;updated=status.get('updated_unix_ms')
+        rt.require(type(updated) is int and -100<=now-updated<=10000
+                   and status.get('state') not in ('failed','stopped'),'RUNTIME_STATUS_NOT_LIVE')
+        process=observe_runtime_process(info,status,binding,pinned.get('process') if pinned else None)
+        after=own_container(run,c)
+        rt.require(after['State']['Running'] and anchor(after)==anchor(info),'RUNTIME_CONTAINER_CHANGED')
+        if pinned is None:
+            pinned=_pin_runtime_identity(path,dict(expected,process=process,pinned_unix_ns=time.time_ns()))
+        rt.require(all(pinned.get(key)==value for key,value in expected.items()) and pinned.get('process')==process,
+                   'RUNTIME_IDENTITY_CHANGED')
+    else:
+        rt.require(pinned is not None,'RUNTIME_IDENTITY_NOT_PINNED')
+    return pinned
+
+
 def recording_path(a,c,status,recovered):
     binding=rt.read_json(a.run_dir/c['name']/'config/experiment.json')
-    rt.require(status['generation']==binding['run_id'] and status['instance_id']==binding['instance_id']
+    rt.require(status['generation']==binding['run_id']
                and status['config_sha256']==binding['capture_sha256'],'STATUS_BINDING')
+    validate_runtime_identity(a,c,status,binding)
     raw=status['raw_recording'];path=Path(raw['partial_path' if recovered else 'job_path'])
     rt.require(path.parent==Path('/recordings') and path.name.startswith('capture-')
                and path.name.endswith('.partial')==recovered,'RECORDING_STATUS_PATH')
