@@ -146,6 +146,37 @@ visible checkpoint may describe a newer prefix whose data/index were already
 synced and verified. Recovery validates what is actually present; runtime durable
 counters never acknowledge that failed sync.
 
+## Optional bounded background checkpoint transaction
+
+With `raw_recording.checkpoint_pipeline: true`, the append thread flushes the
+bounded index buffer and seals the payload handle, prefix digest and index byte
+limit. A single background task then performs payload/index/directory sync,
+checkpoint readback/hash validation, temporary checkpoint write/sync, rename and
+final directory sync in that order. No append is allowed to the sealed payload.
+The shared index remains append-only; readers are bounded by the sealed byte
+limit. Syncing that inode may also persist later index bytes, but never adds them
+to the checkpoint's acknowledged prefix.
+
+The task advances `durable_pairs` only after the final directory sync. A later
+append collects its verified progress and byte-budget accounting; it performs
+no checkpoint commit I/O. Explicit checkpoint/finish wait for pending work and
+synchronously seal any final active tail. The first checkpoint pass plus the
+final whole-job pass still perform two actual reads and per-frame hashes.
+
+There is at most one pending task and one active chunk. Existing global credits
+remain 32 pairs / 16 MiB (or one indivisible oversized pair); pipeline chunk
+targets remain 16 pairs / 8 MiB. The writer blocks on exhausted credits rather
+than accumulating threads or payload buffers. Persistent stalls can still fill
+the acquisition queue and trigger its existing terminal overflow. Background
+errors/panics are propagated at collection; no failed job gains COMPLETE. Drop
+joins pending work even on failure. A submitted, valid sealed prefix may finish
+committing during abort; this is prefix recovery, not successful job completion.
+
+The flag remains opt-in and defaults to false; an explicitly false configuration
+uses the original synchronous checkpoints. Enable it explicitly for the new
+long-tail experiment and hold it fixed across SDK diagnostic on/off groups.
+See [synchronization comparison](../validation/reports/checkpoint-sync-ab-20261101.md).
+
 ## Complete transaction
 
 Reaching the explicit target closes only the native producer. Finish seals the

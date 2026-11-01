@@ -1169,10 +1169,12 @@ mod tests {
     }
     #[test]
     fn actual_bounded_channel_overflow_and_sdk_abort_keep_partial_without_silent_completion() {
-        for overflow in [true, false] {
+        for (overflow, pipeline) in [(true, false), (false, false), (true, true), (false, true)] {
             let dir = directory();
             let ros = snapshot();
             let mut cfg = settings(&dir, 3, 1_000_000);
+            cfg.checkpoint_pipeline = pipeline;
+            cfg.chunked = pipeline;
             cfg.queue_capacity = 1;
             let mut sink = RawRecorder::new(cfg, ros.content.binding.session_id.as_str());
             let gate = Arc::new(TestGate {

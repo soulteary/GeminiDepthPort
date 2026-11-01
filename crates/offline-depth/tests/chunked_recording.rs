@@ -1006,6 +1006,12 @@ fn pipeline_readback_child() {
     }
     fs::write(root.join("release"), b"1").unwrap();
     if mode == "success" {
+        // Commit must complete in the task without a subsequent append/join.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while diagnostics.report()["durable_pairs"] != 32 {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         writer.checkpoint().unwrap();
         assert_eq!(diagnostics.report()["durable_pairs"], 47);
         let path = writer.finish().unwrap();
@@ -1019,8 +1025,23 @@ fn pipeline_readback_child() {
 }
 #[cfg(target_os = "linux")]
 #[test]
-fn pipeline_overlaps_reads_with_writes_and_retains_prefix_on_read_error_corruption_and_sigkill() {
+fn pipeline_overlaps_sync_readback_and_commit_and_retains_prefix_on_fault_or_sigkill() {
+    let mut scenarios = Vec::new();
     for mode in ["success", "error", "corrupt", "kill"] {
+        scenarios.push(("read", "/payload-00000000000000000002.bin", mode));
+    }
+    for (operation, suffix) in [
+        ("fsync", "/payload-00000000000000000002.bin"),
+        ("fsync", "/records.jsonl"),
+        ("fsync", "/capture.partial"),
+        ("write", "/.checkpoint.tmp"),
+        ("rename", "/checkpoint.json"),
+    ] {
+        for mode in ["success", "error", "kill"] {
+            scenarios.push((operation, suffix, mode));
+        }
+    }
+    for (operation, suffix, mode) in scenarios {
         let root = tempfile::tempdir().unwrap();
         let library = io_faults::compile(root.path());
         let marker = root.path().join("injected");
@@ -1039,13 +1060,7 @@ fn pipeline_overlaps_reads_with_writes_and_retains_prefix_on_read_error_corrupti
         if mode != "error" {
             command.env("GDP_IO_DELAY_MS", "0");
         }
-        io_faults::inject(
-            &mut command,
-            &library,
-            "read",
-            "/payload-00000000000000000002.bin",
-            &marker,
-        );
+        io_faults::inject(&mut command, &library, operation, suffix, &marker);
         if mode == "kill" {
             let mut child = command.spawn().unwrap();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -1068,7 +1083,7 @@ fn pipeline_overlaps_reads_with_writes_and_retains_prefix_on_read_error_corrupti
                 String::from_utf8_lossy(&output.stderr)
             );
         }
-        io_faults::assert_injected(&marker, "read");
+        io_faults::assert_injected(&marker, operation);
     }
 }
 
@@ -1163,10 +1178,19 @@ fn pipeline_commit_failure_child() {
     }
     writer.checkpoint().unwrap();
     let diagnostics = writer.diagnostics();
-    for n in 17..=32 {
-        append(&mut writer, &pair, &pixels, n);
-    }
     fs::write(root.join("armed"), b"1").unwrap();
+    for n in 17..=32 {
+        let result = writer.append(
+            &pair_at(&pair, n),
+            &[1, 2, 3, 4],
+            &pixels,
+            StorageEndian::Little,
+        );
+        // Dispatch failure is synchronous; I/O failure is collected at join.
+        if n < 32 {
+            result.unwrap();
+        }
+    }
     assert!(writer.checkpoint().is_err());
     assert_eq!(diagnostics.report()["durable_pairs"], 16);
     assert!(writer.finish().is_err());
@@ -1178,6 +1202,9 @@ fn pipeline_commit_failure_child() {
 #[test]
 fn pending_checkpoint_write_sync_and_rename_failures_never_acknowledge_new_prefix() {
     for (operation, suffix) in [
+        ("pthread_create", "raw-writer"),
+        ("fsync", "/payload-00000000000000000002.bin"),
+        ("fsync", "/records.jsonl"),
         ("write", "/.checkpoint.tmp"),
         ("fsync", "/.checkpoint.tmp"),
         ("rename", "/checkpoint.json"),
@@ -1684,7 +1711,36 @@ fn checkpoint_observation_preserves_artifacts_and_both_readbacks() {
                     assert!(event["info"]["prefix_pairs"].as_u64().unwrap() <= 33);
                     assert!(event["wall_ns"].is_u64());
                     #[cfg(target_os = "linux")]
-                    assert!(event["tid"].as_u64().unwrap() > 0);
+                    {
+                        assert!(event["tid"].as_u64().unwrap() > 0);
+                        if event["info"]["asynchronous"] == true
+                            && [
+                                "payload_sync",
+                                "index_sync",
+                                "directory_sync",
+                                "readback",
+                                "checkpoint_write",
+                                "checkpoint_rename",
+                                "checkpoint_directory_sync",
+                            ]
+                            .contains(&event["phase"].as_str().unwrap())
+                        {
+                            let prepare = obs["events"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .find(|e| {
+                                    e["phase"] == "prepare"
+                                        && e["info"]["checkpoint_id"]
+                                            == event["info"]["checkpoint_id"]
+                                })
+                                .unwrap();
+                            assert_ne!(
+                                event["tid"], prepare["tid"],
+                                "checkpoint I/O must run off the append thread"
+                            );
+                        }
+                    }
                 }
             } else {
                 assert!(obs["events"].as_array().unwrap().is_empty());

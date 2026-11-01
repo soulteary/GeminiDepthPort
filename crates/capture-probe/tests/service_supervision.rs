@@ -3329,3 +3329,84 @@ fn status_report_lock_ab_benchmark() {
     }
     fs::write(std::env::var_os("GDP_STATUS_LOCK_OUTPUT").unwrap(),serde_json::to_vec_pretty(&json!({"kind":"status-report-lock-ab","repeats":5,"runs":20,"target_pairs":240,"width":640,"height":400,"heartbeat_ms":50,"sdk_wait_delay_ms":33,"imu_requested_hz_per_stream":200,"rows":rows,"limits":"synthetic SDK/C ABI bridge; no USB/real DDS/actual disk latency; worker+supervisor CPU from readiness to recording complete; VmHWM separate process peaks; heartbeat gaps are polling observations, not exact write intervals"})).unwrap()).unwrap();
 }
+
+#[test]
+fn checkpoint_sync_tail_is_absorbed_with_pipeline_but_unbounded_stalls_still_overflow() {
+    for (pipeline, delay_ms, succeeds) in
+        [(false, 800, false), (true, 800, true), (true, 1800, false)]
+    {
+        let f = fixture();
+        configure_runtime_quality(&f, 64, 10_000_000);
+        let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+        config["raw_recording"]["checkpoint_pipeline"] = json!(pipeline);
+        config["raw_recording"]["queue_capacity"] = json!(16);
+        for key in [
+            "idle_timeout_ms",
+            "heartbeat_timeout_ms",
+            "shutdown_timeout_ms",
+        ] {
+            config["service"][key] = json!(4000);
+        }
+        fs::write(&f.config, config.to_string()).unwrap();
+        let library = io_faults::compile(&f.root);
+        let marker = f.root.join("sync-injected");
+        let mut command = Command::new(env!("CARGO_BIN_EXE_capture-service"));
+        command
+            .args(["--config", f.config.to_str().unwrap()])
+            .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+            .env("GDP_ROS_MOCK_EVENTS", &f.events)
+            .env("GDP_MOCK_WAIT_DELAY_MS", "33")
+            .env("GDP_IO_DELAY_MS", delay_ms.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        io_faults::inject(
+            &mut command,
+            &library,
+            "fsync",
+            "/payload-00000000000000000001.bin",
+            &marker,
+        );
+        let mut child = command.spawn().unwrap();
+        let final_status = wait_status(&f, &mut child, |v| {
+            v["raw_recording"]["state"] == if succeeds { "complete" } else { "failed" }
+        });
+        if succeeds {
+            assert_eq!(final_status["raw_recording"]["written_pairs"], 64);
+            assert_eq!(
+                final_status["raw_recording"]["whole_pair_queue_overflows"],
+                0
+            );
+            assert_eq!(
+                final_status["raw_recording"]["disk_stages"]["durable_pairs"],
+                64
+            );
+            assert!(
+                final_status["raw_recording"]["disk_stages"]["validation_image_bytes"]
+                    .as_u64()
+                    .unwrap()
+                    > 0
+            );
+            let path = final_status["raw_recording"]["job_path"].as_str().unwrap();
+            let mut reader =
+                offline_depth::recording::RecordingDirectorySource::open(Path::new(path)).unwrap();
+            let mut count = 0;
+            while reader.next_frame().unwrap().is_some() {
+                count += 1;
+            }
+            assert_eq!(count, 64);
+        } else {
+            assert_eq!(
+                final_status["raw_recording"]["reason"],
+                "RAW_QUEUE_OVERFLOW"
+            );
+            assert_eq!(
+                final_status["raw_recording"]["whole_pair_queue_overflows"],
+                1
+            );
+            let path = Path::new(final_status["raw_recording"]["job_path"].as_str().unwrap());
+            assert!(!path.join("COMPLETE").exists());
+        }
+        stop(&mut child);
+        io_faults::assert_injected(&marker, "fsync");
+    }
+}

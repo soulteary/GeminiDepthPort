@@ -12,7 +12,8 @@ I/O counters remain enabled. Validate the entire config with
 
 The status field is `raw_recording.disk_stages.checkpoint_observation` (version 1).
 It reports index buffer flush; payload, index and directory fsync; checkpoint
-preparation; verifier dispatch/join; prefix readback; checkpoint file write and
+preparation; checkpoint-task dispatch/join (legacy keys `verify_dispatch` /
+`verify_wait`); prefix readback; checkpoint file write and
 fsync; atomic replacement; checkpoint directory fsync; final whole-recording
 readback. Each completed span has a monotonic start, elapsed wall time, thread CPU
 time, process/thread IDs, checkpoint ID, prefix pair count and success flag.
@@ -135,3 +136,5 @@ construction run after releasing those locks; queue payloads and pending status
 batches are not cloned. Snapshot groups are sampled independently, not as one
 transaction. Cadence, critical durability waits and atomic file publication are
 unchanged. See the [lock contention and service A/B results](../validation/reports/status-report-lock-ab-20261030.md).
+
+With `checkpoint_pipeline: true`, payload/index/directory sync, prefix readback and checkpoint publication now share the bounded background task. Their event TIDs differ from the frontend prepare/index-flush TID; `verify_wait` can include sync, readback and commit. Spans overlap: do not add wait time to the task stages as independent elapsed work. The default remains synchronous unless the pipeline is explicitly enabled.

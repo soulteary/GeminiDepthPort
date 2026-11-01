@@ -20,8 +20,7 @@ pub(super) struct Chunked {
 }
 struct PendingCheckpoint {
     task: std::thread::JoinHandle<Result<VerifiedPrefix>>,
-    checkpoint: Checkpoint,
-    raw: Vec<u8>,
+    checkpoint_bytes: u64,
     payload_bytes: u64,
     pairs: u64,
     info: CheckpointInfo,
@@ -35,7 +34,7 @@ impl Chunked {
 }
 impl Drop for Chunked {
     fn drop(&mut self) {
-        // No background read can outlive the writer/directory lifecycle.
+        // No background sync, readback or commit can outlive the writer/directory lifecycle.
         if let Some(pending) = self.pending.take() {
             let _ = pending.task.join();
         }
@@ -458,15 +457,6 @@ impl RawRecordingWriter {
         let Some(chunk) = self.chunked.as_mut().unwrap().active.take() else {
             return Ok(());
         };
-        diagnostics.1.measure(info, Phase::PayloadSync, || {
-            diagnostics.measure("fsync", || chunk.file.sync_all())
-        })?;
-        diagnostics.1.measure(info, Phase::IndexSync, || {
-            diagnostics.measure("fsync", || self.records.sync_all())
-        })?;
-        diagnostics.1.measure(info, Phase::DirectorySync, || {
-            diagnostics.measure("fsync", || fs::File::open(&self.stage)?.sync_all())
-        })?;
         let (checkpoint, prefix, raw) =
             diagnostics
                 .1
@@ -486,34 +476,57 @@ impl RawRecordingWriter {
                     self.reserve_bytes(raw.len())?;
                     Ok((checkpoint, prefix, raw))
                 })?;
+        // A clone shares the index inode, but sync_all does not change its file
+        // offset. Readers remain bounded by the sealed index_bytes prefix while
+        // the append thread may write later records to the same append-only file.
+        let chunk_pairs = chunk.pairs;
+        let records = self.records.try_clone()?;
+        let stage = self.stage.clone();
+        let checkpoint_bytes = raw.len() as u64;
+        let work_diagnostics = diagnostics.clone();
+        let work = move || -> Result<VerifiedPrefix> {
+            work_diagnostics.1.measure(info, Phase::PayloadSync, || {
+                work_diagnostics.measure("fsync", || chunk.file.sync_all())
+            })?;
+            work_diagnostics.1.measure(info, Phase::IndexSync, || {
+                work_diagnostics.measure("fsync", || records.sync_all())
+            })?;
+            work_diagnostics.1.measure(info, Phase::DirectorySync, || {
+                work_diagnostics.measure("fsync", || fs::File::open(&stage)?.sync_all())
+            })?;
+            let verified = verify_checkpoint(
+                stage.clone(),
+                &checkpoint,
+                prefix,
+                work_diagnostics.clone(),
+                info,
+            )?;
+            persist_checkpoint(&stage, &checkpoint, &raw, &work_diagnostics, info)?;
+            Ok(verified)
+        };
         if asynchronous {
-            let stage = self.stage.clone();
-            let work_diagnostics = diagnostics.clone();
-            let task = diagnostics
-                .1
-                .measure(info, Phase::VerifyDispatch, || -> Result<_> {
-                    let work: Checkpoint = parse(&raw)?;
-                    Ok(std::thread::Builder::new()
-                        .name("recording-checkpoint-verify".into())
-                        .spawn(move || {
-                            verify_checkpoint(stage, &work, prefix, work_diagnostics, info)
-                        })?)
-                })?;
+            let payload_bytes = info.payload_bytes.unwrap();
+            let pairs = chunk_pairs;
+            let task = diagnostics.1.measure(info, Phase::VerifyDispatch, || {
+                std::thread::Builder::new()
+                    .name("recording-checkpoint".into())
+                    .spawn(work)
+            })?;
             self.chunked.as_mut().unwrap().pending = Some(PendingCheckpoint {
                 task,
-                checkpoint,
-                raw,
-                payload_bytes: chunk.bytes,
-                pairs: chunk.pairs,
+                checkpoint_bytes,
+                payload_bytes,
+                pairs,
                 info,
             });
             Ok(())
         } else {
-            let verified =
-                verify_checkpoint(self.stage.clone(), &checkpoint, prefix, diagnostics, info)?;
-            self.commit_checkpoint(checkpoint, raw, verified, info)
+            let verified = work()?;
+            self.accept_checkpoint(verified, checkpoint_bytes);
+            Ok(())
         }
     }
+
     fn complete_pending(&mut self) -> Result<()> {
         let pending = self.chunked.as_mut().and_then(|s| s.pending.take());
         if let Some(pending) = pending {
@@ -526,46 +539,45 @@ impl RawRecordingWriter {
                             .join()
                             .map_err(|_| OfflineError::Invalid("RECORDING_VERIFIER_PANIC"))?
                     })?;
-            self.commit_checkpoint(pending.checkpoint, pending.raw, verified, pending.info)?;
+            self.accept_checkpoint(verified, pending.checkpoint_bytes);
         }
         Ok(())
     }
-    fn commit_checkpoint(
-        &mut self,
-        checkpoint: Checkpoint,
-        raw: Vec<u8>,
-        verified: VerifiedPrefix,
-        info: CheckpointInfo,
-    ) -> Result<()> {
-        let previous = self.chunked.as_ref().unwrap().checkpoint_bytes;
-        let temporary = self.stage.join(".checkpoint.tmp");
-        self.diagnostics
-            .1
-            .measure(info, Phase::CheckpointWrite, || {
-                write_private_observed(&temporary, &raw, &self.diagnostics)
-            })?;
-        self.diagnostics
-            .1
-            .measure(info, Phase::CheckpointRename, || {
-                self.diagnostics.measure("rename", || {
-                    fs::rename(&temporary, self.stage.join("checkpoint.json"))
-                })
-            })?;
-        self.diagnostics
-            .1
-            .measure(info, Phase::CheckpointDirectorySync, || {
-                self.diagnostics
-                    .measure("fsync", || fs::File::open(&self.stage)?.sync_all())
-            })?;
-        self.used_bytes -= previous;
+    fn accept_checkpoint(&mut self, verified: VerifiedPrefix, checkpoint_bytes: u64) {
         let state = self.chunked.as_mut().unwrap();
-        state.checkpoint_bytes = raw.len() as u64;
+        self.used_bytes -= state.checkpoint_bytes;
+        state.checkpoint_bytes = checkpoint_bytes;
         state.verified = Some(verified);
-        let mut stats = self.diagnostics.0.lock().unwrap_or_else(|e| e.into_inner());
-        stats.durable_pairs = checkpoint.record_count;
-        stats.checkpoints += 1;
-        Ok(())
     }
+}
+
+// Only one task can own a sealed checkpoint. Publish after both actual readback
+// passes succeed, and advance telemetry only after the rename's directory sync.
+fn persist_checkpoint(
+    stage: &Path,
+    checkpoint: &Checkpoint,
+    raw: &[u8],
+    diagnostics: &RawRecordingDiagnostics,
+    info: CheckpointInfo,
+) -> Result<()> {
+    let temporary = stage.join(".checkpoint.tmp");
+    diagnostics.1.measure(info, Phase::CheckpointWrite, || {
+        write_private_observed(&temporary, raw, diagnostics)
+    })?;
+    diagnostics.1.measure(info, Phase::CheckpointRename, || {
+        diagnostics.measure("rename", || {
+            fs::rename(&temporary, stage.join("checkpoint.json"))
+        })
+    })?;
+    diagnostics
+        .1
+        .measure(info, Phase::CheckpointDirectorySync, || {
+            diagnostics.measure("fsync", || fs::File::open(stage)?.sync_all())
+        })?;
+    let mut stats = diagnostics.0.lock().unwrap_or_else(|e| e.into_inner());
+    stats.durable_pairs = checkpoint.record_count;
+    stats.checkpoints += 1;
+    Ok(())
 }
 
 /// Count every underlying call, including short writes and EINTR retries.
