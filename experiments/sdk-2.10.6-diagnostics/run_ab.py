@@ -115,7 +115,7 @@ def execute(a):
     rt.require(0<=a.cooldown_seconds<=600,'COOLDOWN_LIMIT')
     rt.require(not a.root.exists(),'FRESH_BATCH_ROOT_REQUIRED');a.root.mkdir(mode=0o700,parents=True)
     (a.root/'controller').mkdir(mode=0o700)
-    controller=one.Runner(argparse.Namespace(root=a.root/'controller'));controller.save()
+    controller=one.Runner(argparse.Namespace(root=a.root/'controller',poll_seconds=a.poll_seconds));controller.save()
     result={'version':1,'ok':False,'uid':os.getuid(),'gid':os.getgid(),'run_token':controller.token,'groups':[],
             'planned_groups':groups,'production_changed':False,'rollback_argv':[sys.executable,str(HERE/'run_ab.py'),'rollback','--root',str(a.root)]}
     def save():one.atomic(a.root/'result.json',result)

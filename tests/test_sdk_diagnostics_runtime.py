@@ -318,6 +318,20 @@ class NativeAuditControlTests(unittest.TestCase):
                     self.assertEqual(refusal.call_count,int(recovered))
                     if recovered:self.assertFalse((path/'COMPLETE').exists())
 
+    def test_optional_named_auditor_binds_container_to_the_experiment_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            a,run,path,summary=self.case(Path(d),True)
+            a.audit_container='gdp-retest-'+'a'*32+'-audit'
+            with patch.object(hw,'own_container',return_value=self.stopped), \
+                 patch.object(hw.subprocess,'Popen',return_value=self.child(summary)) as popen, \
+                 patch.object(hw.subprocess,'run',return_value=argparse.Namespace(returncode=1)):
+                hw.audit(a,run)
+                args=popen.call_args.args[0]
+                self.assertEqual(args[args.index('--name')+1],a.audit_container)
+                self.assertIn('--init',args)
+                self.assertIn(hw.RUN+'='+run['run_id'],args)
+                self.assertIn(hw.LABEL+'='+rt.EXPERIMENT,args)
+
     def test_audit_missing_second_pass_hash_or_counts_cannot_be_accepted(self):
         for key,value in (('independent_audit_passes',1),('native_hashes_verified',False),('imu',[1,2]),('pairs',1)):
             with self.subTest(key=key),tempfile.TemporaryDirectory() as d:

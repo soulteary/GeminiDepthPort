@@ -171,6 +171,7 @@ class BatchWorkflowTests(unittest.TestCase):
     def run_case(self,a,fault=None):
         calls=[];image='sha256:'+'a'*64
         def command(controller,argv,name,timeout):
+            self.assertEqual(controller.a.poll_seconds,a.poll_seconds)
             calls.append((name,argv))
             if name=='build':return
             root=a.root/name;root.mkdir()

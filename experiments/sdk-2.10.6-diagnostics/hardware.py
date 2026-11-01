@@ -388,6 +388,11 @@ def audit(a,run):
         args=['docker','run','--rm','--network','none','--read-only','--cap-drop','ALL','--tmpfs','/tmp:rw,nosuid,nodev,size=64m',
               '--user',str(os.getuid())+':'+str(os.getgid()),'--mount','type=bind,src='+str(path)+',dst=/recording,readonly',
               '--entrypoint',rt.AUDITOR,run['image_id'],'/recording']+(['--recovered'] if a.recovered else [])
+        audit_container=getattr(a,'audit_container',None)
+        if audit_container:
+            rt.require(a.camera == c['name'] and re.fullmatch('gdp-retest-[a-f0-9]{32}-audit',audit_container) is not None,
+                       'AUDIT_CONTAINER_BINDING')
+            args[2:2]=['--init','--name',audit_container,'--label',LABEL+'='+rt.EXPERIMENT,'--label',RUN+'='+run['run_id']]
         summary=None;used=0
         with out.open('x') as dest, out.with_suffix('.stderr').open('x') as err:
             child=subprocess.Popen(args,stdout=subprocess.PIPE,stderr=err,text=True)
@@ -505,7 +510,7 @@ def main():
         s.add_argument('--run-dir',type=Path,required=True)
         if name in ('start','crash'):s.add_argument('--execute',action='store_true')
         if name in ('audit','crash'):s.add_argument('--camera',required=name=='crash')
-        if name=='audit':s.add_argument('--recovered',action='store_true');s.add_argument('--max-audit-mib',type=int,default=2048)
+        if name=='audit':s.add_argument('--recovered',action='store_true');s.add_argument('--max-audit-mib',type=int,default=2048);s.add_argument('--audit-container')
         if name in ('sample-commands','sample'):s.add_argument('--seconds',type=int,default=120)
         if name=='verify-dds':s.add_argument('--trim-seconds',type=float,default=5)
         if name=='sample':s.add_argument('--perf',action='store_true');s.add_argument('--disk',action='append',default=[])
