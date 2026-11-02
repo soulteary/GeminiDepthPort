@@ -67,3 +67,15 @@ sudo python3 experiments/sdk-2.10.6-diagnostics/run_ab.py rollback \
 批次不会自动恢复生产或执行 SIGKILL 实机故障注入。确认全部实验容器停止后，按生产 GDP 正常流程恢复；正常采集读回通过不能替代另一次 SIGKILL/断电恢复验收。本轮新增自动化测试使用合成数据与受控后端，没有三相机实机性能结论。
 
 自动验证结果与实机边界见 [AB-REPORT.md](AB-REPORT.md)。
+
+## failed_calls 契约修正（2026-11-02）
+
+`disk_stages.failed_calls` 来自 Rust `RawRecordingDiagnostics::report()`，是按阶段统计失败次数的 JSON object，无失败时为 `{}`。汇总器先校验对象类型、非空阶段名和 1 至 u64::MAX 的整数计数（拒绝 bool），再要求对象为空且录制状态为 `complete`。缺字段、null、标量 0、数组、零/负数/小数/字符串计数均报 `FINAL_DISK_STATUS_SCHEMA`；合法非空失败对象报 `FINAL_DISK_STATUS`。
+
+固定版本 `3dff4fd` 错将对象与整数 0 比较，导致实机 on-01 子组验收通过后，批量汇总仍以 `FINAL_DISK_STATUS` 中止。本次修正仅解除错误拒绝，不修改旧录制、日志、附件、官方 summary 或 accepted 计数；旧批次仍保持 accepted_groups=0/6、complete=false，其余五组与独立 SIGKILL 恢复未执行。已有图像源序号缺口也不会被消除。
+
+`tests/fixtures/raw_failed_calls.json` 同时由 Rust 真实 diagnostics 序列化回归与 Python 汇总测试消费，覆盖无失败、fsync、finish 和重复失败计数。批量回归仅模拟硬件命令和容器边界，调用真实 `metrics.summarize`，覆盖六组接受、磁盘失败停止及子组证据字节保持不变。它们不替代三相机实机验收。
+
+修正后使用新源码版本和全新 `--root` 完整执行六组及独立恢复流程；不续写旧目录，不将重新汇总当作旧批次通过，也不预先宣称 SDK on/off 性能改善或恢复通过。
+
+本地验证：`python3 -m unittest discover -s tests -p 'test_sdk_*.py'` 共 113 项通过、1 项跳过；`cargo test -p offline-depth --lib --locked` 12 项通过、1 项显式性能实验忽略；`cargo clippy -p offline-depth --lib --tests --locked -- -D warnings`、`cargo fmt --all --check` 和 `git diff --check` 通过。本轮未连接物理相机，实机完整批次与恢复结果仍待新一轮验收。

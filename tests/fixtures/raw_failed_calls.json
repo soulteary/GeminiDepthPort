@@ -1,0 +1,6 @@
+{
+  "success": {},
+  "fsync_failure": {"fsync": 1},
+  "finish_failure": {"finish": 1},
+  "repeated_failures": {"finish": 1, "fsync": 2}
+}

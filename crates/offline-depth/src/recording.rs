@@ -1579,6 +1579,30 @@ fn write_private_observed(
 mod streaming_hash_tests {
     use super::*;
     #[test]
+    fn failed_calls_matches_shared_python_contract_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/raw_failed_calls.json"
+        ))
+        .unwrap();
+        for (name, stages) in [
+            ("success", vec![]),
+            ("fsync_failure", vec!["fsync"]),
+            ("finish_failure", vec!["finish"]),
+            ("repeated_failures", vec!["fsync", "finish", "fsync"]),
+        ] {
+            let diagnostics = RawRecordingDiagnostics::default();
+            diagnostics.measure("write", || Ok::<_, ()>(())).unwrap();
+            for stage in stages {
+                assert!(diagnostics.measure(stage, || Err::<(), _>(())).is_err());
+            }
+            // Round-trip the actual producer JSON, shared with consumer tests.
+            let report: serde_json::Value =
+                serde_json::from_slice(&serde_json::to_vec(&diagnostics.report()).unwrap())
+                    .unwrap();
+            assert_eq!(report["failed_calls"], fixture[name], "{name}");
+        }
+    }
+    #[test]
     fn paused_io_report_keeps_old_snapshot_and_does_not_block_writer_stats() {
         let diagnostics = RawRecordingDiagnostics::default();
         diagnostics.measure("write", || Ok::<_, ()>(())).unwrap();

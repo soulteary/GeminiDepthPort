@@ -119,7 +119,11 @@ def summarize(root, manifest, mode):
     final=rt.read_json(root/'final-status.json');disk=[]
     for camera in final['cameras']:
         raw=camera['capture']['raw_recording'];stages=raw['disk_stages']
-        rt.require(raw['state']=='complete' and stages['failed_calls']==0,'FINAL_DISK_STATUS')
+        failed_calls=stages.get('failed_calls')
+        rt.require(type(failed_calls) is dict and all(
+            type(stage) is str and bool(stage) and type(count) is int and 0<count<=2**64-1
+            for stage,count in failed_calls.items()),'FINAL_DISK_STATUS_SCHEMA')
+        rt.require(raw['state']=='complete' and not failed_calls,'FINAL_DISK_STATUS')
         append=stages['append'];verify=stages['verification']
         rt.require(append['samples']>0 and verify['samples']>0 and append['p99_ns'] is not None,'MISSING_DISK_TIMINGS')
         disk.append({'camera':camera['name'],'append_p99_bounds_ns':append['p99_ns'],

@@ -40,7 +40,7 @@ def fixture(root,mode='on'):
         source[n]='c'*64
         one.atomic(cp/'experiment.json',{'capture_sha256':rt.sha(cp/'capture.json'),'health_sha256':rt.sha(cp/'health.json'),
                                        'source_config_sha256':source[n],'diagnostics':mode=='on'})
-        disk.append({'name':n,'capture':{'raw_recording':{'state':'complete','disk_stages':{'failed_calls':0,
+        disk.append({'name':n,'capture':{'raw_recording':{'state':'complete','disk_stages':{'failed_calls':rt.read_json(ROOT/'tests/fixtures/raw_failed_calls.json')['success'],
                      'append':{'samples':20,'p99_ns':{'lower_bound_ns':8,'upper_bound_ns':9}},
                      'verification':{'samples':2,'total_ns':'100'},'checkpoint_observation':{'stages':{}}}}}})
     one.atomic(root/'final-status.json',{'cameras':disk})
@@ -83,6 +83,25 @@ class MeasurementTests(unittest.TestCase):
             self.assertEqual(instance['counter_deltas']['candidate_outside_window'],2)
             self.assertEqual(instance['streams_lifetime_peaks'][0]['aggregate_queue_peak'],3)
             self.assertEqual(instance['locks'][0]['wait']['p99_log2_bounds_ns'],{'lower_bound_ns':4,'upper_bound_ns':7})
+
+    def test_failed_calls_rust_contract_and_invalid_schemas(self):
+        contract=rt.read_json(ROOT/'tests/fixtures/raw_failed_calls.json')
+        cases=[(value,'FINAL_DISK_STATUS$') for name,value in contract.items() if name!='success']
+        cases += [(value,'FINAL_DISK_STATUS_SCHEMA$') for value in
+                  (None,0,[],False,True,'0',{'':1},{'fsync':0},{'fsync':-1},
+                   {'fsync':True},{'fsync':'1'},{'fsync':1.5},{'fsync':2**64})]
+        cases.append(('missing','FINAL_DISK_STATUS_SCHEMA$'))
+        for value,error in cases:
+            with self.subTest(value=value),tempfile.TemporaryDirectory() as d:
+                root=Path(d);manifest,_,_,_=fixture(root)
+                path=root/'final-status.json';status=rt.read_json(path)
+                stages=status['cameras'][1]['capture']['raw_recording']['disk_stages']
+                if value=='missing':del stages['failed_calls']
+                else:stages['failed_calls']=value
+                one.atomic(path,status)
+                before=path.read_bytes()
+                with self.assertRaisesRegex(ValueError,error):metrics.summarize(root,manifest,'on')
+                self.assertEqual(path.read_bytes(),before)
 
     def test_off_is_unavailable_not_zero_and_observer_overhead_separate(self):
         with tempfile.TemporaryDirectory() as d:
@@ -187,6 +206,46 @@ class BatchWorkflowTests(unittest.TestCase):
             code=batch.execute(a)
             self.assertEqual(resolve.call_count,1)
         return code,calls,rollback.call_count
+
+    def test_batch_uses_real_summarizer_and_preserves_child_evidence(self):
+        for fault in (False,True):
+            with self.subTest(fault=fault),tempfile.TemporaryDirectory() as d:
+                a=self.setup_case(Path(d));calls=[];protected={}
+                image='sha256:'+'a'*64
+                def command(controller,argv,name,timeout):
+                    calls.append(name);root=a.root/name;root.mkdir()
+                    manifest=rt.read_json(a.root/'manifest.json')
+                    fixture(root,name.split('-')[0])
+                    for n in 'abc':
+                        cp=root/'capture'/n/'config'
+                        binding=rt.read_json(cp/'experiment.json')
+                        binding['source_config_sha256']=manifest['source_configs'][n]
+                        one.atomic(cp/'experiment.json',binding)
+                    for relative in ('result.json','capture/run.json'):
+                        path=root/relative;value=rt.read_json(path)
+                        value['runtime_sha256']=manifest['runtime_sha256'];one.atomic(path,value)
+                    if fault and name=='off-01':
+                        path=root/'final-status.json';value=rt.read_json(path)
+                        value['cameras'][0]['capture']['raw_recording']['disk_stages']['failed_calls']={'fsync':1}
+                        one.atomic(path,value)
+                    for relative in ('result.json','final-status.json'):
+                        path=root/relative;protected[path]=path.read_bytes()
+                with patch.object(rt,'validate_health'),patch.object(one.Runner,'command',command), \
+                     patch.object(hw,'image_manifest',return_value=(image,{'fixed':'inventory'})), \
+                     patch.object(hw,'load_run',return_value={'cameras':[{'name':n} for n in 'abc']}), \
+                     patch.object(hw,'own_container',return_value={'State':{'Running':False}}), \
+                     patch.object(one,'rollback',return_value={'ok':True}):
+                    code=batch.execute(a)
+                self.assertEqual(code,1 if fault else 0)
+                summary=rt.read_json(a.root/'summary.json')
+                self.assertEqual(summary['accepted_groups'],1 if fault else 6)
+                self.assertEqual(summary['complete'],not fault)
+                self.assertEqual(len(calls),2 if fault else 6)
+                if fault:
+                    self.assertIsNone(summary['comparison'])
+                    self.assertIn('FINAL_DISK_STATUS',rt.read_json(a.root/'result.json')['error'])
+                else:self.assertIsNotNone(summary['comparison'])
+                for path,before in protected.items():self.assertEqual(path.read_bytes(),before)
 
     def test_six_groups_build_once_pin_image_and_same_limits(self):
         with tempfile.TemporaryDirectory() as d:
