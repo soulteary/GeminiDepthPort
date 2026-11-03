@@ -767,6 +767,46 @@ fn drain_with_quality(
     result
 }
 
+/// Bounded lifecycle observations; durations are wall time, not disk latency.
+#[derive(Default)]
+struct CleanupObservation {
+    active: Option<(&'static str, Instant)>,
+    completed: Vec<Value>,
+}
+impl CleanupObservation {
+    fn enter(&mut self, phase: &'static str) {
+        if let Some((old, at)) = self.active.take() {
+            if self.completed.len() == 8 {
+                self.completed.remove(0);
+            }
+            self.completed
+                .push(json!({"phase":old,"wall_ns":at.elapsed().as_nanos()}));
+        }
+        self.active = Some((phase, Instant::now()));
+    }
+    fn report(&self) -> Value {
+        json!({"history_capacity":8,"completed":self.completed,
+            "active":self.active.map(|(phase,at)|json!({"phase":phase,"elapsed_ns":at.elapsed().as_nanos()})),
+            "scope":"worker cleanup wall time; active phase is a snapshot, not final duration"})
+    }
+}
+#[cfg(test)]
+mod cleanup_observation_tests {
+    use super::*;
+    #[test]
+    fn bounded_phases_keep_the_active_stage_and_elapsed_wall_time() {
+        let mut observation = CleanupObservation::default();
+        assert!(observation.report()["active"].is_null());
+        for _ in 0..12 {
+            observation.enter("recorder_join");
+        }
+        let report = observation.report();
+        assert_eq!(report["completed"].as_array().unwrap().len(), 8);
+        assert_eq!(report["active"]["phase"], "recorder_join");
+        assert!(report["active"]["elapsed_ns"].is_number());
+        assert!(report["completed"][0]["wall_ns"].is_number());
+    }
+}
 struct Status<'a> {
     config: &'a ServiceConfig,
     session: String,
@@ -785,6 +825,7 @@ struct Status<'a> {
     coalesced_partial_status: u64,
     last_write: Option<(String, Instant)>,
     last_health: Option<Value>,
+    cleanup: CleanupObservation,
 }
 impl Status<'_> {
     fn observe_raw_quality(&mut self) -> Result<()> {
@@ -858,6 +899,7 @@ impl Status<'_> {
                 .map(|i| i.report())
                 .unwrap_or(Value::Null);
             value["status_persistence"] = persistence;
+            value["cleanup"] = self.cleanup.report();
             let health = json!({"quality":value["quality"]["state"],
                 "raw_state":value["raw_recording"]["state"],"raw_reason":value["raw_recording"]["reason"]});
             batch.push((self.config.settings.status_path.clone(), value));
@@ -922,6 +964,7 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
         coalesced_partial_status: 0,
         last_write: None,
         last_health: None,
+        cleanup: CleanupObservation::default(),
     };
     status.quality = config
         .quality_runtime
@@ -1730,6 +1773,18 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
         })();
         while queue.pop().is_some() {}
         metrics.queue(queue.stats());
+        // Abort the commit gate and durably expose the original failure before
+        // any native stop/join that may block. The supervisor deadlines remain
+        // unchanged, and can still terminate a stuck native call.
+        status.cleanup.enter("imu_stop");
+        let failure_published = if result.is_err() {
+            if let Some(raw) = &mut status.raw {
+                raw.fail("RAW_SDK_OR_SESSION_ERROR");
+            }
+            status.write("degraded", Some("SESSION_FAILED"), &metrics, last_pair)
+        } else {
+            Ok(())
+        };
         // This native stop can hang; the parent supervisor enforces shutdown deadline.
         let imu_stopped = (|| -> Result<()> {
             if let Some(imu) = &mut imu {
@@ -1740,14 +1795,31 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
             }
             Ok(())
         })();
+        status.cleanup.enter("pipeline_stop");
+        // An IMU stop failure also becomes visible before pipeline stop.
+        if result.is_err() || imu_stopped.is_err() {
+            if let Some(raw) = &mut status.raw {
+                raw.fail("RAW_SDK_OR_SESSION_ERROR");
+            }
+            let _ = status.write("degraded", Some("SESSION_FAILED"), &metrics, last_pair);
+        }
         let stopped = pipeline
             .stop()
             .map_err(anyhow::Error::from)
             .and(imu_stopped);
         result?;
         stopped?;
+        failure_published?;
         Ok(())
     })();
+    status.cleanup.enter("failure_record");
+    if outcome.is_err() {
+        if let Some(raw) = &mut status.raw {
+            raw.fail("RAW_SDK_OR_SESSION_ERROR");
+        }
+        // Also covers open/stop errors that happened outside the acquisition loop.
+        let _ = status.write("degraded", Some("SESSION_FAILED"), &metrics, last_pair);
+    }
     if let Err(error) = &outcome {
         // SDK details may contain device identities. This bounded record stays
         // in the owner-only status directory; public stderr remains redacted.
@@ -1769,9 +1841,15 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
             "error_chain":detail,"details_truncated":truncated}),
         );
     }
+    status.cleanup.enter("recorder_join");
+    if outcome.is_err() {
+        // Persist the join phase before waiting, never a false ready heartbeat.
+        let _ = status.write("degraded", Some("SESSION_FAILED"), &metrics, last_pair);
+    }
     if let Some(raw) = &mut status.raw {
         raw.finish_session(outcome.is_ok())?;
     }
+    status.cleanup.enter("quality_finalize");
     status.observe_raw_quality()?;
     if let Some(quality) = &mut status.quality {
         if outcome.is_err() && quality.engine.snapshot().state == quality_core::QualityState::Normal
@@ -1783,6 +1861,7 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
         }
         quality.finalize()?;
     }
+    status.cleanup.enter("complete");
     if STOP.load(Ordering::Relaxed) && outcome.is_ok() {
         status.write("stopped", Some("SIGNAL"), &metrics, last_pair)?;
         Ok(())
@@ -1956,7 +2035,7 @@ fn supervisor_status(
         .unwrap_or_else(|| json!({"version":1,"kind":"capture-service-status"}));
     if value["reason"]
         .as_str()
-        .is_some_and(|v| v != "WORKER_EXITED" && v != "SESSION_FAILED")
+        .is_some_and(|v| v != "WORKER_EXITED")
     {
         value["worker_reason"] = value["reason"].clone();
     }
@@ -2929,6 +3008,7 @@ mod tests {
             coalesced_partial_status: 0,
             last_write: None,
             last_health: None,
+            cleanup: CleanupObservation::default(),
         };
         let mut metrics = Metrics::default();
         for n in 0..45 {
@@ -3009,6 +3089,7 @@ mod tests {
             coalesced_partial_status: 0,
             last_write: None,
             last_health: None,
+            cleanup: CleanupObservation::default(),
         };
         status
             .write(
@@ -3374,6 +3455,7 @@ mod tests {
             coalesced_partial_status: 0,
             last_write: None,
             last_health: None,
+            cleanup: CleanupObservation::default(),
         };
         status
             .write("ready", None, &Metrics::default(), None)

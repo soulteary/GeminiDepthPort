@@ -79,3 +79,5 @@ sudo python3 experiments/sdk-2.10.6-diagnostics/run_ab.py rollback \
 修正后使用新源码版本和全新 `--root` 完整执行六组及独立恢复流程；不续写旧目录，不将重新汇总当作旧批次通过，也不预先宣称 SDK on/off 性能改善或恢复通过。
 
 本地验证：`python3 -m unittest discover -s tests -p 'test_sdk_*.py'` 共 113 项通过、1 项跳过；`cargo test -p offline-depth --lib --locked` 12 项通过、1 项显式性能实验忽略；`cargo clippy -p offline-depth --lib --tests --locked -- -D warnings`、`cargo fmt --all --check` 和 `git diff --check` 通过。本轮未连接物理相机，实机完整批次与恢复结果仍待新一轮验收。
+
+后续 off-01 的 IMU 错误与收尾状态观测说明见 [IMU 错误收尾与关键状态观测](../../docs/validation/imu-error-cleanup-observations.md)。它不改变旧批次的接受计数，也不替代完整六组及独立恢复验收。

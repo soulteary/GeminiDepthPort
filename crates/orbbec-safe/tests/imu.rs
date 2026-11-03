@@ -170,6 +170,14 @@ fn imu_child() {
             std::thread::sleep(Duration::from_millis(2));
         }
         assert_eq!(imu.drain().unwrap_err().0, "IMU_QUEUE_OVERFLOW");
+        let observation = imu.failure_observation();
+        assert_eq!(
+            observation.first_error_queue_len,
+            Some(config().queue_capacity)
+        );
+        assert_eq!(observation.queue_len, config().queue_capacity);
+        assert!(observation.started_unix_ns.is_some());
+        assert!(observation.first_error_elapsed_ns.is_some());
     } else if mode == "stale" || mode == "gyro-stale" {
         std::thread::sleep(Duration::from_millis(140));
         assert!(imu.drain().is_err());

@@ -10,6 +10,9 @@ pub(crate) struct ImuMetrics {
     excluded: u64,
     peak: usize,
     wall: capture_contract::timing::StageStats,
+    last_drain_started: Option<Instant>,
+    drain_interval: capture_contract::timing::StageStats,
+    failure_observation: Option<serde_json::Value>,
     drain_wall: capture_contract::timing::StageStats,
     publish_wall: capture_contract::timing::StageStats,
     error: Option<String>,
@@ -23,7 +26,7 @@ impl ImuMetrics {
             && self.error.is_none()
     }
     pub fn report(&self) -> serde_json::Value {
-        json!({"enabled":true,"received":self.received,"published":self.published,"startup_samples_excluded":self.excluded,"queue_high_water":self.peak,"error":self.error,"ready":self.ready(),"pump_wall":self.wall.report(),"drain_wall":self.drain_wall.report(),"ros_publish_wall":self.publish_wall.report(),"timing_scope":{"drain_wall":"per pump, counters and SDK queue drain including lock wait","ros_publish_wall":"per nonempty published batch, all synchronous ROS calls including failures","pump_wall":"whole IMU pump; excludes native recorder buffering"},"units":{"accel":"m/s^2","gyro":"rad/s"},"orientation_available":false,"extrinsics_verified":false,"interpolation":false,"delivery_verified":false,"shared_ros_context":self.shared_context})
+        json!({"drain_interval":self.drain_interval.report(),"failure_observation":self.failure_observation,"enabled":true,"received":self.received,"published":self.published,"startup_samples_excluded":self.excluded,"queue_high_water":self.peak,"error":self.error,"ready":self.ready(),"pump_wall":self.wall.report(),"drain_wall":self.drain_wall.report(),"ros_publish_wall":self.publish_wall.report(),"timing_scope":{"drain_wall":"per pump, counters and SDK queue drain including lock wait","ros_publish_wall":"per nonempty published batch, all synchronous ROS calls including failures","pump_wall":"whole IMU pump; excludes native recorder buffering"},"units":{"accel":"m/s^2","gyro":"rad/s"},"orientation_available":false,"extrinsics_verified":false,"interpolation":false,"delivery_verified":false,"shared_ros_context":self.shared_context})
     }
 }
 pub(crate) struct RuntimeImu {
@@ -80,11 +83,24 @@ impl RuntimeImu {
         stats.ros = self.publisher.is_some();
         stats.shared_context = self.context.is_some();
         let drain_started = Instant::now();
+        if let Some(last) = stats.last_drain_started.replace(drain_started) {
+            stats
+                .drain_interval
+                .observe(drain_started.duration_since(last));
+        }
         let drained = self.capture.drain_into(&mut self.samples);
         stats.drain_wall.observe(drain_started.elapsed());
         let (received, peak) = match &drained {
             Ok(counters) => *counters,
-            Err(_) => self.capture.counters(),
+            Err(_) => {
+                let failure = self.capture.failure_observation();
+                stats.failure_observation = Some(
+                    json!({"queue_len":failure.queue_len,"queue_capacity":failure.queue_capacity,
+                    "clock":"elapsed-from-imu-start","started_unix_ns":failure.started_unix_ns,"first_error_elapsed_ns":failure.first_error_elapsed_ns,
+                    "first_error_queue_len":failure.first_error_queue_len,"since_last_drain_ns":failure.since_last_drain_ns}),
+                );
+                self.capture.counters()
+            }
         };
         stats.received = received;
         stats.peak = peak;

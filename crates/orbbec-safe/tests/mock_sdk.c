@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 typedef struct obj { int kind, refs, stream;uint64_t imu_sequence,imu_period_us; } obj;
 typedef void error;
 static _Atomic int live[6], active, calibration_live;
@@ -136,9 +137,11 @@ profile *ob_stream_profile_list_get_accel_stream_profile(profile *list,int range
  if(getenv("GDP_MOCK_IMU_PROFILE_ERROR")||!period_us){*e=(error*)1;return NULL;}profile *p=make_profile(list->stream);p->imu_period_us=period_us;return p;}
 profile *ob_stream_profile_list_get_gyro_stream_profile(profile *list,int range,int rate,error **e){return ob_stream_profile_list_get_accel_stream_profile(list,range,rate,e);}
 static void *imu_loop(void *arg){imu_sensor *s=arg;uint64_t sequence=0;
- while(s->running){struct timespec delay={0,s->period_us*1000L};if(!getenv("GDP_MOCK_IMU_BURST"))nanosleep(&delay,NULL);
+ while(s->running){struct timespec delay={0,s->period_us*1000L};const char *burst_after=getenv("GDP_MOCK_IMU_BURST_AFTER_FILE");
+  if(!getenv("GDP_MOCK_IMU_BURST")&&!(burst_after&&access(burst_after,F_OK)==0))nanosleep(&delay,NULL);
   if(getenv("GDP_MOCK_IMU_STALL")||(s->stream==5&&getenv("GDP_MOCK_IMU_GYRO_STALL")))continue;
-  if(getenv("GDP_MOCK_IMU_NULL_FRAME")){s->callback(NULL,s->user);continue;}
+  const char *null_after=getenv("GDP_MOCK_IMU_NULL_AFTER_FILE");
+  if(getenv("GDP_MOCK_IMU_NULL_FRAME")||(null_after&&access(null_after,F_OK)==0)){s->callback(NULL,s->user);continue;}
   obj *f=make(5);f->stream=s->stream;f->imu_sequence=++sequence;f->imu_period_us=s->period_us;
   if(getenv("GDP_MOCK_IMU_REGRESS")&&sequence>2)f->imu_sequence=1;
   s->callback(f,s->user);if(sequence==129&&getenv("GDP_MOCK_IMU_BURST"))event("imu-burst-sent");

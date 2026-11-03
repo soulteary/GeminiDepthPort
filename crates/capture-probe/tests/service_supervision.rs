@@ -3410,3 +3410,181 @@ fn checkpoint_sync_tail_is_absorbed_with_pipeline_but_unbounded_stalls_still_ove
         io_faults::assert_injected(&marker, "fsync");
     }
 }
+
+fn cleanup_fault_fixture() -> Fixture {
+    let f = fixture();
+    configure_runtime_quality(&f, 31, 2_000_000);
+    enable_imu(&f);
+    let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    config["service"]["heartbeat_timeout_ms"] = json!(3000);
+    config["raw_recording"]["checkpoint_pipeline"] = json!(true);
+    config["raw_recording"]["checkpoint_observation"] = json!(true);
+    config["raw_recording"]["queue_capacity"] = json!(16);
+    fs::write(&f.config, config.to_string()).unwrap();
+    f
+}
+fn cleanup_fault_command(f: &Fixture) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_capture-service"));
+    command
+        .args(["--config", f.config.to_str().unwrap()])
+        .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+        .env("GDP_ROS_MOCK_EVENTS", &f.events)
+        .env("GDP_MOCK_WAIT_DELAY_MS", "33")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
+fn await_fault_marker(marker: &Path, child: &mut Child) {
+    let start = Instant::now();
+    while !marker.exists() {
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "worker exited before injection"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(8),
+            "injection not reached"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+fn await_failed_exit(child: &mut Child) {
+    let start = Instant::now();
+    loop {
+        if let Some(exit) = child.try_wait().unwrap() {
+            assert!(!exit.success());
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(8),
+            "failed worker did not exit"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+#[test]
+fn slow_critical_draining_status_exposes_imu_overflow_and_persistence_wait() {
+    let f = cleanup_fault_fixture();
+    let library = io_faults::compile(&f.root);
+    let marker = f.root.join("draining-fsync");
+    let release = f.root.join("release-final-reader");
+    let mut command = cleanup_fault_command(&f);
+    io_faults::inject(&mut command, &library, "fsync", ".tmp", &marker);
+    command
+        .env("GDP_IO_HOLD_READ_SUFFIX", "/manifest.json")
+        .env("GDP_IO_HOLD_MARKER", f.root.join("reader-held"))
+        .env("GDP_IO_HOLD_RELEASE", &release)
+        .env("GDP_IO_REQUIRE_CONTENT", "\"state\":\"draining\"")
+        .env("GDP_IO_DELAY_MS", "800")
+        // Begin the deterministic callback burst only while the real critical
+        // draining status fsync is blocked. Startup runs at the normal rate.
+        .env("GDP_MOCK_IMU_BURST_AFTER_FILE", &marker);
+    let mut child = command.spawn().unwrap();
+    await_fault_marker(&marker, &mut child);
+    let failed = wait_status(&f, &mut child, |v| {
+        v["imu"]["error"] == "IMU_QUEUE_OVERFLOW"
+    });
+    assert_eq!(failed["ready"], false);
+    assert_eq!(failed["reason"], "SESSION_FAILED");
+    assert_eq!(
+        failed["imu"]["failure_observation"]["first_error_queue_len"],
+        128
+    );
+    assert_eq!(failed["imu"]["failure_observation"]["queue_capacity"], 128);
+    assert!(failed["imu"]["failure_observation"]["since_last_drain_ns"].is_number());
+    assert!(
+        failed["imu"]["drain_interval"]["maximum_ns"]
+            .as_u64()
+            .unwrap()
+            >= 800_000_000
+    );
+    let events = failed["status_persistence"]["critical_events"]
+        .as_array()
+        .unwrap();
+    assert!(events.iter().any(|v| v["target"]["raw_state"] == "draining"
+        && v["wall_ns"].as_u64().unwrap() >= 800_000_000
+        && v["ok"] == true));
+    assert!(f.root.join("reader-held").exists());
+    assert!(!Path::new(failed["raw_recording"]["job_path"].as_str().unwrap()).exists());
+    fs::write(&release, b"1").unwrap();
+    await_failed_exit(&mut child);
+    let partial = Path::new(failed["raw_recording"]["partial_path"].as_str().unwrap());
+    for _ in 0..2 {
+        let mut reader =
+            offline_depth::recording::RecordingDirectorySource::open_recovered(partial).unwrap();
+        let mut count = 0;
+        while reader.next_frame().unwrap().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 31);
+    }
+    let end = status(&f).unwrap();
+    assert_eq!(end["ready"], false);
+    assert_eq!(end["imu"]["error"], "IMU_QUEUE_OVERFLOW");
+    assert_eq!(end["worker_reason"], "SESSION_FAILED");
+    io_faults::assert_injected(&marker, "fsync");
+}
+#[test]
+fn imu_failure_is_durable_before_blocked_final_readback_and_never_commits() {
+    for release_readback in [true, false] {
+        let f = cleanup_fault_fixture();
+        let library = io_faults::compile(&f.root);
+        let marker = f.root.join("final-readback");
+        let release = f.root.join("release-readback");
+        let mut command = cleanup_fault_command(&f);
+        io_faults::inject(&mut command, &library, "read", "/manifest.json", &marker);
+        command
+            .env("GDP_IO_RELEASE", &release)
+            .env("GDP_IO_DELAY_MS", "0")
+            .env("GDP_MOCK_IMU_NULL_AFTER_FILE", &marker);
+        let mut child = command.spawn().unwrap();
+        await_fault_marker(&marker, &mut child);
+        let failed = wait_status(&f, &mut child, |v| {
+            v["cleanup"]["active"]["phase"] == "recorder_join"
+                && v["imu"]["error"] == "IMU_CALLBACK_FAILED"
+        });
+        assert_eq!(failed["ready"], false);
+        assert_eq!(failed["reason"], "SESSION_FAILED");
+        assert_eq!(failed["raw_recording"]["state"], "failed");
+        assert_eq!(
+            failed["raw_recording"]["reason"],
+            "RAW_SDK_OR_SESSION_ERROR"
+        );
+        assert!(
+            failed["raw_recording"]["disk_stages"]["checkpoint_observation"]["active"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["phase"] == "final_readback")
+        );
+        assert!(!release.exists());
+        assert!(child.try_wait().unwrap().is_none());
+        let partial = PathBuf::from(failed["raw_recording"]["partial_path"].as_str().unwrap());
+        let job = PathBuf::from(failed["raw_recording"]["job_path"].as_str().unwrap());
+        assert!(!job.exists());
+        assert!(!partial.join("COMPLETE").exists());
+        if release_readback {
+            fs::write(&release, b"1").unwrap();
+        }
+        await_failed_exit(&mut child);
+        let end = status(&f).unwrap();
+        assert_eq!(end["imu"]["error"], "IMU_CALLBACK_FAILED");
+        assert_eq!(end["worker_reason"], "SESSION_FAILED");
+        if !release_readback {
+            assert_eq!(end["reason"], "NATIVE_HEARTBEAT_TIMEOUT");
+        }
+        assert!(!job.exists());
+        assert!(!partial.join("COMPLETE").exists());
+        for _ in 0..2 {
+            let mut recovered =
+                offline_depth::recording::RecordingDirectorySource::open_recovered(&partial)
+                    .unwrap();
+            let mut count = 0;
+            while recovered.next_frame().unwrap().is_some() {
+                count += 1;
+            }
+            assert_eq!(count, 31);
+        }
+        io_faults::assert_injected(&marker, "read");
+    }
+}

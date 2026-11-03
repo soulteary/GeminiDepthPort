@@ -49,7 +49,17 @@ static int fail_fd(const char *op,int fd) {
     snprintf(link,sizeof(link),"/proc/self/fd/%d",fd);
     ssize_t n=readlink(link,path,sizeof(path)-1);
     if(n<0)return 0;
-    path[n]=0;return fail(op,path);
+    path[n]=0;
+    const char *content=getenv("GDP_IO_REQUIRE_CONTENT");
+    if(content) {
+        int input=open(path,O_RDONLY);if(input<0)return 0;
+        char raw[65536];ssize_t (*real_read)(int,void*,size_t)=dlsym(RTLD_NEXT,"read");
+        ssize_t size=real_read(input,raw,sizeof(raw)-1);close(input);
+        if(size<0)return 0;
+        raw[size]=0;
+        if(!strstr(raw,content))return 0;
+    }
+    return fail(op,path);
 }
 static _Atomic unsigned long long payload_writes,payload_writevs,index_writes,index_writevs;
 static int payload_fd(int fd) {
@@ -115,6 +125,23 @@ int waitid(idtype_t type,id_t id,siginfo_t *info,int options) {
     int (*real)(idtype_t,id_t,siginfo_t*,int)=dlsym(RTLD_NEXT,"waitid");return real(type,id,info,options);
 }
 ssize_t read(int fd,void *buf,size_t n) {
+    /* Independent final-reader barrier for overlapping status-fsync faults. */
+    const char *hold=getenv("GDP_IO_HOLD_READ_SUFFIX");
+    if(hold) {
+        char link[64],path[4096];snprintf(link,sizeof(link),"/proc/self/fd/%d",fd);
+        ssize_t len=readlink(link,path,sizeof(path)-1);
+        if(len>=0) {
+            path[len]=0;size_t suffix=strlen(hold);
+            if((size_t)len>=suffix&&!strcmp(path+len-suffix,hold)) {
+                const char *marker=getenv("GDP_IO_HOLD_MARKER"),*release=getenv("GDP_IO_HOLD_RELEASE");
+                if(marker&&release) {
+                    int out=open(marker,O_WRONLY|O_CREAT|O_EXCL,0600);
+                    if(out>=0){ssize_t (*real_write)(int,const void*,size_t)=dlsym(RTLD_NEXT,"write");(void)real_write(out,"read",4);close(out);}
+                    unsigned waited=0;while(access(release,F_OK)!=0&&waited++<10000)usleep(1000);
+                }
+            }
+        }
+    }
     if(fail_fd("read",fd)) {
         const char *fake=getenv("GDP_IO_FAKE_READ");
         if(fake){size_t size=strlen(fake);if(size>n)size=n;memcpy(buf,fake,size);(void)lseek(fd,0,SEEK_END);return (ssize_t)size;}

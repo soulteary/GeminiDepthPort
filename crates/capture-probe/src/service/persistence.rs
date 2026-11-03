@@ -3,6 +3,7 @@
 use anyhow::{Result, anyhow, ensure};
 use serde_json::{Value, json};
 use std::{
+    collections::VecDeque,
     path::PathBuf,
     sync::{Arc, Condvar, Mutex},
     thread::{self, JoinHandle},
@@ -12,7 +13,11 @@ use std::{
 pub(super) type Batch = Vec<(PathBuf, Value)>;
 #[derive(Default)]
 struct State {
-    pending: Option<(u64, Batch)>,
+    active: Option<(u64, Instant)>,
+    critical_events: VecDeque<Value>,
+    critical_wait: capture_contract::timing::StageStats,
+    queue_wait: capture_contract::timing::StageStats,
+    pending: Option<(u64, Batch, Instant)>,
     submitted: u64,
     completed: u64,
     coalesced: u64,
@@ -23,6 +28,10 @@ struct State {
     render_gate: Option<Arc<(std::sync::Barrier, std::sync::Barrier)>>,
 }
 struct Report {
+    active: Option<(u64, Instant)>,
+    critical_events: VecDeque<Value>,
+    critical_wait: capture_contract::timing::StageStats,
+    queue_wait: capture_contract::timing::StageStats,
     wall: capture_contract::timing::StageStats,
     errors: u64,
     submitted: u64,
@@ -39,7 +48,7 @@ impl Report {
             gate.0.wait();
             gate.1.wait();
         }
-        json!({"wall":self.wall.report(),"errors":self.errors,
+        json!({"active_write":self.active.map(|(sequence,started)|json!({"sequence":sequence,"elapsed_ns":started.elapsed().as_nanos()})),"critical_events":self.critical_events,"critical_event_capacity":16,"critical_wait":self.critical_wait.report(),"queue_wait":self.queue_wait.report(),"wall":self.wall.report(),"errors":self.errors,
             "submitted_sequence":self.submitted,"completed_sequence":self.completed,
             "pending_snapshots":self.pending,"pending_capacity":1,
             "coalesced_snapshots":self.coalesced,
@@ -72,16 +81,19 @@ impl Persistence {
                     while state.pending.is_none() && !state.closing {
                         state = changed.wait(state).unwrap_or_else(|e| e.into_inner());
                     }
-                    let Some((sequence, batch)) = state.pending.take() else {
+                    let Some((sequence, batch, enqueued)) = state.pending.take() else {
                         break;
                     };
-                    drop(state);
                     let started = Instant::now();
+                    state.queue_wait.observe(enqueued.elapsed());
+                    state.active = Some((sequence, started));
+                    drop(state);
                     let result =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| write(batch)))
                             .unwrap_or_else(|_| Err(anyhow!("status persistence thread panicked")));
                     let mut state = lock.lock().unwrap_or_else(|e| e.into_inner());
                     state.wall.observe(started.elapsed());
+                    state.active = None;
                     state.completed = sequence;
                     if let Err(error) = result {
                         state.error = Some(format!("{error:#}"));
@@ -109,6 +121,9 @@ impl Persistence {
         Ok(())
     }
     pub(super) fn submit(&mut self, batch: Batch, critical: bool) -> Result<()> {
+        let started = Instant::now();
+        let entered_unix_ms = super::unix_ms();
+        let state_label = critical.then(|| batch.last().map(|(_, value)| json!({"state":value["state"],"raw_state":value["raw_recording"]["state"]})));
         let (lock, changed) = &*self.shared;
         let mut state = lock.lock().unwrap_or_else(|e| e.into_inner());
         ensure!(
@@ -118,12 +133,25 @@ impl Persistence {
         );
         state.submitted += 1;
         let sequence = state.submitted;
-        if state.pending.replace((sequence, batch)).is_some() {
+        if state
+            .pending
+            .replace((sequence, batch, Instant::now()))
+            .is_some()
+        {
             state.coalesced += 1;
         }
         changed.notify_all();
         while critical && state.completed < sequence && state.error.is_none() {
             state = changed.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+        if critical {
+            state.critical_wait.observe(started.elapsed());
+            if state.critical_events.len() == 16 {
+                state.critical_events.pop_front();
+            }
+            let completed = state.completed;
+            let ok = state.error.is_none();
+            state.critical_events.push_back(json!({"sequence":sequence,"completed_sequence":completed,"target":state_label,"entered_unix_ms":entered_unix_ms,"returned_unix_ms":super::unix_ms(),"wall_ns":started.elapsed().as_nanos(),"ok":ok}));
         }
         ensure!(
             state.error.is_none(),
@@ -135,6 +163,10 @@ impl Persistence {
     fn snapshot(shared: &Shared) -> Report {
         let state = shared.0.lock().unwrap_or_else(|e| e.into_inner());
         Report {
+            active: state.active,
+            critical_events: state.critical_events.clone(),
+            critical_wait: state.critical_wait.clone(),
+            queue_wait: state.queue_wait.clone(),
             wall: state.wall.clone(),
             errors: u64::from(state.error.is_some()),
             submitted: state.submitted,
@@ -214,6 +246,9 @@ mod tests {
         .unwrap();
         writer.submit(batch(1), false).unwrap();
         assert_eq!(entered.recv().unwrap(), 1);
+        let active = writer.report();
+        assert_eq!(active["active_write"]["sequence"], 1);
+        assert!(active["active_write"]["elapsed_ns"].is_number());
         for n in 2..=100 {
             writer.submit(batch(n), false).unwrap();
         }
@@ -249,9 +284,37 @@ mod tests {
             assert!(writer.submit(batch(1), true).is_err());
             assert!(writer.check().is_err());
             assert!(writer.submit(batch(2), false).is_err());
+            assert_eq!(writer.report()["critical_events"][0]["ok"], false);
             assert_eq!(writer.report()["errors"], 1);
             assert_eq!(writer.report()["completed_sequence"], 1);
         }
+    }
+    #[test]
+    fn critical_event_history_is_bounded_and_correlates_durable_sequences() {
+        let mut writer = Persistence::with_writer(|_| Ok(())).unwrap();
+        for sequence in 1..=25 {
+            writer
+                .submit(
+                    vec![(
+                        PathBuf::from("status"),
+                        json!({"state":"ready","raw_recording":{"state":"draining"}}),
+                    )],
+                    true,
+                )
+                .unwrap();
+            assert_eq!(writer.report()["completed_sequence"], sequence);
+        }
+        let report = writer.report();
+        let events = report["critical_events"].as_array().unwrap();
+        assert_eq!(events.len(), 16);
+        assert_eq!(events[0]["sequence"], 10);
+        assert_eq!(events[15]["completed_sequence"], 25);
+        assert_eq!(events[15]["target"]["raw_state"], "draining");
+        assert!(events[15]["entered_unix_ms"].is_number());
+        assert!(events[15]["returned_unix_ms"].is_number());
+        assert_eq!(report["critical_wait"]["samples"], 25);
+        assert_eq!(report["queue_wait"]["samples"], 25);
+        assert!(report["active_write"].is_null());
     }
     #[test]
     fn dropping_writer_flushes_the_last_pending_snapshot() {

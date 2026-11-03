@@ -6,7 +6,7 @@ use orbbec_sys as sys;
 mod calibration;
 mod imu;
 pub use calibration::{Extrinsics, SessionCalibration, StreamCalibration};
-pub use imu::ImuCapture;
+pub use imu::{ImuCapture, ImuFailureObservation};
 use std::{
     cell::Cell,
     ffi::{CStr, CString},

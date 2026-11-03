@@ -4,12 +4,24 @@ use capture_contract::imu::{
 };
 use std::{ffi::c_void, sync::Arc, time::Instant};
 struct Queue {
+    started: Instant,
+    started_unix_ns: Option<u128>,
+    first_error: Option<(Instant, usize, Option<Instant>)>,
+    last_drain: Option<Instant>,
     samples: Vec<SharedImuSample>,
     error: Option<&'static str>,
     progress: ImuProgress,
     last: [Instant; 2],
     received: [u64; 2],
     high_water: usize,
+}
+impl Queue {
+    fn fail(&mut self, error: &'static str) {
+        if self.first_error.is_none() {
+            self.first_error = Some((Instant::now(), self.samples.len(), self.last_drain));
+        }
+        self.error = Some(error);
+    }
 }
 struct CallbackState {
     queue: Arc<Mutex<Queue>>,
@@ -87,7 +99,7 @@ unsafe extern "C" fn callback(frame: *mut sys::Handle, user: *mut c_void) {
                     .accept_validated(&sample, &state.binding)
                     .is_err()
                 {
-                    queue.error = Some("IMU_INVALID_OR_REGRESSING");
+                    queue.fail("IMU_INVALID_OR_REGRESSING");
                     return;
                 }
                 let slot = sample.kind.slot();
@@ -96,8 +108,8 @@ unsafe extern "C" fn callback(frame: *mut sys::Handle, user: *mut c_void) {
                 queue.samples.push(sample);
                 queue.high_water = queue.high_water.max(queue.samples.len());
             }
-            Some(_) => queue.error = Some("IMU_QUEUE_OVERFLOW"),
-            None => queue.error = Some("IMU_CALLBACK_FAILED"),
+            Some(_) => queue.fail("IMU_QUEUE_OVERFLOW"),
+            None => queue.fail("IMU_CALLBACK_FAILED"),
         }
     }));
     if !frame.is_null() {
@@ -105,12 +117,19 @@ unsafe extern "C" fn callback(frame: *mut sys::Handle, user: *mut c_void) {
         unsafe { (state.delete)(frame, &mut e) };
         if !e.is_null() {
             unsafe { (state.delete_error)(e) };
-            state.queue.lock().unwrap_or_else(|e| e.into_inner()).error =
-                Some("IMU_FRAME_RELEASE_FAILED");
+            state
+                .queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .fail("IMU_FRAME_RELEASE_FAILED");
         }
     }
     if outcome.is_err() {
-        state.queue.lock().unwrap_or_else(|e| e.into_inner()).error = Some("IMU_CALLBACK_PANIC");
+        state
+            .queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .fail("IMU_CALLBACK_PANIC");
     }
 }
 struct Sensor {
@@ -147,6 +166,15 @@ impl Drop for Sensor {
         }
     }
 }
+#[derive(Debug, Clone)]
+pub struct ImuFailureObservation {
+    pub started_unix_ns: Option<u128>,
+    pub queue_len: usize,
+    pub queue_capacity: usize,
+    pub first_error_elapsed_ns: Option<u128>,
+    pub first_error_queue_len: Option<usize>,
+    pub since_last_drain_ns: Option<u128>,
+}
 pub struct ImuCapture {
     sensors: Vec<Sensor>,
     queue: Arc<Mutex<Queue>>,
@@ -169,6 +197,13 @@ impl Pipeline {
             None
         };
         let queue = Arc::new(Mutex::new(Queue {
+            started: Instant::now(),
+            started_unix_ns: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|v| v.as_nanos()),
+            first_error: None,
+            last_drain: None,
             samples: Vec::with_capacity(config.queue_capacity),
             error: None,
             progress: ImuProgress::default(),
@@ -276,8 +311,25 @@ impl ImuCapture {
         {
             return Err(Error("IMU_STREAM_STALE".into()));
         }
+        queue.last_drain = Some(Instant::now());
         std::mem::swap(samples, &mut queue.samples);
         Ok((queue.received, queue.high_water))
+    }
+    /// Bounded failure evidence, sampled only on the error path by live capture.
+    pub fn failure_observation(&self) -> ImuFailureObservation {
+        let q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        ImuFailureObservation {
+            started_unix_ns: q.started_unix_ns,
+            queue_len: q.samples.len(),
+            queue_capacity: self.config.queue_capacity,
+            first_error_elapsed_ns: q
+                .first_error
+                .map(|(at, _, _)| at.duration_since(q.started).as_nanos()),
+            first_error_queue_len: q.first_error.map(|(_, len, _)| len),
+            since_last_drain_ns: q
+                .first_error
+                .and_then(|(at, _, last)| last.map(|last| at.duration_since(last).as_nanos())),
+        }
     }
     pub fn counters(&self) -> ([u64; 2], usize) {
         let q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
