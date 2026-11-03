@@ -28,7 +28,9 @@ def fixture(root):
           'ok': False, 'finished_unix_ns': 1, 'image_id': 'sha256:image', 'runtime_sha256': 'runtime'})
     for path in ('manifest.json', 'frozen/a/capture.json', 'ab/on-01/capture/a/config/runtime.json',
                  'ab/off-01/capture/checkpoint-samples/samples.jsonl', 'crash/b/recovered-audit.jsonl',
-                 'crash-injection.json', 'controller/build.log', 'crash/b/crash.json'):
+                 'crash-injection.json', 'controller/build.log', 'crash/b/crash.json',
+                 'ab/on-01/lifecycle/samples.jsonl','ab/on-01/lifecycle/summary.json',
+                 'crash-lifecycle/samples.jsonl','crash-lifecycle/summary.json'):
         write(source, path, {'evidence': path})
     write(source, 'frozen/recordings/capture.json', {'camera_named_recordings': True})
     write(source, 'frozen/raw/capture.json', {'camera_named_raw': True})
@@ -63,6 +65,8 @@ class PackTests(unittest.TestCase):
             for name in ('retest/frozen/a/capture.json', 'retest/frozen/recordings/capture.json', 'retest/frozen/raw/capture.json', 'retest/manifest.json',
                          'retest/ab/on-01/capture/a/config/runtime.json', 'retest/crash/b/recovered-audit.jsonl',
                          'retest/controller/build.log', 'sdk-recovery/b/sdk-snapshot.json',
+                         'retest/ab/on-01/lifecycle/samples.jsonl','retest/ab/on-01/lifecycle/summary.json',
+                         'retest/crash-lifecycle/samples.jsonl','retest/crash-lifecycle/summary.json',
                          'retest/crash/b/recordings/capture.partial/checkpoint.json'):
                 self.assertIn(name, files)
             self.assertFalse(any(b'RAW-MUST-NOT-APPEAR' in raw for raw in files.values()))

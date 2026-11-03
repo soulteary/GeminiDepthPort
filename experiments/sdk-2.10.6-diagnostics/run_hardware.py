@@ -19,6 +19,7 @@ import uuid
 
 import experiment_runtime as rt
 import hardware as hw
+from sdk_lifecycle import Lifecycle, validate_status
 
 HERE = Path(__file__).resolve().parent
 LOG_LIMIT = 64 * 1024**2
@@ -148,6 +149,7 @@ def check_rows(a, run, rows, sampling=False):
 class Runner:
     def __init__(self, a):
         self.a = a;self.root = a.root;self.run = None;self.children = [];self.logs = []
+        self.lifecycle = None
         self.observer = None;self.stage = 'preflight';self.seq = 0;self.child_bindings = []
         self.token = uuid.uuid4().hex
         self.result = {'version':1, 'experiment':rt.EXPERIMENT, 'ok':False, 'uid':os.getuid(), 'gid':os.getgid(),
@@ -161,7 +163,7 @@ class Runner:
     def phase(self, name):
         self.stage = name;self.save(stage=name)
         with (self.root/'events.jsonl').open('a') as out:
-            out.write(json.dumps({'stage':name, 'unix_ns':time.time_ns()})+'\n');out.flush();os.fsync(out.fileno())
+            out.write(json.dumps({'stage':name, 'unix_ns':time.time_ns(),'monotonic_ns':time.monotonic_ns()})+'\n');out.flush();os.fsync(out.fileno())
         print(json.dumps({'stage':name, 'root':str(self.root)}), flush=True)
 
     def spawn(self, args, name):
@@ -205,6 +207,7 @@ class Runner:
     def snapshot(self, label):
         value = hw.status(self.run)
         atomic(self.root/(label+'.json'), value)
+        if self.lifecycle:self.lifecycle.observe(value)
         return value
 
     def wait_for(self, completion=False):
@@ -323,11 +326,17 @@ class Runner:
             self.phase('prepare');hw.prepare(self.a)
             self.run = hw.load_run(self.a.run_dir)
             self.save(run_id=self.run['run_id'], image_id=self.run['image_id'], runtime_sha256=self.run['runtime_sha256'])
+            if getattr(self.a,'observe_lifecycle',False):
+                capacities={c['name']:rt.read_json(self.a.run_dir/c['name']/'config/capture.json')['imu']['queue_capacity'] for c in self.run['cameras']}
+                self.lifecycle=Lifecycle(self.root/'lifecycle',self.run,capacities,lambda:self.stage,self.a.disk)
             self.phase('start');hw.start(self.a, self.run)
             self.phase('wait-healthy');self.wait_for()
             self.phase('sample');self.sample()
             self.phase('wait-complete');self.wait_for(completion=True)
             self.phase('stop');self.evidence();hw.stop(self.run)
+            if self.lifecycle:
+                self.snapshot('stopped-status')
+                self.result['lifecycle']=self.lifecycle.stop(successful=True)
             self.phase('audit')
             self.command([sys.executable, str(HERE/'hardware.py'), 'audit', '--run-dir', str(self.a.run_dir)], 'audit', self.a.audit_timeout)
             self.phase('verify-dds')
@@ -343,9 +352,13 @@ class Runner:
             if self.run is None and (self.a.run_dir/'run.json').is_file():
                 try:self.run = hw.load_run(self.a.run_dir, verify=False)
                 except Exception as error:self.result.setdefault('evidence_errors', []).append(str(error))
+            if self.lifecycle:self.phase('cleanup')
             cleaned = self.cleanup()
             try:self.evidence()
             except Exception as error:self.result.setdefault('evidence_errors', []).append(str(error))
+            if self.lifecycle:
+                try:self.result['lifecycle']=self.lifecycle.stop()
+                except Exception as error:self.result.setdefault('evidence_errors',[]).append('lifecycle:'+str(error));cleaned=False
             if not cleaned:self.result.update(ok=False, hardware_acceptance_verified=False)
             self.save(finished_unix_ns=time.time_ns(), stage='complete' if self.result['ok'] else 'failed')
         return 0 if self.result['ok'] else 1
@@ -385,6 +398,7 @@ def parser():
     s.add_argument('--completion-timeout', type=int);s.add_argument('--audit-timeout', type=int, default=3600)
     s.add_argument('--build-timeout', type=int, default=3600);s.add_argument('--poll-seconds', type=float, default=5)
     s.add_argument('--trim-seconds', type=float, default=5);s.add_argument('--disk', action='append', default=[])
+    s.add_argument('--observe-lifecycle', action='store_true')
     s.add_argument('--perf', action='store_true');s.add_argument('--execute', action='store_true')
     sub.add_parser('rollback')
     for s in sub.choices.values():s.add_argument('--root', type=Path, required=True)

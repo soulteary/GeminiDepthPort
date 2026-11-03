@@ -44,18 +44,34 @@ def parent(root,scenario):
         return a
     def prepare(a):
         a.run_dir.mkdir()
-        for camera in run['cameras']:Path(camera['diagnostics']).mkdir(parents=True,mode=0o700)
+        for camera in run['cameras']:
+            Path(camera['diagnostics']).mkdir(parents=True,mode=0o700)
+            cp=a.run_dir/camera['name']/'config';cp.mkdir(parents=True)
+            cli.atomic(cp/'capture.json',{'imu':{'queue_capacity':128}})
         cli.atomic(a.run_dir/'run.json',run)
         (a.run_dir/'recording.partial').write_bytes(b'synthetic original evidence')
     def start(a,_run):(root/'capture-started').touch()
     def stop(_run):(root/'capture-stopped').touch();return {'ok':True,'production_changed':False}
+    polls=[0]
     def snapshot(_run):
         complete=json.loads((root/'result.json').read_text())['stage'] in ('wait-complete','stop','audit','verify-dds','complete','failed')
-        return {'cameras':[{'name':n,'running':True,'health':'healthy','capture':{
+        value={'cameras':[{'name':n,'running':True,'health':'healthy','capture':{
             'state':'ready','ready':True,'updated_unix_ms':time.time_ns()//10**6,'message_timestamp':'global',
             'imu':{'ready':True,'shared_ros_context':True,'error':None},
             'raw_recording':{'state':'complete' if complete else 'recording','written_pairs':100 if complete else 1,
                              'max_pairs':100,'whole_pair_queue_overflows':0}}} for n in 'abc']}
+        if scenario.startswith('lifecycle'):
+            stage=json.loads((root/'result.json').read_text())['stage']
+            for row in value['cameras']:
+                s=row['capture'];s['imu'].update(queue_high_water=8,drain_interval={'samples':5})
+                s['status_persistence']={'critical_event_capacity':16,'critical_events':[], 'queue_wait':{},'critical_wait':{}}
+                s['cleanup']={'history_capacity':8,'completed':[]}
+                s['raw_recording']['disk_stages']={'failed_calls':{}}
+                if stage=='wait-complete' and polls[0]==0:s['raw_recording']['state']='draining'
+                if scenario=='lifecycle-fail' and stage in ('wait-complete','failed'):
+                    s['imu']['error']='IMU_QUEUE_OVERFLOW';s['ready']=False;s['state']='degraded'
+            if stage=='wait-complete':polls[0]+=1
+        return value
     real_spawn=cli.Runner.spawn
     def spawn(self,argv,name):
         if argv[0]=='docker' and '--user' in argv:assert argv[argv.index('--user')+1]==str(os.getuid())+':'+str(os.getgid())
@@ -63,7 +79,12 @@ def parent(root,scenario):
     argv=['run_hardware.py','run','--plan',str(root.parent/'unused-plan.json'),'--image','synthetic-only',
           '--root',str(root),'--seconds','1','--trim-seconds','0','--poll-seconds','1',
           '--max-bytes','10000000','--ros-domain-id','78','--execute']
-    with patch.object(cli,'local_rootful'),patch.object(cli,'settings',side_effect=settings), \
+    if scenario.startswith('lifecycle'):argv.append('--observe-lifecycle')
+    real_lifecycle=cli.Lifecycle
+    class Target:
+        def sample(self,now):return {'process':{'host_pid':os.getpid(),'cpu_ticks':0},'status':{}},[]
+    def observer(*args,**kwargs):return real_lifecycle(*args,**kwargs,factory=lambda _:Target(),interval=.2)
+    with patch.object(cli,'Lifecycle',side_effect=observer),patch.object(cli,'local_rootful'),patch.object(cli,'settings',side_effect=settings), \
          patch.object(cli.hw,'prepare',side_effect=prepare),patch.object(cli.hw,'load_run',return_value=run), \
          patch.object(cli.hw,'start',side_effect=start),patch.object(cli.hw,'stop',side_effect=stop), \
          patch.object(cli.hw,'status',side_effect=snapshot),patch.object(cli.hw,'recording_path'), \

@@ -103,6 +103,18 @@ class MeasurementTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,error):metrics.summarize(root,manifest,'on')
                 self.assertEqual(path.read_bytes(),before)
 
+    def test_requested_lifecycle_cannot_be_missing_or_failed_in_accepted_group(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);manifest,_,_,_=fixture(root)
+            manifest['settings']={'observe_lifecycle':True}
+            with self.assertRaisesRegex(ValueError,'LIFECYCLE_ACCEPTANCE'):metrics.summarize(root,manifest,'on')
+            value=rt.read_json(root/'result.json')
+            value['lifecycle']={'sampling_ok':True,'complete_observed':True,'samples':2,'errors':[]}
+            one.atomic(root/'result.json',value)
+            self.assertTrue(metrics.summarize(root,manifest,'on')['lifecycle']['sampling_ok'])
+            value['lifecycle']['errors']=['capture missing'];one.atomic(root/'result.json',value)
+            with self.assertRaisesRegex(ValueError,'LIFECYCLE_ACCEPTANCE'):metrics.summarize(root,manifest,'on')
+
     def test_off_is_unavailable_not_zero_and_observer_overhead_separate(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);manifest,_,_,_=fixture(root,'off')

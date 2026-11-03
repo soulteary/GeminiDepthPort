@@ -195,6 +195,9 @@ class Trace:
         status = {k: value.get(k) for k in ('state','ready','updated_unix_ms','pairs_published','pairs_rejected','publish_failures')}
         status['raw'] = {k: raw.get(k) for k in ('state','reason','submitted_pairs','written_pairs','imu_samples_submitted')}
         status['writer_queue'] = raw.get('writer_queue')
+        status['imu'] = value.get('imu')
+        status['status_persistence'] = value.get('status_persistence')
+        status['cleanup'] = value.get('cleanup')
         status['observation'] = {k: obs.get(k) for k in ('enabled','clock','anchor_monotonic_ns','anchor_unix_ns','oldest_event_id','latest_event_id','overwritten_events','active_limit_hits','active')}
         return status, fresh
 

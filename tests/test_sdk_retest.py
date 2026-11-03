@@ -10,7 +10,7 @@ import time
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 HERE = Path(__file__).resolve().parents[1]/'experiments/sdk-2.10.6-diagnostics'
 sys.path.insert(0, str(HERE))
@@ -35,8 +35,8 @@ def source_plan(root):
 
 def rows(stopped=False):
     return {'cameras': [{'name': n, 'running': not (stopped and n == 'b'), 'health': 'healthy', 'capture': {
-        'ready': True, 'state': 'ready', 'message_timestamp': 'global', 'imu': {'ready': True, 'shared_ros_context': True, 'error': None},
-        'raw_recording': {'state': 'recording', 'whole_pair_queue_overflows': 0}}} for n in 'abc']}
+        'ready': True, 'state': 'ready', 'message_timestamp': 'global', 'imu': {'ready': True, 'shared_ros_context': True, 'error': None,'queue_high_water':3,'drain_interval':{'samples':2}},
+        'status_persistence':{'queue_wait':{},'critical_wait':{},'critical_event_capacity':16,'critical_events':[]},'cleanup':{'history_capacity':8,'completed':[]},'raw_recording': {'state': 'recording', 'whole_pair_queue_overflows': 0,'disk_stages':{'failed_calls':{}}}}} for n in 'abc']}
 
 
 def audit():
@@ -82,6 +82,9 @@ class AcceptanceTests(unittest.TestCase):
     def test_recovery_requires_two_reads_hashes_imu_and_surviving_cameras(self):
         with tempfile.TemporaryDirectory() as d:
             a = argparse.Namespace(root=Path(d), camera='b')
+            for n in 'abc':
+                cp=a.root/'crash'/n/'config';cp.mkdir(parents=True)
+                one.atomic(cp/'capture.json',{'imu':{'queue_capacity':128}})
             with patch.object(hw, 'recording_path'), patch.object(hw, 'status', return_value=rows(True)):
                 self.assertTrue(retest.recovery_acceptance(a, {'cameras': [{'name': n} for n in 'abc']}, audit())['ok'])
                 for key, value in [('independent_audit_passes', 1), ('native_hashes_verified', False),
@@ -148,6 +151,9 @@ class FlowTests(unittest.TestCase):
         calls = []; image = 'sha256:'+'a'*64; inventory = {'fixture': 'sdk', 'gdp_revision': retest.CHECKPOINT_BASE}
         def prepare(args):
             args.run_dir.mkdir()
+            for n in 'abc':
+                cp=args.run_dir/n/'config';cp.mkdir(parents=True)
+                one.atomic(cp/'capture.json',{'imu':{'queue_capacity':128}})
             one.atomic(args.run_dir/'run.json', {'image_id': image, 'runtime_sha256': hw.digest(inventory), 'mode': 'on',
                        'cameras': [{'name': n} for n in 'abc']})
         def command(controller, argv, name, timeout):
@@ -163,6 +169,7 @@ class FlowTests(unittest.TestCase):
             if name == 'crash-audit': one.atomic(controller.root/'crash-audit.log', audit())
         cleanup = {'ok': failure != 'cleanup', 'errors': [], 'recordings_retained': True}
         with patch.object(rt, 'validate_health'), patch.object(hw, 'command', return_value=''), patch.object(hw, 'image_manifest', return_value=(image, inventory)) as resolve, \
+             patch.object(one,'Lifecycle',return_value=Mock(stop=Mock(return_value={"sampling_ok":True}))), \
              patch.object(one.Runner, 'command', side_effect=command, autospec=True), \
              patch.object(hw, 'prepare', side_effect=prepare) as prep, patch.object(hw, 'load_run', side_effect=lambda p, **kw: rt.read_json(p/'run.json')), \
              patch.object(retest, 'crash_binding'), patch.object(hw, 'recording_path'), patch.object(hw, 'start') as start, \
@@ -176,7 +183,7 @@ class FlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             a, code, calls, prep, start, crash, cleanup = self.execute(Path(d))
             self.assertEqual(code, 0); self.assertEqual([n for n, _ in calls], ['build', 'ab', 'crash-audit'])
-            argv = dict(calls)['ab']; self.assertEqual(argv[argv.index('--image')+1], 'sha256:'+'a'*64)
+            argv = dict(calls)['ab']; self.assertIn('--observe-lifecycle',argv); self.assertEqual(argv[argv.index('--image')+1], 'sha256:'+'a'*64)
             self.assertEqual(argv[argv.index('--rounds')+1], '3'); self.assertNotIn('--build', argv)
             self.assertEqual(prep.call_args.args[0].pairs, 31680)
             self.assertEqual(prep.call_args.args[0].run_dir, a.root/'crash')

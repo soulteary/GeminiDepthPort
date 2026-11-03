@@ -16,7 +16,7 @@ import run_ab as batch
 import run_hardware as one
 
 HERE = Path(__file__).resolve().parent
-CHECKPOINT_BASE = '3f4370b89a4b5b69819a98743e1a8030e19372f5'
+CHECKPOINT_BASE = 'c063450c6c28f0bdec1d6a4f180871bd95fead96'
 
 
 @contextmanager
@@ -52,7 +52,7 @@ def assert_active(a, manifest):
 
 def batch_args(a, image):
     argv = ['run', '--plan', str(a.root/'frozen/plan.json'), '--image', image,
-            '--root', str(a.root/'ab'), '--execute']
+            '--root', str(a.root/'ab'), '--observe-lifecycle', '--execute']
     for name in ('rounds', 'first', 'seconds', 'max_bytes', 'ros_domain_id', 'pairs',
                  'healthy_timeout', 'completion_timeout', 'audit_timeout', 'poll_seconds',
                  'trim_seconds', 'cooldown_seconds'):
@@ -133,6 +133,8 @@ def recovery_acceptance(a, run, audit):
     for camera, row in zip(run['cameras'], rows['cameras']):
         rt.require(camera['name'] == row['name'], 'STATUS_CAMERA_ORDER')
         hw.recording_path(argparse.Namespace(run_dir=a.root/'crash'), camera, row['capture'], True)
+        cp=a.root/'crash'/camera['name']/'config/capture.json'
+        one.validate_status(row['capture'],rt.read_json(cp)['imu']['queue_capacity'])
     target = next(row for row in rows['cameras'] if row['name'] == a.camera)
     rt.require(not target['running'], 'CRASH_TARGET_RUNNING')
     others = [row for row in rows['cameras'] if row['name'] != a.camera]
@@ -192,6 +194,7 @@ def execute(a):
     result = {'version': 1, 'ok': False, 'uid': os.getuid(), 'gid': os.getgid(), 'run_token': controller.token,
               'stage': 'prepare', 'audit_container': 'gdp-retest-'+controller.token+'-audit', 'production_changed': False, 'rollback_argv':
               [sys.executable, str(HERE/'run_retest.py'), 'rollback', '--root', str(a.root)]}
+    lifecycle = None
     def save(): one.atomic(a.root/'result.json', result)
     def phase(stage):
         result['stage'] = stage; save(); print(json.dumps({'stage': stage, 'root': str(a.root)}), flush=True)
@@ -237,10 +240,14 @@ def execute(a):
                                   camera=a.camera, recovered=True, max_audit_mib=2048)
         hw.prepare(cargs); run = hw.load_run(cargs.run_dir)
         crash_binding(run, summary['groups'][0]['summary']['normalized_config_hashes'], image, manifest['runtime_sha256'])
+        capacities={c['name']:rt.read_json(cargs.run_dir/c['name']/'config/capture.json')['imu']['queue_capacity'] for c in run['cameras']}
+        lifecycle=one.Lifecycle(a.root/'crash-lifecycle',run,capacities,lambda:result['stage'],a.disk)
         with transition(a.root):
             assert_active(a, manifest); hw.start(cargs, run)
         phase('crash-wait')
-        one.atomic(a.root/'crash-before-injection.json', wait_checkpoint(a, cargs, run, manifest))
+        before=wait_checkpoint(a, cargs, run, manifest)
+        lifecycle.observe(before)
+        one.atomic(a.root/'crash-before-injection.json', before)
         with transition(a.root):
             assert_active(a, manifest); phase('crash-inject')
             one.atomic(a.root/'crash-injection.json', hw.crash(cargs, run))
@@ -253,6 +260,7 @@ def execute(a):
     except Exception as error: result['error'] = type(error).__name__+':'+str(error)
     finally:
         for sig in previous: signal.signal(sig, signal.SIG_IGN)
+        if lifecycle:phase('crash-cleanup')
         if (a.root/'crash/run.json').exists():
             try:
                 one.atomic(a.root/'crash-final-status.json', hw.status(hw.load_run(a.root/'crash', verify=False)))
@@ -262,6 +270,11 @@ def execute(a):
             cleanup = rollback(a, mark_abort=not result['ok']); result['cleanup'] = cleanup
             if not cleanup['ok']: result['ok'] = False
         except Exception as error: result.update(ok=False, cleanup_error=str(error))
+        if lifecycle:
+            try:
+                result['lifecycle']=lifecycle.stop()
+                rt.require(result['lifecycle']['sampling_ok'],'CRASH_LIFECYCLE_INCOMPLETE')
+            except Exception as error:result.update(ok=False,lifecycle_error=str(error))
         for log in controller.logs: log.close()
         result['finished_unix_ns'] = time.time_ns(); save()
         report = {'ok': result['ok'], 'ab': result.get('ab'), 'recovery': result.get('recovery'),

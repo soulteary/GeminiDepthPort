@@ -59,6 +59,7 @@ def forward(a,mode,root,image):
     if a.completion_timeout is not None:args+=['--completion-timeout',str(a.completion_timeout)]
     for disk in a.disk:args+=['--disk',disk]
     if a.perf:args+=['--perf']
+    if getattr(a,'observe_lifecycle',False):args+=['--observe-lifecycle']
     return args
 
 
@@ -186,6 +187,7 @@ def main():
     r.add_argument('--audit-timeout',type=int,default=3600);r.add_argument('--build-timeout',type=int,default=3600)
     r.add_argument('--poll-seconds',type=float,default=5);r.add_argument('--trim-seconds',type=float,default=5)
     r.add_argument('--cooldown-seconds',type=float,default=30);r.add_argument('--disk',action='append',default=[])
+    r.add_argument('--observe-lifecycle',action='store_true')
     r.add_argument('--perf',action='store_true');r.add_argument('--execute',action='store_true')
     sub.add_parser('rollback')
     for s in sub.choices.values():s.add_argument('--root',type=Path,required=True)

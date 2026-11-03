@@ -108,6 +108,10 @@ def summarize(root, manifest, mode):
     rt.require(result['image_id']==run['image_id']==manifest['image_id']
                and result['runtime_sha256']==run['runtime_sha256']==manifest['runtime_sha256']
                and run['mode']==mode and result['uid']==manifest['uid'] and result['gid']==manifest['gid'],'RUN_BINDING_CHANGED')
+    if manifest.get('settings',{}).get('observe_lifecycle'):
+        lifecycle=result.get('lifecycle') or {}
+        rt.require(lifecycle.get('sampling_ok') is True and lifecycle.get('complete_observed') is True
+                   and not lifecycle.get('errors') and lifecycle.get('samples',0)>0,'LIFECYCLE_ACCEPTANCE_REQUIRED')
     config_hashes={}
     for camera in run['cameras']:
         cp=root/'capture'/camera['name']/'config';config=rt.read_json(cp/'capture.json')
@@ -140,7 +144,7 @@ def summarize(root, manifest, mode):
     overhead={'checkpoint':rt.read_json(root/'capture/checkpoint-samples/summary.json'),
               'dds':rt.read_json(root/'capture/wire.sqlite3.summary.json')}
     if mode=='on':overhead['sdk']=rt.read_json(root/'capture/sdk-samples/summary.json')
-    return {'ok':True,'mode':mode,'root':str(root),'normalized_config_hashes':config_hashes,'metrics':values,
+    return {'ok':True,'lifecycle':result.get('lifecycle'),'mode':mode,'root':str(root),'normalized_config_hashes':config_hashes,'metrics':values,
             'cpu_memory':cpu,'disk_lifetime':disk,'sdk':sdk_metrics(root,mode,run['cameras']),
             'source_gap_free':result['source_gap_free'],'source_sequence_gaps':result['source_sequence_gaps'],
             'observers':overhead,'scope':'CPU/RSS use sampling window; disk P99/verification cover whole native recording; external audit includes Docker and three sequential audits; quantile bounds are not exact/global P99'}
