@@ -3492,18 +3492,16 @@ fn slow_critical_draining_status_exposes_imu_overflow_and_persistence_wait() {
     );
     assert_eq!(failed["imu"]["failure_observation"]["queue_capacity"], 128);
     assert!(failed["imu"]["failure_observation"]["since_last_drain_ns"].is_number());
-    assert!(
-        failed["imu"]["drain_interval"]["maximum_ns"]
-            .as_u64()
-            .unwrap()
-            >= 800_000_000
-    );
+    // The intentional unbounded burst still reaches the real queue cap even
+    // while a fence pumps. Do not require the old 800ms IMU starvation bug.
+    assert!(failed["imu"]["drain_interval"]["maximum_ns"].is_number());
     let events = failed["status_persistence"]["critical_events"]
         .as_array()
         .unwrap();
     assert!(events.iter().any(|v| v["target"]["raw_state"] == "draining"
         && v["wall_ns"].as_u64().unwrap() >= 800_000_000
-        && v["ok"] == true));
+        && v["ok"] == true
+        && v["pump_failed"] == true));
     assert!(f.root.join("reader-held").exists());
     assert!(!Path::new(failed["raw_recording"]["job_path"].as_str().unwrap()).exists());
     fs::write(&release, b"1").unwrap();
@@ -3587,4 +3585,376 @@ fn imu_failure_is_durable_before_blocked_final_readback_and_never_commits() {
         }
         io_faults::assert_injected(&marker, "read");
     }
+}
+
+fn normal_rate_wait_fixture(target: u64) -> Fixture {
+    let f = cleanup_fault_fixture();
+    let mut value: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    value["raw_recording"]["max_pairs"] = json!(target);
+    value["raw_recording"]["max_bytes"] = json!(20_000_000);
+    value["imu"]["accel_rate_hz"] = json!(200);
+    value["imu"]["gyro_rate_hz"] = json!(200);
+    value["startup_discovery_seconds"] = json!(0.2);
+    fs::write(&f.config, value.to_string()).unwrap();
+    f
+}
+fn imu_publish_count(f: &Fixture) -> usize {
+    fs::read_to_string(&f.events)
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| matches!(*line, "imu-accel-publish" | "imu-gyro-publish"))
+        .count()
+}
+fn assert_pump_progress_while_fenced(f: &Fixture, child: &mut Child, marker: &Path) -> usize {
+    await_fault_marker(marker, child);
+    let before = imu_publish_count(f);
+    let start = Instant::now();
+    while imu_publish_count(f) < before + 40 {
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "IMU publication stalled behind critical fsync"
+        );
+        assert!(child.try_wait().unwrap().is_none());
+        thread::sleep(Duration::from_millis(5));
+    }
+    // This is a controlled barrier: no durability acknowledgment can occur
+    // until the parent creates the release file, regardless of scheduler speed.
+    thread::sleep(Duration::from_millis(800).saturating_sub(start.elapsed()));
+    imu_publish_count(f) - before
+}
+#[test]
+fn normal_200hz_imu_keeps_draining_and_publishing_during_critical_draining_fsync() {
+    for permanent in [false, true] {
+        let f = normal_rate_wait_fixture(31);
+        let library = io_faults::compile(&f.root);
+        let marker = f.root.join("draining-critical");
+        let release = f.root.join("release-critical");
+        let release_reader = f.root.join("release-final");
+        let mut command = cleanup_fault_command(&f);
+        io_faults::inject(&mut command, &library, "fsync", ".tmp", &marker);
+        command
+            .env("GDP_IO_REQUIRE_CONTENT", "\"state\":\"draining\"")
+            .env("GDP_IO_RELEASE", &release)
+            .env("GDP_IO_DELAY_MS", "0")
+            .env("GDP_IO_HOLD_READ_SUFFIX", "/manifest.json")
+            .env("GDP_IO_HOLD_MARKER", f.root.join("final-held"))
+            .env("GDP_IO_HOLD_RELEASE", &release_reader);
+        let mut child = command.spawn().unwrap();
+        let progress = assert_pump_progress_while_fenced(&f, &mut child, &marker);
+        let before = status(&f).unwrap();
+        assert_ne!(
+            before["raw_recording"]["state"], "draining",
+            "critical snapshot became visible before fsync release"
+        );
+        assert!(
+            !Path::new(before["raw_recording"]["job_path"].as_str().unwrap())
+                .join("COMPLETE")
+                .exists()
+        );
+        if permanent {
+            await_failed_exit(&mut child);
+            let end = status(&f).unwrap();
+            assert_eq!(end["reason"], "NATIVE_HEARTBEAT_TIMEOUT");
+            assert_eq!(end["ready"], false);
+            let partial = Path::new(end["raw_recording"]["partial_path"].as_str().unwrap());
+            assert!(!partial.join("COMPLETE").exists());
+            for _ in 0..2 {
+                let mut reader =
+                    offline_depth::recording::RecordingDirectorySource::open_recovered(partial)
+                        .unwrap();
+                let mut count = 0;
+                while reader.next_frame().unwrap().is_some() {
+                    count += 1;
+                }
+                assert_eq!(count, 31);
+            }
+        } else {
+            fs::write(&release, b"1").unwrap();
+            let observed = wait_status(&f, &mut child, |v| {
+                v["status_persistence"]["critical_events"]
+                    .as_array()
+                    .is_some_and(|events| {
+                        events.iter().any(|event| {
+                            event["target"]["raw_state"] == "draining"
+                                && event["pump_calls"].as_u64().unwrap_or(0) > 0
+                        })
+                    })
+            });
+            assert!(observed["imu"]["error"].is_null());
+            assert!(observed["imu"]["queue_high_water"].as_u64().unwrap() <= 128);
+            let event = observed["status_persistence"]["critical_events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|event| event["target"]["raw_state"] == "draining")
+                .unwrap();
+            assert_eq!(event["pump_failed"], false);
+            assert!(event["wall_ns"].as_u64().unwrap() >= 800_000_000);
+            println!(
+                "critical-draining-pump: {}",
+                json!({"publish_progress_while_fenced":progress,"critical":event,"max_drain_ns":observed["imu"]["drain_interval"]["maximum_ns"],"imu_queue_peak":observed["imu"]["queue_high_water"]})
+            );
+            fs::write(&release_reader, b"1").unwrap();
+            let complete = wait_status(&f, &mut child, |v| {
+                v["raw_recording"]["state"] == "complete"
+            });
+            assert!(complete["imu"]["error"].is_null());
+            assert_eq!(
+                complete["raw_recording"]["disk_stages"]["validation_imu_samples"]
+                    .as_u64()
+                    .unwrap(),
+                2 * complete["raw_recording"]["imu_samples_submitted"]
+                    .as_u64()
+                    .unwrap()
+            );
+            assert_eq!(
+                complete["raw_recording"]["disk_stages"]["validation_image_bytes"]
+                    .as_u64()
+                    .unwrap(),
+                2 * complete["raw_recording"]["payload_bytes_submitted"]
+                    .as_u64()
+                    .unwrap()
+            );
+            stop(&mut child);
+        }
+        io_faults::assert_injected(&marker, "fsync");
+    }
+}
+#[test]
+fn raw_overflow_critical_fsync_does_not_create_a_secondary_imu_overflow() {
+    let f = normal_rate_wait_fixture(1000);
+    let library = io_faults::compile(&f.root);
+    let marker = f.root.join("raw-failed-critical");
+    let release = f.root.join("release-critical");
+    let release_reader = f.root.join("release-checkpoint");
+    let mut command = cleanup_fault_command(&f);
+    io_faults::inject(&mut command, &library, "fsync", ".tmp", &marker);
+    command
+        .env(
+            "GDP_IO_REQUIRE_CONTENT",
+            "\"reason\":\"RAW_QUEUE_OVERFLOW\"",
+        )
+        .env("GDP_IO_RELEASE", &release)
+        .env("GDP_IO_DELAY_MS", "0")
+        .env("GDP_IO_HOLD_READ_SUFFIX", ".bin")
+        .env("GDP_IO_HOLD_MARKER", f.root.join("checkpoint-held"))
+        .env("GDP_IO_HOLD_RELEASE", &release_reader);
+    let mut child = command.spawn().unwrap();
+    let progress = assert_pump_progress_while_fenced(&f, &mut child, &marker);
+    assert_ne!(
+        status(&f).unwrap()["raw_recording"]["reason"],
+        "RAW_QUEUE_OVERFLOW",
+        "failed snapshot acknowledged before critical fsync release"
+    );
+    fs::write(&release, b"1").unwrap();
+    let observed = wait_status(&f, &mut child, |v| {
+        v["status_persistence"]["critical_events"]
+            .as_array()
+            .is_some_and(|events| {
+                events.iter().any(|event| {
+                    event["target"]["raw_state"] == "failed"
+                        && event["pump_calls"].as_u64().unwrap_or(0) > 0
+                })
+            })
+    });
+    assert_eq!(observed["raw_recording"]["reason"], "RAW_QUEUE_OVERFLOW");
+    assert!(observed["imu"]["error"].is_null());
+    assert!(observed["imu"]["queue_high_water"].as_u64().unwrap() <= 128);
+    let event = observed["status_persistence"]["critical_events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["target"]["raw_state"] == "failed")
+        .unwrap();
+    assert!(event["wall_ns"].as_u64().unwrap() >= 800_000_000);
+    assert_eq!(event["pump_failed"], false);
+    println!(
+        "critical-raw-failed-pump: {}",
+        json!({"publish_progress_while_fenced":progress,"critical":event,"max_drain_ns":observed["imu"]["drain_interval"]["maximum_ns"],"imu_queue_peak":observed["imu"]["queue_high_water"]})
+    );
+    fs::write(&release_reader, b"1").unwrap();
+    stop(&mut child);
+    let end = status(&f).unwrap();
+    assert_eq!(end["raw_recording"]["reason"], "RAW_QUEUE_OVERFLOW");
+    assert!(end["imu"]["error"].is_null());
+    let partial = Path::new(end["raw_recording"]["partial_path"].as_str().unwrap());
+    assert!(!Path::new(end["raw_recording"]["job_path"].as_str().unwrap()).exists());
+    let checkpoint: Value =
+        serde_json::from_slice(&fs::read(partial.join("checkpoint.json")).unwrap()).unwrap();
+    for _ in 0..2 {
+        let mut reader =
+            offline_depth::recording::RecordingDirectorySource::open_recovered(partial).unwrap();
+        let mut count = 0;
+        while reader.next_frame().unwrap().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, checkpoint["record_count"].as_u64().unwrap());
+    }
+    io_faults::assert_injected(&marker, "fsync");
+}
+#[test]
+fn invalid_imu_timestamps_during_a_critical_fence_remain_terminal() {
+    let f = normal_rate_wait_fixture(31);
+    let source = f.root.join("mock-sdk.c");
+    let mut text = fs::read_to_string(&source).unwrap();
+    replace(
+        &mut text,
+        "getenv(\"GDP_MOCK_IMU_REGRESS\")&&sequence>2",
+        "getenv(\"GDP_MOCK_IMU_REGRESS\")&&sequence>2&&fault_active()",
+    );
+    fs::write(&source, text).unwrap();
+    compile("cc", &source, &f.root.join("mock-sdk.so"), None);
+    let library = io_faults::compile(&f.root);
+    let marker = f.root.join("critical");
+    let release = f.root.join("release");
+    let release_reader = f.root.join("release-reader");
+    let mut command = cleanup_fault_command(&f);
+    io_faults::inject(&mut command, &library, "fsync", ".tmp", &marker);
+    command
+        .env("GDP_IO_REQUIRE_CONTENT", "\"state\":\"draining\"")
+        .env("GDP_IO_RELEASE", &release)
+        .env("GDP_IO_DELAY_MS", "0")
+        .env("GDP_IO_HOLD_READ_SUFFIX", "/manifest.json")
+        .env("GDP_IO_HOLD_MARKER", f.root.join("reader-held"))
+        .env("GDP_IO_HOLD_RELEASE", &release_reader)
+        .env("GDP_MOCK_FAULT_ARMED", &marker)
+        .env("GDP_MOCK_IMU_REGRESS", "1");
+    let mut child = command.spawn().unwrap();
+    await_fault_marker(&marker, &mut child);
+    thread::sleep(Duration::from_millis(800));
+    fs::write(&release, b"1").unwrap();
+    let failed = wait_status(&f, &mut child, |v| {
+        v["imu"]["error"] == "IMU_INVALID_OR_REGRESSING" && v["ready"] == false
+    });
+    assert_eq!(failed["reason"], "SESSION_FAILED");
+    assert_eq!(failed["status_persistence"]["submission_errors"], 0);
+    assert_eq!(failed["status_persistence"]["errors"], 0);
+    assert!(
+        failed["status_persistence"]["pump_errors"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert!(failed["status_persistence"]["critical_events"].as_array().unwrap().iter().any(|event|event["target"]["raw_state"]=="draining" && event["pump_failed"]==true));
+    fs::write(&release_reader, b"1").unwrap();
+    await_failed_exit(&mut child);
+    let partial = Path::new(failed["raw_recording"]["partial_path"].as_str().unwrap());
+    assert!(!Path::new(failed["raw_recording"]["job_path"].as_str().unwrap()).exists());
+    for _ in 0..2 {
+        let mut reader =
+            offline_depth::recording::RecordingDirectorySource::open_recovered(partial).unwrap();
+        let mut count = 0;
+        while reader.next_frame().unwrap().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 31);
+    }
+}
+
+#[test]
+fn recording_critical_fence_retains_the_real_pending_imu_limit() {
+    let f = normal_rate_wait_fixture(1000);
+    let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    config["startup_discovery_seconds"] = json!(0);
+    fs::write(&f.config, config.to_string()).unwrap();
+    let marker = f.root.join("ready-critical");
+    let release = f.root.join("release-critical");
+    let more_samples = f.root.join("allow-sample-129");
+    // Only this ABI fixture changes: each sensor supplies its first sample for
+    // readiness, then resumes its unchanged 200Hz schedule at the fsync marker.
+    // Hold the 129th new sample until all 128 preceding samples were published.
+    // This makes the recorder's actual pending limit observable without relying
+    // on how the two callback threads happen to divide batches between drains.
+    let source = f.root.join("mock-sdk.c");
+    let mut text = fs::read_to_string(&source).unwrap();
+    text.insert_str(0, "static _Atomic unsigned pending_fence_samples;\n");
+    replace(
+        &mut text,
+        "obj *f=make(5);f->stream=s->stream;f->imu_sequence=++sequence;f->imu_period_us=s->period_us;",
+        "const char *fence=getenv(\"GDP_MOCK_IMU_PENDING_FENCE\");if(fence){if(sequence>0&&access(fence,F_OK)!=0)continue;if(access(fence,F_OK)==0&&atomic_fetch_add(&pending_fence_samples,1)>=128){const char *more=getenv(\"GDP_MOCK_IMU_PENDING_RELEASE\");while(s->running&&more&&access(more,F_OK)!=0)nanosleep(&delay,NULL);if(!s->running)break;}}obj *f=make(5);f->stream=s->stream;f->imu_sequence=++sequence;f->imu_period_us=s->period_us;",
+    );
+    fs::write(&source, text).unwrap();
+    compile("cc", &source, &f.root.join("mock-sdk.so"), None);
+    let library = io_faults::compile(&f.root);
+    let mut command = cleanup_fault_command(&f);
+    io_faults::inject(&mut command, &library, "fsync", ".tmp", &marker);
+    command
+        .env("GDP_IO_REQUIRE_CONTENT", "\"state\":\"ready\"")
+        .env("GDP_IO_RELEASE", &release)
+        .env("GDP_IO_DELAY_MS", "0")
+        .env("GDP_MOCK_IMU_PENDING_FENCE", &marker)
+        .env("GDP_MOCK_IMU_PENDING_RELEASE", &more_samples);
+    let mut child = command.spawn().unwrap();
+    await_fault_marker(&marker, &mut child);
+    let held_since = Instant::now();
+    let held: Value = fs::read_dir(&f.root)
+        .unwrap()
+        .filter_map(|entry| {
+            let path = entry.unwrap().path();
+            (path.extension().and_then(|v| v.to_str()) == Some("tmp"))
+                .then(|| fs::read(path).ok())
+                .flatten()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        })
+        .find(|value| value["kind"] == "capture-service-status" && value["ready"] == true)
+        .expect("ready status must remain in its pre-fsync temporary file");
+    assert_eq!(held["raw_recording"]["state"], "recording");
+    assert_eq!(held["raw_recording"]["imu_samples_pending"], 0);
+    assert_eq!(held["imu"]["published"], json!([1, 1]));
+    assert_eq!(held["raw_recording"]["queue_capacity"], 16);
+    assert_ne!(status(&f).unwrap()["ready"], true);
+    let start = Instant::now();
+    while imu_publish_count(&f) < 130 {
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(child.try_wait().unwrap().is_none());
+        thread::sleep(Duration::from_millis(5));
+    }
+    // Give the final successful pump time to append its published batch. There
+    // are exactly 128 new samples and no video poll to consume the pending list.
+    thread::sleep(Duration::from_millis(30));
+    assert_eq!(imu_publish_count(&f), 130);
+    assert_ne!(status(&f).unwrap()["ready"], true);
+    fs::write(&more_samples, b"1").unwrap();
+    thread::sleep(Duration::from_millis(800).saturating_sub(held_since.elapsed()));
+    assert_ne!(status(&f).unwrap()["ready"], true);
+    fs::write(&release, b"1").unwrap();
+    await_failed_exit(&mut child);
+    let end = status(&f).unwrap();
+    assert_eq!(end["ready"], false);
+    assert_eq!(end["worker_reason"], "SESSION_FAILED");
+    assert_eq!(end["raw_recording"]["state"], "failed");
+    assert_eq!(end["raw_recording"]["reason"], "RAW_IMU_QUEUE_OVERFLOW");
+    assert_eq!(end["raw_recording"]["imu_samples_pending"], 128);
+    assert_eq!(end["raw_recording"]["submitted_pairs"], 2);
+    assert_eq!(end["raw_recording"]["imu_samples_submitted"], 2);
+    assert_eq!(end["status_persistence"]["errors"], 0);
+    assert_eq!(end["status_persistence"]["submission_errors"], 0);
+    let event = end["status_persistence"]["critical_events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["target"]["raw_state"] == "recording" && event["pump_failed"] == true)
+        .expect("the recording critical fence must report its real pump failure");
+    assert_eq!(event["ok"], true);
+    assert!(event["wall_ns"].as_u64().unwrap() >= 800_000_000);
+    assert!(event["pump_calls"].as_u64().unwrap() > 1);
+    let partial = Path::new(end["raw_recording"]["partial_path"].as_str().unwrap());
+    assert!(!Path::new(end["raw_recording"]["job_path"].as_str().unwrap()).exists());
+    assert!(!partial.join("COMPLETE").exists());
+    let checkpoint: Value =
+        serde_json::from_slice(&fs::read(partial.join("checkpoint.json")).unwrap()).unwrap();
+    for _ in 0..2 {
+        let mut reader =
+            offline_depth::recording::RecordingDirectorySource::open_recovered(partial).unwrap();
+        let mut count = 0;
+        while reader.next_frame().unwrap().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, checkpoint["record_count"].as_u64().unwrap());
+    }
+    println!(
+        "critical-recording-pending-limit: {}",
+        json!({"critical":event,"raw_reason":end["raw_recording"]["reason"],"pending_imu":end["raw_recording"]["imu_samples_pending"],"imu_error":end["imu"]["error"]})
+    );
+    io_faults::assert_injected(&marker, "fsync");
 }

@@ -123,7 +123,8 @@ class PollingTests(unittest.TestCase):
                 elif fault=='exit':row['running']=False
                 elif fault=='restart':s['restart_attempt']=1
                 elif fault=='persist':s['status_persistence']={'errors':1}
-                with self.subTest(fault=fault),patch.object(cli.hw,'recording_path',side_effect=ValueError('binding') if fault=='config' else None):
+                with self.subTest(fault=fault),patch.object(cli.hw,'recording_path',side_effect=ValueError('binding') if fault=='config' else None), \
+                     patch.object(cli.hw,'failed_recording_status',return_value={}):
                     with self.assertRaises(ValueError):cli.check_rows(a,run,rows)
 
     def test_wait_has_deadline_and_cannot_accept_early_recording_completion(self):

@@ -1,0 +1,102 @@
+{
+  "real_procfs_only": true,
+  "real_cameras": false,
+  "container_identity_api": "test injection only; strict pinned proc identity path executed",
+  "summary": {
+    "version": 1,
+    "observation_only": true,
+    "hardware_acceptance_verified": false,
+    "ok": true,
+    "workflow_completed": true,
+    "diagnostic_data_complete": false,
+    "diagnostic_gaps": {},
+    "requested_disks_complete": true,
+    "stop_reason": "workers-terminal",
+    "full_selected_worker_lifecycle_end_observed": true,
+    "started_monotonic_ns": 1157162245409073,
+    "finished_monotonic_ns": 1157166458126420,
+    "samples": 22,
+    "bytes": 211433,
+    "maximum_sample_gap_ns": 201361540,
+    "sampling_overruns": 0,
+    "sampling_gap_count": 0,
+    "sampling_gap_threshold_ns": 300000000,
+    "unavailable_thread_fields": {
+      "kernel_stack:permission-denied": 241
+    },
+    "observer_cpu_ns": 109423921,
+    "observer_peak_rss_kib": 21316,
+    "errors": [],
+    "input_sha256": {
+      "run.json": "73b48585d009f825f98ddc08b24e4db6818a53a1ac81117f8637b7126bee29dd",
+      "a/config/capture.json": "5fac91f92d0ad06d1a4c072d9261e5753786d37cf3a6e47d2fe2cdd980ab76c7",
+      "a/config/experiment.json": "4ef95ca014af0b9bd1bb3894c15ecb4e5def506e42b163c20c18c9e0e9f95613",
+      "a/config/runtime.json": "7f532f24bae91bac05f2a953fe23e58e8a1918b3ab62c0943fad4ea8560eb27e",
+      "b/config/capture.json": "9507c85784b0cf564a7eafe167c0655a5e177ed68085910c71c6542c98edbd06",
+      "b/config/experiment.json": "bac6039f2b084c5840e065145336facdd62456bb909e2b5b64e686cbcba00c76",
+      "b/config/runtime.json": "7f532f24bae91bac05f2a953fe23e58e8a1918b3ab62c0943fad4ea8560eb27e",
+      "c/config/capture.json": "a120a81cc218356c97bbf668432058328268519f3dc31333305800b2d63f7cd3",
+      "c/config/experiment.json": "5e440fb35c2759d655f781567a94c48f7c10738a9c28a9da1e9f46aac72b5c43",
+      "c/config/runtime.json": "7f532f24bae91bac05f2a953fe23e58e8a1918b3ab62c0943fad4ea8560eb27e",
+      "a/runtime-identity.json": "2b53f05a96fe4cd27a8d2abf97df243888fea1be7a2bb970eb43a4ced5276fc4",
+      "b/runtime-identity.json": "1b64978aefae21250d420649bced4147030ca06fbea40f9c366eb88dc221dad0",
+      "c/runtime-identity.json": "a356c39a96d3e66a64237f6bb8d654c7df7f46f98ecf2b54c2cc781dac17c74e"
+    },
+    "input_sha256_after": {
+      "run.json": "73b48585d009f825f98ddc08b24e4db6818a53a1ac81117f8637b7126bee29dd",
+      "a/config/capture.json": "5fac91f92d0ad06d1a4c072d9261e5753786d37cf3a6e47d2fe2cdd980ab76c7",
+      "a/config/experiment.json": "4ef95ca014af0b9bd1bb3894c15ecb4e5def506e42b163c20c18c9e0e9f95613",
+      "a/config/runtime.json": "7f532f24bae91bac05f2a953fe23e58e8a1918b3ab62c0943fad4ea8560eb27e",
+      "b/config/capture.json": "9507c85784b0cf564a7eafe167c0655a5e177ed68085910c71c6542c98edbd06",
+      "b/config/experiment.json": "bac6039f2b084c5840e065145336facdd62456bb909e2b5b64e686cbcba00c76",
+      "b/config/runtime.json": "7f532f24bae91bac05f2a953fe23e58e8a1918b3ab62c0943fad4ea8560eb27e",
+      "c/config/capture.json": "a120a81cc218356c97bbf668432058328268519f3dc31333305800b2d63f7cd3",
+      "c/config/experiment.json": "5e440fb35c2759d655f781567a94c48f7c10738a9c28a9da1e9f46aac72b5c43",
+      "c/config/runtime.json": "7f532f24bae91bac05f2a953fe23e58e8a1918b3ab62c0943fad4ea8560eb27e",
+      "a/runtime-identity.json": "2b53f05a96fe4cd27a8d2abf97df243888fea1be7a2bb970eb43a4ced5276fc4",
+      "b/runtime-identity.json": "1b64978aefae21250d420649bced4147030ca06fbea40f9c366eb88dc221dad0",
+      "c/runtime-identity.json": "a356c39a96d3e66a64237f6bb8d654c7df7f46f98ecf2b54c2cc781dac17c74e"
+    },
+    "tool_sha256": "71e0d91a6cc01233d4dd408f66795f62dd3fae1f14359d9f3b5377911f99179b",
+    "tool_sha256_after": "71e0d91a6cc01233d4dd408f66795f62dd3fae1f14359d9f3b5377911f99179b",
+    "runtime_sha256": "6bbd8b8ab1415a32969e622d9989dd4018ebd7d7f9f98b6a8d106dad7d4e25ed",
+    "run_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "image_id": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "identity_rejected_targets": [],
+    "selected_cameras": [
+      "a",
+      "b",
+      "c"
+    ],
+    "perf": {
+      "requested": false,
+      "state": "disabled"
+    },
+    "limits": {
+      "seconds": 6,
+      "max_output_mib": 256,
+      "max_threads": 64,
+      "stack_bytes": 8192,
+      "sample_bytes_limit": 268173312,
+      "metadata_reserve_bytes": 262144,
+      "perf_file_limit_bytes": 0
+    },
+    "scope": "only selected already-pinned workers; single observed target does not establish single-camera capture; kernel stacks and disk request means do not identify a unique device cause"
+  },
+  "input_status_bytes": [
+    50167,
+    49987,
+    49978
+  ],
+  "compact_status_bytes": [
+    1868,
+    1867,
+    1868
+  ],
+  "resource_rows": 22,
+  "rows_with_observed_threads": 21,
+  "mean_sample_bytes": 9610.59090909091,
+  "max_sample_bytes": 10366,
+  "projected_one_hour_trace_bytes_at_5hz_four_threads_each": 193122000,
+  "projection_scope": "reuses real 50KB status shapes and four compact thread rows per camera; actual stacks/changes/extra threads can grow output and hit hard cap"
+}

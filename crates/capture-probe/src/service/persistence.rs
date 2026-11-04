@@ -7,7 +7,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, Condvar, Mutex},
     thread::{self, JoinHandle},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 pub(super) type Batch = Vec<(PathBuf, Value)>;
@@ -16,8 +16,10 @@ struct State {
     active: Option<(u64, Instant)>,
     critical_events: VecDeque<Value>,
     critical_wait: capture_contract::timing::StageStats,
+    pump_errors: u64,
     queue_wait: capture_contract::timing::StageStats,
     pending: Option<(u64, Batch, Instant)>,
+    protected: Option<u64>,
     submitted: u64,
     completed: u64,
     coalesced: u64,
@@ -28,9 +30,11 @@ struct State {
     render_gate: Option<Arc<(std::sync::Barrier, std::sync::Barrier)>>,
 }
 struct Report {
+    protected: Option<u64>,
     active: Option<(u64, Instant)>,
     critical_events: VecDeque<Value>,
     critical_wait: capture_contract::timing::StageStats,
+    pump_errors: u64,
     queue_wait: capture_contract::timing::StageStats,
     wall: capture_contract::timing::StageStats,
     errors: u64,
@@ -48,14 +52,36 @@ impl Report {
             gate.0.wait();
             gate.1.wait();
         }
-        json!({"active_write":self.active.map(|(sequence,started)|json!({"sequence":sequence,"elapsed_ns":started.elapsed().as_nanos()})),"critical_events":self.critical_events,"critical_event_capacity":16,"critical_wait":self.critical_wait.report(),"queue_wait":self.queue_wait.report(),"wall":self.wall.report(),"errors":self.errors,
+        json!({"active_write":self.active.map(|(sequence,started)|json!({"sequence":sequence,"elapsed_ns":started.elapsed().as_nanos()})),"critical_events":self.critical_events,"critical_event_capacity":16,"critical_wait":self.critical_wait.report(),"pump_errors":self.pump_errors,"queue_wait":self.queue_wait.report(),"wall":self.wall.report(),"errors":self.errors,
             "submitted_sequence":self.submitted,"completed_sequence":self.completed,
-            "pending_snapshots":self.pending,"pending_capacity":1,
+            "pending_snapshots":self.pending,"pending_capacity":1,"protected_sequence":self.protected,
             "coalesced_snapshots":self.coalesced,
             "scope":"completed background batches; quality files precede service status; critical updates wait for fsync"})
     }
 }
 type Shared = Arc<(Mutex<State>, Condvar)>;
+// An opaque ticket separates immutable submission from its durability fence.
+// At most one critical ticket may be outstanding. SDK handles remain on the
+// caller thread; only the owned JSON batch enters the persistence worker.
+#[derive(Debug)]
+pub(super) struct PumpFailure(pub(super) anyhow::Error);
+impl std::fmt::Display for PumpFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl std::error::Error for PumpFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+pub(super) struct Submission {
+    sequence: u64,
+    critical: bool,
+    started: Instant,
+    entered_unix_ms: u64,
+    state_label: Option<Option<Value>>,
+}
 pub(super) struct Persistence {
     shared: Shared,
     worker: Option<JoinHandle<()>>,
@@ -95,10 +121,17 @@ impl Persistence {
                     state.wall.observe(started.elapsed());
                     state.active = None;
                     state.completed = sequence;
+                    if state
+                        .protected
+                        .is_some_and(|protected| sequence >= protected)
+                    {
+                        state.protected = None;
+                    }
                     if let Err(error) = result {
                         state.error = Some(format!("{error:#}"));
                         state.pending = None;
                         state.closing = true;
+                        state.protected = None;
                     }
                     changed.notify_all();
                     if state.error.is_some() {
@@ -121,6 +154,10 @@ impl Persistence {
         Ok(())
     }
     pub(super) fn submit(&mut self, batch: Batch, critical: bool) -> Result<()> {
+        let submission = self.enqueue(batch, critical)?;
+        self.wait(submission)
+    }
+    pub(super) fn enqueue(&mut self, batch: Batch, critical: bool) -> Result<Submission> {
         let started = Instant::now();
         let entered_unix_ms = super::unix_ms();
         let state_label = critical.then(|| batch.last().map(|(_, value)| json!({"state":value["state"],"raw_state":value["raw_recording"]["state"]})));
@@ -131,6 +168,9 @@ impl Persistence {
             "status persistence unavailable: {}",
             state.error.as_deref().unwrap_or_default()
         );
+        // A pump must never replace a critical batch with a later heartbeat.
+        // Reject before mutation instead of silently coalescing that evidence.
+        ensure!(state.protected.is_none(), "critical status fence pending");
         state.submitted += 1;
         let sequence = state.submitted;
         if state
@@ -140,32 +180,97 @@ impl Persistence {
         {
             state.coalesced += 1;
         }
+        if critical {
+            state.protected = Some(sequence);
+        }
         changed.notify_all();
+        Ok(Submission {
+            sequence,
+            critical,
+            started,
+            entered_unix_ms,
+            state_label,
+        })
+    }
+    pub(super) fn wait(&mut self, submission: Submission) -> Result<()> {
+        self.wait_inner(submission, None)
+    }
+    pub(super) fn wait_with_pump(
+        &mut self,
+        submission: Submission,
+        mut pump: impl FnMut() -> Result<()>,
+    ) -> Result<()> {
+        self.wait_inner(submission, Some(&mut pump))
+    }
+    fn wait_inner(
+        &mut self,
+        submission: Submission,
+        mut pump: Option<&mut dyn FnMut() -> Result<()>>,
+    ) -> Result<()> {
+        let Submission {
+            sequence,
+            critical,
+            started,
+            entered_unix_ms,
+            state_label,
+        } = submission;
+        let (lock, changed) = &*self.shared;
+        let mut state = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pump_error = None;
+        let mut pump_calls = 0u64;
         while critical && state.completed < sequence && state.error.is_none() {
-            state = changed.wait(state).unwrap_or_else(|e| e.into_inner());
+            if let Some(pump) = pump.as_mut().filter(|_| pump_error.is_none()) {
+                // Never call SDK/ROS code while holding the writer's mutex.
+                drop(state);
+                pump_calls += 1;
+                pump_error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&mut **pump))
+                    .unwrap_or_else(|_| Err(anyhow!("status wait IMU pump panicked")))
+                    .err();
+                state = lock.lock().unwrap_or_else(|e| e.into_inner());
+                if state.completed >= sequence || state.error.is_some() {
+                    break;
+                }
+                // A genuine pump error is retained while the immutable critical
+                // batch finishes. Do not mask it by clearing samples/retrying.
+                if pump_error.is_some() {
+                    continue;
+                }
+                state = changed
+                    .wait_timeout(state, Duration::from_millis(10))
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0;
+            } else {
+                state = changed.wait(state).unwrap_or_else(|e| e.into_inner());
+            }
         }
         if critical {
+            state.pump_errors += u64::from(pump_error.is_some());
             state.critical_wait.observe(started.elapsed());
             if state.critical_events.len() == 16 {
                 state.critical_events.pop_front();
             }
             let completed = state.completed;
             let ok = state.error.is_none();
-            state.critical_events.push_back(json!({"sequence":sequence,"completed_sequence":completed,"target":state_label,"entered_unix_ms":entered_unix_ms,"returned_unix_ms":super::unix_ms(),"wall_ns":started.elapsed().as_nanos(),"ok":ok}));
+            state.critical_events.push_back(json!({"sequence":sequence,"completed_sequence":completed,"target":state_label,"entered_unix_ms":entered_unix_ms,"returned_unix_ms":super::unix_ms(),"wall_ns":started.elapsed().as_nanos(),"ok":ok,"pump_calls":pump_calls,"pump_failed":pump_error.is_some()}));
         }
         ensure!(
             state.error.is_none(),
             "status persistence failed: {}",
             state.error.as_deref().unwrap_or_default()
         );
+        if let Some(error) = pump_error {
+            return Err(anyhow!(PumpFailure(error)));
+        }
         Ok(())
     }
     fn snapshot(shared: &Shared) -> Report {
         let state = shared.0.lock().unwrap_or_else(|e| e.into_inner());
         Report {
+            protected: state.protected,
             active: state.active,
             critical_events: state.critical_events.clone(),
             critical_wait: state.critical_wait.clone(),
+            pump_errors: state.pump_errors,
             queue_wait: state.queue_wait.clone(),
             wall: state.wall.clone(),
             errors: u64::from(state.error.is_some()),
@@ -198,6 +303,157 @@ mod tests {
     use std::{sync::mpsc, time::Duration};
     fn batch(n: u64) -> Batch {
         vec![(PathBuf::from("status"), json!(n))]
+    }
+    #[test]
+    fn split_critical_fence_pumps_without_the_lock_or_early_ack() {
+        let (entered_tx, entered) = mpsc::channel();
+        let (release_tx, release) = mpsc::channel();
+        let mut writer = Persistence::with_writer(move |_| {
+            entered_tx.send(()).unwrap();
+            release.recv().unwrap();
+            Ok(())
+        })
+        .unwrap();
+        let ticket = writer.enqueue(batch(1), true).unwrap();
+        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(writer.report()["protected_sequence"], 1);
+        assert!(writer.enqueue(batch(2), false).is_err());
+        assert_eq!(writer.report()["submitted_sequence"], 1);
+        let shared = writer.shared.clone();
+        let (pumped_tx, pumped) = mpsc::channel();
+        let (done_tx, done) = mpsc::channel();
+        let child = thread::spawn(move || {
+            let mut calls = 0;
+            let result = writer.wait_with_pump(ticket, || {
+                assert!(
+                    shared.0.try_lock().is_ok(),
+                    "pump must not hold the persistence lock"
+                );
+                calls += 1;
+                if calls == 2 {
+                    pumped_tx.send(()).unwrap();
+                }
+                Ok(())
+            });
+            done_tx.send((result, writer.report())).unwrap();
+        });
+        pumped.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            done.try_recv().is_err(),
+            "critical fence acknowledged before fsync release"
+        );
+        release_tx.send(()).unwrap();
+        let (result, report) = done.recv_timeout(Duration::from_secs(2)).unwrap();
+        result.unwrap();
+        child.join().unwrap();
+        assert_eq!(report["completed_sequence"], 1);
+        assert!(report["protected_sequence"].is_null());
+        assert!(report["critical_events"][0]["pump_calls"].as_u64().unwrap() >= 2);
+        assert_eq!(report["critical_events"][0]["pump_failed"], false);
+    }
+    #[test]
+    fn queued_critical_snapshot_cannot_be_replaced_while_an_older_batch_is_inflight() {
+        let (entered_tx, entered) = mpsc::channel();
+        let (release_tx, release) = mpsc::channel();
+        let mut writer = Persistence::with_writer(move |batch| {
+            let n = batch[0].1.as_u64().unwrap();
+            entered_tx.send(n).unwrap();
+            if n == 1 {
+                release.recv().unwrap();
+            }
+            Ok(())
+        })
+        .unwrap();
+        writer.submit(batch(1), false).unwrap();
+        assert_eq!(entered.recv_timeout(Duration::from_secs(2)).unwrap(), 1);
+        let ticket = writer.enqueue(batch(2), true).unwrap();
+        assert!(writer.enqueue(batch(3), false).is_err());
+        assert!(writer.enqueue(batch(4), true).is_err());
+        assert_eq!(writer.report()["coalesced_snapshots"], 0);
+        release_tx.send(()).unwrap();
+        writer.wait(ticket).unwrap();
+        assert_eq!(entered.recv_timeout(Duration::from_secs(2)).unwrap(), 2);
+        assert_eq!(writer.report()["completed_sequence"], 2);
+    }
+    #[test]
+    fn pump_error_or_panic_is_not_swallowed_and_still_waits_for_its_critical_batch() {
+        for panic in [false, true] {
+            let (entered_tx, entered) = mpsc::channel();
+            let (release_tx, release) = mpsc::channel();
+            let mut writer = Persistence::with_writer(move |_| {
+                entered_tx.send(()).unwrap();
+                release.recv().unwrap();
+                Ok(())
+            })
+            .unwrap();
+            let ticket = writer.enqueue(batch(1), true).unwrap();
+            entered.recv_timeout(Duration::from_secs(2)).unwrap();
+            let (pumped_tx, pumped) = mpsc::channel();
+            let (done_tx, done) = mpsc::channel();
+            let child = thread::spawn(move || {
+                let result = writer.wait_with_pump(ticket, || {
+                    pumped_tx.send(()).unwrap();
+                    assert!(!panic, "injected IMU pump panic");
+                    Err(anyhow!("injected invalid IMU"))
+                });
+                done_tx.send((result, writer.report())).unwrap();
+            });
+            pumped.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(done.recv_timeout(Duration::from_millis(20)).is_err());
+            release_tx.send(()).unwrap();
+            let (result, report) = done.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(result.unwrap_err().to_string().contains(if panic {
+                "pump panicked"
+            } else {
+                "invalid IMU"
+            }));
+            child.join().unwrap();
+            assert_eq!(report["critical_events"][0]["ok"], true);
+            assert_eq!(report["critical_events"][0]["pump_failed"], true);
+            assert_eq!(report["critical_events"][0]["pump_calls"], 1);
+        }
+    }
+    #[test]
+    fn persistence_failures_wake_pumping_fences_and_completed_tickets_need_no_pump() {
+        for panic in [false, true] {
+            let (entered_tx, entered) = mpsc::channel();
+            let (release_tx, release) = mpsc::channel();
+            let mut writer = Persistence::with_writer(move |_| {
+                entered_tx.send(()).unwrap();
+                release.recv().unwrap();
+                assert!(!panic, "injected persistence panic");
+                Err(anyhow!("injected fsync error"))
+            })
+            .unwrap();
+            let ticket = writer.enqueue(batch(1), true).unwrap();
+            entered.recv_timeout(Duration::from_secs(2)).unwrap();
+            let result = writer.wait_with_pump(ticket, || {
+                release_tx.send(()).ok();
+                Ok(())
+            });
+            assert!(result.is_err());
+            assert_eq!(writer.report()["critical_events"][0]["ok"], false);
+            assert!(
+                writer.report()["critical_events"][0]["pump_calls"]
+                    .as_u64()
+                    .unwrap()
+                    > 0
+            );
+        }
+        let mut writer = Persistence::with_writer(|_| Ok(())).unwrap();
+        let ticket = writer.enqueue(batch(1), false).unwrap();
+        writer
+            .wait_with_pump(ticket, || panic!("ordinary snapshots must not pump"))
+            .unwrap();
+        let ticket = writer.enqueue(batch(2), true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while writer.report()["completed_sequence"] != 2 {
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        }
+        writer
+            .wait_with_pump(ticket, || panic!("completed tickets must not pump"))
+            .unwrap();
     }
     #[test]
     fn critical_write_completes_while_report_formatting_is_paused() {

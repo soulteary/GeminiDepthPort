@@ -88,6 +88,7 @@ def parent(root,scenario):
          patch.object(cli.hw,'prepare',side_effect=prepare),patch.object(cli.hw,'load_run',return_value=run), \
          patch.object(cli.hw,'start',side_effect=start),patch.object(cli.hw,'stop',side_effect=stop), \
          patch.object(cli.hw,'status',side_effect=snapshot),patch.object(cli.hw,'recording_path'), \
+         patch.object(cli.hw,'failed_recording_status',return_value={}), \
          patch.object(cli.hw,'own_container',return_value={'Id':'synthetic-not-docker'}), \
          patch.object(cli.hw,'command',return_value=''),patch.object(cli.Runner,'spawn',spawn),patch.object(sys,'argv',argv):
         return cli.main()

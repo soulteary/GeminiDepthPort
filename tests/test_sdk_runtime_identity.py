@@ -15,6 +15,8 @@ HERE=Path(__file__).resolve().parents[1]/'experiments/sdk-2.10.6-diagnostics'
 sys.path.insert(0,str(HERE))
 spec=importlib.util.spec_from_file_location('sdk_runtime_identity_hardware',HERE/'hardware.py')
 hw=importlib.util.module_from_spec(spec);spec.loader.exec_module(hw)
+import run_hardware as controller
+import sdk_lifecycle
 
 
 class RuntimeIdentityTests(unittest.TestCase):
@@ -165,6 +167,172 @@ class RuntimeIdentityTests(unittest.TestCase):
             args.write_bytes(before)
             binary=proc/'other-binary';binary.write_bytes(b'wrong');exe=proc/'117/exe';exe.unlink();exe.symlink_to(binary)
             with self.assertRaisesRegex(ValueError,'PROCESS_EXECUTABLE'):hw.observe_runtime_process(info,s,b,proc=proc)
+
+
+class TerminalStatusTests(unittest.TestCase):
+    """Real Rust status fields through the real controller/identity/procfs chain.
+
+    Docker inspect is the only substituted boundary. The process files, private
+    pins, config binding and their disappearance/replacement are actual files.
+    """
+    def case(self,root):
+        fixture=json.loads((HERE.parents[1]/'tests/fixtures/sdk_terminal_status.json').read_text())
+        self.assertEqual(fixture['capture']['raw_recording']['reason'],'RAW_QUEUE_OVERFLOW')
+        self.assertEqual(fixture['capture']['imu']['error'],'IMU_QUEUE_OVERFLOW')
+        base=RuntimeIdentityTests();a,_,identity,binding,info,_=base.case(root)
+        proc=root/'proc';proc.mkdir();base.proc_fixture(proc)
+        a.pairs=31680
+        cameras=[{'name':name,'container':'exp-'+name} for name in 'abc']
+        run={'run_id':binding['run_id'],'image_id':binding['image_id'],'cameras':cameras}
+        hw.write(root/'run.json',run)
+        infos={};rows=[]
+        for camera in cameras:
+            name=camera['name'];config=root/name/'config';config.mkdir(parents=True,exist_ok=True)
+            hw.write(config/'experiment.json',binding)
+            current=copy.deepcopy(info);current['Id']='owned-'+name
+            current.update(Config={'Labels':{controller.hw.LABEL:hw.rt.EXPERIMENT,controller.hw.RUN:run['run_id']}},
+                           HostConfig={'RestartPolicy':{'Name':'no'}})
+            infos[camera['container']]=current
+            status=copy.deepcopy(fixture['capture'])
+            for key in ('generation','config_sha256','instance_id','session_id','pid','restart_attempt','updated_unix_ms'):
+                status[key]=identity[key]
+            status['raw_recording'].update(session_id=identity['session_id'],
+                job_path='/recordings/capture-'+identity['session_id'],
+                partial_path='/recordings/capture-'+identity['session_id']+'.partial')
+            rows.append({'name':name,'running':True,'health':'healthy','capture':status})
+        return a,run,{'cameras':rows},proc,infos
+
+    def docker(self,infos):
+        def command(argv,**kwargs):
+            self.assertEqual(argv[:2],['docker','inspect'])
+            return json.dumps([infos[argv[2]]])
+        return patch.object(controller.hw,'command',side_effect=command)
+
+    def pin(self,a,run,failed,proc):
+        healthy=copy.deepcopy(failed)
+        for row in healthy['cameras']:
+            status=row['capture'];status.update(state='ready',ready=True)
+            status['imu'].update(error=None,ready=True)
+            status['raw_recording'].update(state='recording',reason=None,whole_pair_queue_overflows=0)
+        self.assertEqual(controller.check_rows(a,run,healthy,proc=proc),(True,False))
+        return healthy
+
+    def test_real_rust_failure_survives_worker_disappearance_and_keeps_all_cameras(self):
+        with tempfile.TemporaryDirectory() as d:
+            a,run,failed,proc,infos=self.case(Path(d))
+            with self.docker(infos):
+                self.pin(a,run,failed,proc)
+                pins={name:(Path(d)/name/'runtime-identity.json').read_bytes() for name in 'abc'}
+                (proc/'117/stat').unlink()
+                with self.assertRaises(controller.CaptureStatusFailure) as caught:
+                    controller.check_rows(a,run,failed,sampling=True,proc=proc)
+            details=caught.exception.details['cameras']
+            self.assertEqual([value['camera'] for value in details],list('abc'))
+            for value in details:
+                self.assertEqual(value['classifications'],['RECORDING_FAILED','IMU_FAILED'])
+                self.assertEqual(value['raw_reason'],'RAW_QUEUE_OVERFLOW')
+                self.assertEqual(value['imu_error'],'IMU_QUEUE_OVERFLOW')
+                self.assertIn('FileNotFoundError',value['liveness']['process_error'])
+                self.assertTrue(value['status_identity_pinned'])
+            self.assertEqual(pins,{name:(Path(d)/name/'runtime-identity.json').read_bytes() for name in 'abc'})
+
+    def test_stopped_container_failure_remains_bound_but_unpinned_failure_cannot_pin(self):
+        for pinned in (False,True):
+            with self.subTest(pinned=pinned),tempfile.TemporaryDirectory() as d:
+                a,run,failed,proc,infos=self.case(Path(d))
+                with self.docker(infos):
+                    if pinned:self.pin(a,run,failed,proc)
+                    for value in infos.values():value['State']['Running']=False;value['State']['Pid']=0
+                    for row in failed['cameras']:row['running']=False
+                    if pinned:
+                        with self.assertRaises(controller.CaptureStatusFailure) as caught:
+                            controller.check_rows(a,run,failed,proc=proc)
+                        self.assertTrue(all(v['liveness']['process_error']=='RUNTIME_CONTAINER_EXITED' for v in caught.exception.details['cameras']))
+                    else:
+                        with self.assertRaisesRegex(ValueError,'NOT_PINNED'):controller.check_rows(a,run,failed,proc=proc)
+                        self.assertFalse((Path(d)/'a/runtime-identity.json').exists())
+
+    def test_failure_cannot_bypass_status_container_or_process_identity_changes(self):
+        for fault in ('no-pin','session','config','pid','container','container-start','pid-reuse'):
+            with self.subTest(fault=fault),tempfile.TemporaryDirectory() as d:
+                a,run,failed,proc,infos=self.case(Path(d))
+                with self.docker(infos):
+                    if fault!='no-pin':self.pin(a,run,failed,proc)
+                    status=failed['cameras'][0]['capture']
+                    if fault=='session':status['session_id']='2'*32
+                    elif fault=='config':status['config_sha256']='2'*64
+                    elif fault=='pid':status['pid']=18
+                    elif fault=='container':infos['exp-a']['Id']='replacement'
+                    elif fault=='container-start':infos['exp-a']['State']['StartedAt']='later'
+                    elif fault=='pid-reuse':
+                        path=proc/'117/stat';path.write_text(path.read_text().replace(' 300 ',' 301 '))
+                    with self.assertRaises(ValueError) as caught:controller.check_rows(a,run,failed,proc=proc)
+                    self.assertNotIsInstance(caught.exception,controller.CaptureStatusFailure)
+
+    def test_healthy_status_still_requires_live_worker_and_rejects_pid_reuse(self):
+        for fault in ('disappeared','pid-reuse','container-stopped'):
+            with self.subTest(fault=fault),tempfile.TemporaryDirectory() as d:
+                a,run,failed,proc,infos=self.case(Path(d))
+                with self.docker(infos):
+                    healthy=self.pin(a,run,failed,proc)
+                    path=proc/'117/stat'
+                    if fault=='disappeared':path.unlink()
+                    elif fault=='pid-reuse':path.write_text(path.read_text().replace(' 300 ',' 301 '))
+                    else:infos['exp-a']['State']['Running']=False;infos['exp-a']['State']['Pid']=0
+                    with self.assertRaises((OSError,ValueError)) as caught:
+                        controller.check_rows(a,run,healthy,sampling=True,proc=proc)
+                    self.assertNotIsInstance(caught.exception,controller.CaptureStatusFailure)
+
+    def test_failure_only_api_cannot_be_used_as_a_healthy_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            a,run,failed,proc,infos=self.case(Path(d))
+            with self.docker(infos):
+                healthy=self.pin(a,run,failed,proc)
+                with self.assertRaisesRegex(ValueError,'TERMINAL_FAILURE_STATUS_REQUIRED'):
+                    controller.hw.failed_recording_status(a,run['cameras'][0],healthy['cameras'][0]['capture'],proc=proc)
+
+    def test_snapshot_observer_cannot_mask_bound_storage_failure_or_authenticate_unpinned_status(self):
+        class ResourceTarget:
+            def sample(self,now):return {'status':{'updated_unix_ms':time.time_ns()//1_000_000}},[]
+        for pinned in (True,False):
+            with self.subTest(pinned=pinned),tempfile.TemporaryDirectory() as d:
+                root=Path(d);a,run,failed,proc,infos=self.case(root)
+                a.root=root
+                with self.docker(infos):
+                    if pinned:self.pin(a,run,failed,proc)
+                for camera,row in zip(run['cameras'],failed['cameras']):
+                    status=row['capture'];status.update(state='ready',ready=True)
+                    status['imu'].update(error=None,ready=True,failure_observation=None,drain_interval={'samples':1})
+                    status['status_persistence']={'errors':0,'submission_errors':0,'queue_wait':{},'critical_wait':{},
+                        'critical_event_capacity':16,'critical_events':[]}
+                    status['cleanup']={'history_capacity':8,'completed':[]}
+                    status['raw_recording'].update(reason='RAW_STORAGE_FAILED',disk_stages={'failed_calls':{'fsync':1}})
+                    camera['status']=str(root/camera['name']/'state/status.json')
+                    Path(camera['status']).parent.mkdir();hw.write(Path(camera['status']),status)
+                hw.write(root/'run.json',run)
+                with self.docker(infos):
+                    (proc/'117/stat').unlink()
+                    runner=controller.Runner(a);runner.run=run;runner.stage='sample'
+                    runner.lifecycle=sdk_lifecycle.Lifecycle(root/'lifecycle',run,dict.fromkeys('abc',128),
+                        lambda:runner.stage,factory=lambda _:ResourceTarget())
+                    try:
+                        snapshot=runner.snapshot('latest-status')
+                        with self.assertRaises(ValueError) as caught:
+                            controller.check_rows(a,run,snapshot,sampling=True,proc=proc)
+                        if pinned:
+                            self.assertIsInstance(caught.exception,controller.CaptureStatusFailure)
+                            for camera in caught.exception.details['cameras']:
+                                self.assertEqual(camera['raw_reason'],'RAW_STORAGE_FAILED')
+                                self.assertEqual(camera['disk_failed_calls'],{'fsync':1})
+                                self.assertIn('FileNotFoundError',camera['liveness']['process_error'])
+                        else:
+                            self.assertNotIsInstance(caught.exception,controller.CaptureStatusFailure)
+                            self.assertIn('NOT_PINNED',str(caught.exception))
+                    finally:summary=runner.lifecycle.stop()
+                self.assertFalse(summary['sampling_ok'])
+                self.assertTrue(any('LIFECYCLE_DISK_FAILURE' in error for error in summary['errors']))
+                self.assertTrue((root/'latest-status.json').exists())
+                self.assertEqual((root/'a/runtime-identity.json').exists(),pinned)
 
 
 if __name__=='__main__':unittest.main()

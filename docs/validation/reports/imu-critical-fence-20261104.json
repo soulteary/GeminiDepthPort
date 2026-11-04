@@ -1,0 +1,49 @@
+{
+  "scope": "synthetic Linux SDK/ROS C ABI and real fsync barriers; not physical-camera throughput or hardware acceptance",
+  "queue_capacity": 128,
+  "accel_rate_hz": 200,
+  "gyro_rate_hz": 200,
+  "critical_barrier_min_ms": 800,
+  "rows": [
+    {
+      "case": "critical-draining-pump",
+      "critical": {
+        "completed_sequence": 20,
+        "entered_unix_ms": 1793779708941,
+        "ok": true,
+        "pump_calls": 88,
+        "pump_failed": false,
+        "returned_unix_ms": 1793779709852,
+        "sequence": 20,
+        "target": {
+          "raw_state": "draining",
+          "state": "ready"
+        },
+        "wall_ns": 910524094
+      },
+      "imu_queue_peak": 14,
+      "max_drain_ns": 35059118,
+      "publish_progress_while_fenced": 299
+    },
+    {
+      "case": "critical-raw-failed-pump",
+      "critical": {
+        "completed_sequence": 29,
+        "entered_unix_ms": 1793779718120,
+        "ok": true,
+        "pump_calls": 81,
+        "pump_failed": false,
+        "returned_unix_ms": 1793779718969,
+        "sequence": 29,
+        "target": {
+          "raw_state": "failed",
+          "state": "ready"
+        },
+        "wall_ns": 848754939
+      },
+      "imu_queue_peak": 14,
+      "max_drain_ns": 34451448,
+      "publish_progress_while_fenced": 297
+    }
+  ]
+}

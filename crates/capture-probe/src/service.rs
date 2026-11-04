@@ -870,6 +870,59 @@ impl Status<'_> {
         }
         self.write(state, Some(reason), metrics, last_pair)
     }
+    fn prepare_write(
+        &mut self,
+        state: &str,
+        reason: Option<&'static str>,
+        metrics: &Metrics,
+        last_pair: Option<Instant>,
+    ) -> Result<(persistence::Batch, bool, Value)> {
+        self.observe_raw_quality()?;
+        self.heartbeat += 1;
+        if reason.is_some() && reason != Some("SESSION_FAILED") {
+            self.last_failure = reason;
+        }
+        let mut batch = match &mut self.quality {
+            Some(quality) => quality.persistence_batch()?,
+            None => Vec::new(),
+        };
+        let mut persistence = self.writer.report();
+        persistence["submission_wall"] = self.persistence.report();
+        persistence["submission_errors"] = json!(self.persistence_errors);
+        persistence["coalesced_partial_updates"] = json!(self.coalesced_partial_status);
+        let mut value = json!({"version":1,"kind":"capture-service-status","state":state,"ready":state=="ready","reason":reason,"last_failure_reason":self.last_failure,"session_id":self.session,"instance_id":self.instance,"snapshot_id":self.snapshot.as_ref().map(|s|&s.0),"snapshot_path":self.snapshot.as_ref().map(|s|&s.1),"quality":self.quality.as_ref().map(ServiceQuality::references),"usb_recovery":self.usb_recovery,"raw_recording":self.raw.as_ref().map(crate::raw_recording::RawRecorder::status),"generation":self.config.settings.generation,"config_sha256":self.config.hash,"pid":std::process::id(),"heartbeat_sequence":self.heartbeat,"updated_unix_ms":unix_ms(),"uptime_ms":self.started.elapsed().as_millis(),"restart_attempt":self.restarts,"last_pair_age_ms":last_pair.map(|v|v.elapsed().as_millis()),"pairs_accepted":metrics.accepted,"pairs_rejected":metrics.rejected,"rejection_reasons":metrics.reasons,"pairs_published":metrics.published_pairs,"individual_publish_calls":metrics.publish_calls,"unpaired_images_published":metrics.unpaired_images_published,"publish_failures":metrics.publish_failures,"stamp_failures":metrics.stamp_failures,"framesets_observed":metrics.framesets,"missing_pairs":metrics.missing,"skew_rejections":metrics.skew,"monotonic_rejections":metrics.monotonic,"poll_timeouts":metrics.timeouts,"pipeline_timing":metrics.timing_report(),"acquisition_effective":self.config.capture.acquisition,"message_timestamp":self.config.capture.message_timestamp(),"readiness_basis":if self.config.capture.preserve_images() {"both-streams-published"} else {"accepted-rgbd-pairs"},"native_recording_scope":"complete-rgbd-pairs-only","physical_sync_verified":false,"delivery_verified":false});
+        value["imu"] = metrics
+            .imu
+            .as_ref()
+            .map(|i| i.report())
+            .unwrap_or(Value::Null);
+        value["status_persistence"] = persistence;
+        value["cleanup"] = self.cleanup.report();
+        let health = json!({"quality":value["quality"]["state"],
+        "raw_state":value["raw_recording"]["state"],"raw_reason":value["raw_recording"]["reason"]});
+        batch.push((self.config.settings.status_path.clone(), value));
+        let critical = self.last_health.as_ref() != Some(&health)
+            || self
+                .last_write
+                .as_ref()
+                .is_none_or(|(previous, _)| previous != state)
+            || reason.is_some_and(|reason| {
+                !matches!(reason, "MISSING_COLOR" | "MISSING_DEPTH" | "MISSING_BOTH")
+            });
+        Ok((batch, critical, health))
+    }
+    fn finish_write(&mut self, state: &str, started: Instant, result: Result<()>) -> Result<()> {
+        self.persistence.observe(started.elapsed());
+        if result
+            .as_ref()
+            .is_err_and(|error| error.downcast_ref::<persistence::PumpFailure>().is_none())
+        {
+            self.persistence_errors = self.persistence_errors.saturating_add(1);
+        } else if result.is_ok() {
+            self.last_write = Some((state.into(), Instant::now()));
+        }
+        result
+    }
     fn write(
         &mut self,
         state: &str,
@@ -878,50 +931,72 @@ impl Status<'_> {
         last_pair: Option<Instant>,
     ) -> Result<()> {
         let started = Instant::now();
-        let result = (|| -> Result<()> {
-            self.observe_raw_quality()?;
-            self.heartbeat += 1;
-            if reason.is_some() && reason != Some("SESSION_FAILED") {
-                self.last_failure = reason;
-            }
-            let mut batch = match &mut self.quality {
-                Some(quality) => quality.persistence_batch()?,
-                None => Vec::new(),
-            };
-            let mut persistence = self.writer.report();
-            persistence["submission_wall"] = self.persistence.report();
-            persistence["submission_errors"] = json!(self.persistence_errors);
-            persistence["coalesced_partial_updates"] = json!(self.coalesced_partial_status);
-            let mut value = json!({"version":1,"kind":"capture-service-status","state":state,"ready":state=="ready","reason":reason,"last_failure_reason":self.last_failure,"session_id":self.session,"instance_id":self.instance,"snapshot_id":self.snapshot.as_ref().map(|s|&s.0),"snapshot_path":self.snapshot.as_ref().map(|s|&s.1),"quality":self.quality.as_ref().map(ServiceQuality::references),"usb_recovery":self.usb_recovery,"raw_recording":self.raw.as_ref().map(crate::raw_recording::RawRecorder::status),"generation":self.config.settings.generation,"config_sha256":self.config.hash,"pid":std::process::id(),"heartbeat_sequence":self.heartbeat,"updated_unix_ms":unix_ms(),"uptime_ms":self.started.elapsed().as_millis(),"restart_attempt":self.restarts,"last_pair_age_ms":last_pair.map(|v|v.elapsed().as_millis()),"pairs_accepted":metrics.accepted,"pairs_rejected":metrics.rejected,"rejection_reasons":metrics.reasons,"pairs_published":metrics.published_pairs,"individual_publish_calls":metrics.publish_calls,"unpaired_images_published":metrics.unpaired_images_published,"publish_failures":metrics.publish_failures,"stamp_failures":metrics.stamp_failures,"framesets_observed":metrics.framesets,"missing_pairs":metrics.missing,"skew_rejections":metrics.skew,"monotonic_rejections":metrics.monotonic,"poll_timeouts":metrics.timeouts,"pipeline_timing":metrics.timing_report(),"acquisition_effective":self.config.capture.acquisition,"message_timestamp":self.config.capture.message_timestamp(),"readiness_basis":if self.config.capture.preserve_images() {"both-streams-published"} else {"accepted-rgbd-pairs"},"native_recording_scope":"complete-rgbd-pairs-only","physical_sync_verified":false,"delivery_verified":false});
-            value["imu"] = metrics
-                .imu
-                .as_ref()
-                .map(|i| i.report())
-                .unwrap_or(Value::Null);
-            value["status_persistence"] = persistence;
-            value["cleanup"] = self.cleanup.report();
-            let health = json!({"quality":value["quality"]["state"],
-                "raw_state":value["raw_recording"]["state"],"raw_reason":value["raw_recording"]["reason"]});
-            batch.push((self.config.settings.status_path.clone(), value));
-            let critical = self.last_health.as_ref() != Some(&health)
-                || self
-                    .last_write
-                    .as_ref()
-                    .is_none_or(|(previous, _)| previous != state)
-                || reason.is_some_and(|reason| {
-                    !matches!(reason, "MISSING_COLOR" | "MISSING_DEPTH" | "MISSING_BOTH")
-                });
+        let result = (|| {
+            let (batch, critical, health) =
+                self.prepare_write(state, reason, metrics, last_pair)?;
             self.writer.submit(batch, critical)?;
             self.last_health = Some(health);
             Ok(())
         })();
-        self.persistence.observe(started.elapsed());
-        if result.is_err() {
-            self.persistence_errors = self.persistence_errors.saturating_add(1);
-        } else {
-            self.last_write = Some((state.into(), Instant::now()));
+        self.finish_write(state, started, result)
+    }
+    fn write_with_imu(
+        &mut self,
+        state: &str,
+        reason: Option<&'static str>,
+        metrics: &mut Metrics,
+        last_pair: Option<Instant>,
+        imu: Option<&mut crate::imu::RuntimeImu>,
+        publish: bool,
+    ) -> Result<()> {
+        let started = Instant::now();
+        let result = (|| {
+            // Render the immutable critical snapshot before borrowing metrics
+            // mutably for the same-thread SDK pump. Its durability fence is
+            // still completed before this write returns.
+            let (batch, critical, health) =
+                self.prepare_write(state, reason, metrics, last_pair)?;
+            let submission = self.writer.enqueue(batch, critical)?;
+            match imu {
+                Some(imu) => {
+                    let raw = &mut self.raw;
+                    self.writer.wait_with_pump(submission, || {
+                        let samples = imu.tick(metrics, publish)?;
+                        if let Some(raw) = raw {
+                            raw.buffer_imu(samples)?;
+                        }
+                        Ok(())
+                    })?;
+                }
+                None => self.writer.wait(submission)?,
+            }
+            self.last_health = Some(health);
+            Ok(())
+        })();
+        self.finish_write(state, started, result)
+    }
+    fn partial_write_with_imu(
+        &mut self,
+        state: &str,
+        reason: &'static str,
+        metrics: &mut Metrics,
+        last_pair: Option<Instant>,
+        imu: Option<&mut crate::imu::RuntimeImu>,
+        publish: bool,
+    ) -> Result<()> {
+        if imu.is_none() {
+            return self.partial_write(state, reason, metrics, last_pair);
         }
-        result
+        if self.config.capture.preserve_images()
+            && self.last_write.as_ref().is_some_and(|(old, at)| {
+                old == state
+                    && at.elapsed() < Duration::from_millis(self.config.settings.heartbeat_ms)
+            })
+        {
+            self.coalesced_partial_status = self.coalesced_partial_status.saturating_add(1);
+            return Ok(());
+        }
+        self.write_with_imu(state, Some(reason), metrics, last_pair, imu, publish)
     }
 }
 fn arm_parent_death(expected_parent: u32) -> Result<()> {
@@ -1076,7 +1151,14 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                     "starting"
                 };
                 if heartbeat.elapsed() >= Duration::from_millis(config.settings.heartbeat_ms) {
-                    status.write(state, None, &metrics, last_pair)?;
+                    status.write_with_imu(
+                        state,
+                        None,
+                        &mut metrics,
+                        last_pair,
+                        imu.as_mut(),
+                        opened.elapsed() >= warmup,
+                    )?;
                     heartbeat = Instant::now();
                 }
                 ensure!(
@@ -1090,7 +1172,14 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                         v.elapsed() > Duration::from_millis(config.settings.idle_timeout_ms)
                     })
                 {
-                    status.write("degraded", Some("STREAM_TIMEOUT"), &metrics, last_pair)?;
+                    status.write_with_imu(
+                        "degraded",
+                        Some("STREAM_TIMEOUT"),
+                        &mut metrics,
+                        last_pair,
+                        imu.as_mut(),
+                        opened.elapsed() >= warmup,
+                    )?;
                     anyhow::bail!("stream timeout");
                 }
                 if let Some(imu) = &mut imu {
@@ -1407,15 +1496,17 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                         consecutive = 0;
                     }
                     if !startup {
-                        status.partial_write(
+                        status.partial_write_with_imu(
                             if config.capture.preserve_images() && had_ready {
                                 "ready"
                             } else {
                                 "degraded"
                             },
                             missing_reason,
-                            &metrics,
+                            &mut metrics,
                             last_pair,
+                            imu.as_mut(),
+                            opened.elapsed() >= warmup,
                         )?;
                     }
                     continue;
@@ -1595,11 +1686,13 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                         }
                         consecutive = 0;
                         if !startup {
-                            status.write(
+                            status.write_with_imu(
                                 "degraded",
                                 Some("FRAME_CONTRACT_REJECTED"),
-                                &metrics,
+                                &mut metrics,
                                 last_pair,
+                                imu.as_mut(),
+                                opened.elapsed() >= warmup,
                             )?;
                         }
                         continue;
@@ -1700,15 +1793,17 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                             consecutive = 0;
                         }
                         if !startup {
-                            status.write(
+                            status.write_with_imu(
                                 if config.capture.preserve_images() && had_ready {
                                     "ready"
                                 } else {
                                     "degraded"
                                 },
                                 Some("PAIR_CONTRACT_REJECTED"),
-                                &metrics,
+                                &mut metrics,
                                 last_pair,
+                                imu.as_mut(),
+                                opened.elapsed() >= warmup,
                             )?;
                         }
                         continue;
@@ -1765,7 +1860,14 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                     had_ready = true;
                 }
                 if state == "ready" && consecutive == config.settings.ready_min_pairs {
-                    status.write(state, None, &metrics, last_pair)?;
+                    status.write_with_imu(
+                        state,
+                        None,
+                        &mut metrics,
+                        last_pair,
+                        imu.as_mut(),
+                        opened.elapsed() >= warmup,
+                    )?;
                     heartbeat = Instant::now();
                 }
             }
@@ -1781,7 +1883,14 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
             if let Some(raw) = &mut status.raw {
                 raw.fail("RAW_SDK_OR_SESSION_ERROR");
             }
-            status.write("degraded", Some("SESSION_FAILED"), &metrics, last_pair)
+            status.write_with_imu(
+                "degraded",
+                Some("SESSION_FAILED"),
+                &mut metrics,
+                last_pair,
+                imu.as_mut(),
+                opened.elapsed() >= warmup,
+            )
         } else {
             Ok(())
         };

@@ -114,8 +114,34 @@ def settings(a):
     return a
 
 
-def check_rows(a, run, rows, sampling=False):
+class CaptureStatusFailure(ValueError):
+    def __init__(self, failures):
+        self.details={'cameras':failures,'scope':'pinned failure status; process exit is additional evidence, never acceptance'}
+        super().__init__(';'.join(reason+':'+failure['camera'] for failure in failures for reason in failure['classifications']))
+
+
+def check_rows(a, run, rows, sampling=False, proc=Path('/proc')):
     rt.require(len(rows['cameras']) == 3, 'THREE_STATUS_ROWS_REQUIRED')
+    failures=[]
+    for c,row in zip(run['cameras'],rows['cameras']):
+        rt.require(row['name']==c['name'],'STATUS_CAMERA_ORDER')
+        s=row.get('capture') or {};raw=s.get('raw_recording') or {};imu=s.get('imu') or {}
+        reasons=[]
+        if raw.get('state')=='failed' or raw.get('whole_pair_queue_overflows',0)!=0:reasons.append('RECORDING_FAILED')
+        if imu.get('error') is not None:reasons.append('IMU_FAILED')
+        if s.get('state') in ('failed','stopped'):reasons.append('CAPTURE_FAILED')
+        if not reasons:continue
+        # Classify only a status belonging to the already pinned worker. A
+        # Docker Running snapshot cannot keep that worker's /proc files alive.
+        evidence=hw.failed_recording_status(a,c,s,proc=proc)
+        failures.append({'camera':c['name'],'classifications':reasons,
+                         'capture_state':s.get('state'),'raw_state':raw.get('state'),
+                         'raw_reason':str(raw['reason'])[:4096] if raw.get('reason') is not None else None,
+                         'whole_pair_queue_overflows':raw.get('whole_pair_queue_overflows'),
+                         'disk_failed_calls':(raw.get('disk_stages') or {}).get('failed_calls'),
+                         'imu_error':str(imu['error'])[:4096] if imu.get('error') is not None else None,
+                         **evidence})
+    if failures:raise CaptureStatusFailure(failures)
     ready = complete = 0
     for c, row in zip(run['cameras'], rows['cameras']):
         rt.require(row['name'] == c['name'] and row['running'], 'CAPTURE_EXITED:' + c['name'])
@@ -123,7 +149,7 @@ def check_rows(a, run, rows, sampling=False):
         if s is None:
             rt.require(not sampling, 'MISSING_CAPTURE_DURING_SAMPLE')
             continue
-        hw.recording_path(a, c, s, False)  # generation, instance, config hash and path binding
+        hw.recording_path(a, c, s, False, proc=proc, require_live=True)  # full live process/config/path binding
         rt.require(s['state'] not in ('failed', 'stopped') and s.get('restart_attempt', 0) == 0, 'CAPTURE_FAILED:' + c['name'])
         raw = s['raw_recording']
         rt.require(raw['state'] != 'failed' and raw['whole_pair_queue_overflows'] == 0, 'RECORDING_FAILED:' + c['name'])
@@ -345,7 +371,8 @@ class Runner:
             self.acceptance()
             self.result.update(ok=True, hardware_acceptance_verified=True)
         except Exception as error:
-            self.save(ok=False, failed_stage=self.stage, error=type(error).__name__+':'+str(error))
+            extra={'capture_failure':error.details} if isinstance(error,CaptureStatusFailure) else {}
+            self.save(ok=False, failed_stage=self.stage, error=type(error).__name__+':'+str(error),**extra)
         finally:
             # A second Ctrl-C must not interrupt identity-checked rollback.
             for sig in (signal.SIGINT, signal.SIGTERM):signal.signal(sig, signal.SIG_IGN)

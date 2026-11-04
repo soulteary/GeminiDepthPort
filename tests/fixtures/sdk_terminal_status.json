@@ -1,0 +1,54 @@
+{
+  "provenance": {
+    "runtime_revision": "a095de0f9f3ac880c87683f82dd018f62ec523bf",
+    "source": "retest/ab/on-01/latest-status.json cameras[0].capture",
+    "source_file_sha256": "8ddf0170f468e60f5b7d3eda23e8711c3c6e94951d7a6d33d44b3638f8eb44fb",
+    "projection": "Selected fields copied unchanged from real Rust status; tests explicitly rebind launch identity and clock only."
+  },
+  "capture": {
+    "version": 1,
+    "kind": "capture-service-status",
+    "state": "degraded",
+    "ready": false,
+    "reason": "SESSION_FAILED",
+    "generation": "f2e760405410434082d0caec820960c7",
+    "config_sha256": "b21d5c9f2216967b8f92e94574b5c29cc08580cbf86a44bf1c13e624d9654c9d",
+    "instance_id": "a0046124184b0b35690b66d2306c32de8a9c4e613a18e0cb926a3d203f527486",
+    "session_id": "91284d35a87da8ed28a9c99914b38416",
+    "pid": 17,
+    "restart_attempt": 0,
+    "updated_unix_ms": 1793769376771,
+    "message_timestamp": "global",
+    "stamp_failures": 0,
+    "publish_failures": 0,
+    "monotonic_rejections": 0,
+    "raw_recording": {
+      "version": 1,
+      "state": "failed",
+      "reason": "RAW_QUEUE_OVERFLOW",
+      "session_id": "91284d35a87da8ed28a9c99914b38416",
+      "job_path": "/recordings/capture-91284d35a87da8ed28a9c99914b38416",
+      "partial_path": "/recordings/capture-91284d35a87da8ed28a9c99914b38416.partial",
+      "queue_capacity": 16,
+      "whole_pair_queue_overflows": 1,
+      "submitted_pairs": 4441,
+      "written_pairs": 4425,
+      "max_pairs": 31680
+    },
+    "imu": {
+      "error": "IMU_QUEUE_OVERFLOW",
+      "ready": false,
+      "shared_ros_context": true,
+      "queue_high_water": 128,
+      "failure_observation": {
+        "clock": "elapsed-from-imu-start",
+        "first_error_elapsed_ns": 150867105643,
+        "first_error_queue_len": 128,
+        "queue_capacity": 128,
+        "queue_len": 128,
+        "since_last_drain_ns": 317283874,
+        "started_unix_ns": 1793769224928436975
+      }
+    }
+  }
+}

@@ -23,6 +23,7 @@ sudo python3 experiments/sdk-2.10.6-diagnostics/pack_results.py \
 - 根 result/summary/manifest、冻结的三机 capture/health 计划及配置摘要。
 - 各组生成的配置、runtime/SDK/bridge/采集与校验器 SHA256 清单、运行身份和镜像 ID；构建日志及已有镜像摘要文件。不会导出镜像本身或查询缺失的镜像信息。
 - on/off 性能 JSONL、CPU/内存/追加 P99/验证耗时汇总、SDK 配对/队列/锁等待采样、观察器摘要及日志。
+- 组目录内独立 writer-tails 观察器的 JSON/JSONL、身份 manifest 及摘要；须先等该观察器结束。可选 perf 二进制仍排除，需另行保留和回传，不能因证据包生成成功便删除它。
 - 独立 SIGKILL 注入、前后状态、恢复 reader/hash 验收与 stderr、失败日志、回滚记录、控制器子进程身份。
 - 原生 recordings 树只定点读取小型 checkpoint/snapshot/manifest/COMPLETE/INTERRUPTED 元数据，不遍历载荷或逐帧文件树。
 

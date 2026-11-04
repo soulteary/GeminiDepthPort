@@ -30,6 +30,8 @@ def fixture(root):
                  'ab/off-01/capture/checkpoint-samples/samples.jsonl', 'crash/b/recovered-audit.jsonl',
                  'crash-injection.json', 'controller/build.log', 'crash/b/crash.json',
                  'ab/on-01/lifecycle/samples.jsonl','ab/on-01/lifecycle/summary.json',
+                 'ab/on-01/writer-tails/samples.jsonl','ab/on-01/writer-tails/summary.json',
+                 'ab/on-01/writer-tails/manifest.json',
                  'crash-lifecycle/samples.jsonl','crash-lifecycle/summary.json'):
         write(source, path, {'evidence': path})
     write(source, 'frozen/recordings/capture.json', {'camera_named_recordings': True})
@@ -38,7 +40,8 @@ def fixture(root):
     write(source, 'crash/b/recordings/capture.partial/snapshot.json', {'snapshot': 'hash'})
     for path in ('crash/b/recordings/capture.partial/payload-0001.bin',
                  'crash/b/recordings/capture.partial/records.jsonl', 'ab/on-01/capture/wire.sqlite3',
-                 'ab/on-01/capture/wire.sqlite3-wal', 'ab/on-01/capture/checkpoint-samples/perf.data'):
+                 'ab/on-01/capture/wire.sqlite3-wal', 'ab/on-01/capture/checkpoint-samples/perf.data',
+                 'ab/on-01/writer-tails/perf.data'):
         p = source/path; p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(b'RAW-MUST-NOT-APPEAR')
     a = argparse.Namespace(root=source, output=root/'evidence.tar.gz', max_file_mib=1, max_total_mib=4, max_files=100)
     shm = root/'shm'; shm.mkdir(); sdk = shm/('gdp-retest-'+'a'*32); sdk.mkdir(mode=0o700)
@@ -66,6 +69,8 @@ class PackTests(unittest.TestCase):
                          'retest/ab/on-01/capture/a/config/runtime.json', 'retest/crash/b/recovered-audit.jsonl',
                          'retest/controller/build.log', 'sdk-recovery/b/sdk-snapshot.json',
                          'retest/ab/on-01/lifecycle/samples.jsonl','retest/ab/on-01/lifecycle/summary.json',
+                         'retest/ab/on-01/writer-tails/samples.jsonl','retest/ab/on-01/writer-tails/summary.json',
+                         'retest/ab/on-01/writer-tails/manifest.json',
                          'retest/crash-lifecycle/samples.jsonl','retest/crash-lifecycle/summary.json',
                          'retest/crash/b/recordings/capture.partial/checkpoint.json'):
                 self.assertIn(name, files)

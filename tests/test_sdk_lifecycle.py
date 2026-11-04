@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -120,6 +121,9 @@ class LifecycleTests(unittest.TestCase):
                 self.assertEqual((root/'capture/recording.partial').read_bytes(),b'synthetic original evidence')
                 if scenario=='lifecycle-fail':
                     self.assertEqual(saved['failed_stage'],'wait-complete')
+                    self.assertIn('CaptureStatusFailure',saved['error'])
+                    self.assertEqual([row['camera'] for row in saved['capture_failure']['cameras']],list('abc'))
+                    self.assertTrue(all(row['imu_error']=='IMU_QUEUE_OVERFLOW' for row in saved['capture_failure']['cameras']))
                     self.assertTrue(any(v['kind']=='controller-status' and any((c.get('capture') or {}).get('imu',{}).get('error')=='IMU_QUEUE_OVERFLOW' for c in v['cameras']) for v in trace))
 
 class SplitCadenceTests(unittest.TestCase):
@@ -196,3 +200,84 @@ class SplitCadenceTests(unittest.TestCase):
             self.assertEqual(summary['event_targets']['a']['initial_history_reports'],2)
             self.assertEqual(summary['event_targets']['a']['epoch'],1)
             self.assertEqual(summary['errors'],['a:CHECKPOINT_HISTORY_BEFORE_FIRST_READ:4','a:CHECKPOINT_HISTORY_BEFORE_FIRST_READ:7'])
+
+
+class ReadErrorScopeTests(unittest.TestCase):
+    def wait(self,condition):
+        deadline=time.monotonic()+3
+        while not condition():
+            self.assertLess(time.monotonic(),deadline);time.sleep(.005)
+
+    def test_read_crossing_active_phase_boundary_remains_a_sampling_error(self):
+        for started,finished in (('sample','cleanup'),('wait-complete','cleanup'),('cleanup','sample')):
+            with self.subTest(started=started,finished=finished),tempfile.TemporaryDirectory() as d:
+                entered=threading.Event();release=threading.Event();phase=[started]
+                class Target(SplitCadenceTests.Target):
+                    def events(self,now):
+                        entered.set()
+                        if not release.wait(2):raise TimeoutError('test release')
+                        raise FileNotFoundError('worker exited during read')
+                target=Target()
+                c=lifecycle.Lifecycle(Path(d)/'trace',{'cameras':[{'name':'a'}]},{'a':128},lambda:phase[0],factory=lambda _:target)
+                try:
+                    self.assertTrue(entered.wait(2));phase[0]=finished;release.set()
+                    self.wait(lambda:c.read_errors['count']>=1)
+                finally:release.set();summary=c.stop()
+                self.assertFalse(summary['sampling_ok'])
+                self.assertGreater(summary['read_errors']['fatal_count'],0)
+                self.assertEqual(summary['read_errors']['by_transition'][started+'->'+finished],1)
+                self.assertGreater(summary['event_targets']['a']['successful_reads'],0)
+                self.assertGreater(summary['event_targets']['a']['failed_reads'],0)
+                rows=[json.loads(v) for v in (Path(d)/'trace/samples.jsonl').read_text().splitlines()]
+                cross=[v for row in rows for v in row.get('cameras',[]) if v.get('read_started_phase')==started and v.get('read_finished_phase')==finished]
+                self.assertEqual(len(cross),1);self.assertTrue(cross[0]['counted_as_sampling_error'])
+
+    def test_cleanup_read_errors_are_counted_without_claiming_all_reads_succeeded(self):
+        with tempfile.TemporaryDirectory() as d:
+            class Target(SplitCadenceTests.Target):
+                def events(self,now):raise FileNotFoundError('stopped target')
+            c=lifecycle.Lifecycle(Path(d)/'trace',{'cameras':[{'name':'a'}]},{'a':128},lambda:'cleanup',factory=lambda _:Target())
+            self.wait(lambda:c.read_errors['count']>=1);summary=c.stop()
+            self.assertTrue(summary['sampling_ok']);self.assertFalse(summary['all_target_reads_succeeded'])
+            self.assertEqual(summary['error_count'],0)
+            self.assertGreater(summary['read_errors']['by_started_phase']['cleanup'],0)
+            self.assertEqual(summary['read_errors']['fatal_count'],0)
+            self.assertIn('not hardware or payload acceptance',summary['sampling_ok_scope'])
+
+    def test_expected_recovery_exit_retains_crash_phase_names(self):
+        with tempfile.TemporaryDirectory() as d:
+            entered=threading.Event();release=threading.Event();phase=['crash-wait']
+            class Target(SplitCadenceTests.Target):
+                def events(self,now):
+                    entered.set()
+                    if not release.wait(2):raise TimeoutError('test release')
+                    raise FileNotFoundError('expected SIGKILL target exit')
+            c=lifecycle.Lifecycle(Path(d)/'trace',{'cameras':[{'name':'a'}]},{'a':128},lambda:phase[0],factory=lambda _:Target())
+            try:
+                self.assertTrue(entered.wait(2));phase[0]='crash-cleanup';release.set()
+                self.wait(lambda:c.read_errors['count']>=1)
+            finally:release.set();summary=c.stop()
+            self.assertTrue(summary['sampling_ok'])
+            self.assertEqual(summary['read_errors']['fatal_count'],0)
+            self.assertEqual(summary['read_errors']['by_transition']['crash-wait->crash-cleanup'],1)
+            self.assertNotIn('other',summary['read_errors']['by_started_phase'])
+            self.assertNotIn('other',summary['read_errors']['by_finished_phase'])
+
+    def test_thread_resource_failure_keeps_extracted_events_and_fails_active_sampling(self):
+        with tempfile.TemporaryDirectory() as d:
+            class Target(SplitCadenceTests.Target):
+                pid=123
+                def sample(self,now):
+                    result,_=super().sample(now)
+                    return result,[{'event_id':1,'stage':'verify_wait'}]
+            with patch.object(lifecycle.probe,'thread_cpu',side_effect=FileNotFoundError('thread tree exited')):
+                c=lifecycle.Lifecycle(Path(d)/'trace',{'cameras':[{'name':'a'}]},{'a':128},lambda:'sample',factory=lambda _:Target())
+                self.wait(lambda:c.samples>=1);summary=c.stop()
+            self.assertFalse(summary['sampling_ok'])
+            self.assertEqual(summary['read_errors']['by_operation'],{'thread-cpu':1})
+            self.assertFalse(summary['all_target_reads_succeeded'])
+            self.assertEqual(summary['resource_samples']['a'],1)
+            rows=[json.loads(v) for v in (Path(d)/'trace/samples.jsonl').read_text().splitlines()]
+            resource=next(row for row in rows if row['kind']=='resource-sample')['cameras'][0]
+            self.assertEqual(resource['checkpoint_events'],[{'event_id':1,'stage':'verify_wait'}])
+            self.assertTrue(resource['thread_cpu_read_error']['counted_as_sampling_error'])

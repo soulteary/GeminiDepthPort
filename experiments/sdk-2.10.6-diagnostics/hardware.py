@@ -316,7 +316,12 @@ def _pin_runtime_identity(path,value):
     return _read_runtime_identity(path)
 
 
-def validate_runtime_identity(a,c,status,binding):
+def _runtime_identity_context(a,c,status,binding):
+    """Validate status ownership before consulting process liveness.
+
+    A previously pinned status remains evidence after its worker exits. This
+    check never learns an identity and never substitutes a new process for it.
+    """
     rt.require(status.get('generation')==binding['run_id'] and status.get('config_sha256')==binding['capture_sha256'],
                'STATUS_BINDING')
     run=rt.read_json(a.run_dir/'run.json')
@@ -340,31 +345,81 @@ def validate_runtime_identity(a,c,status,binding):
     except FileNotFoundError:pinned=None
     if pinned is not None:
         rt.require(all(pinned.get(key)==value for key,value in expected.items()),'RUNTIME_IDENTITY_CHANGED')
+    return info,expected,pinned
+
+
+def _container_anchor(info):
+    return {key:info[key] for key in ('Id','Image')},info['State']['StartedAt']
+
+
+def validate_runtime_identity(a,c,status,binding,proc=Path('/proc'),require_live=False):
+    info,expected,pinned=_runtime_identity_context(a,c,status,binding)
+    run=rt.read_json(a.run_dir/'run.json')
+    path=a.run_dir/c['name']/'runtime-identity.json'
     if info['State']['Running']:
         now=time.time_ns()//10**6;updated=status.get('updated_unix_ms')
         rt.require(type(updated) is int and -100<=now-updated<=10000
                    and status.get('state') not in ('failed','stopped'),'RUNTIME_STATUS_NOT_LIVE')
-        process=observe_runtime_process(info,status,binding,pinned.get('process') if pinned else None)
+        process=observe_runtime_process(info,status,binding,pinned.get('process') if pinned else None,proc=proc)
         after=own_container(run,c)
-        rt.require(after['State']['Running'] and anchor(after)==anchor(info),'RUNTIME_CONTAINER_CHANGED')
+        rt.require(after['State']['Running'] and _container_anchor(after)==_container_anchor(info),'RUNTIME_CONTAINER_CHANGED')
         if pinned is None:
             pinned=_pin_runtime_identity(path,dict(expected,process=process,pinned_unix_ns=time.time_ns()))
         rt.require(all(pinned.get(key)==value for key,value in expected.items()) and pinned.get('process')==process,
                    'RUNTIME_IDENTITY_CHANGED')
     else:
+        rt.require(not require_live,'RUNTIME_CONTAINER_NOT_LIVE')
         rt.require(pinned is not None,'RUNTIME_IDENTITY_NOT_PINNED')
     return pinned
 
 
-def recording_path(a,c,status,recovered):
-    binding=rt.read_json(a.run_dir/c['name']/'config/experiment.json')
-    rt.require(status['generation']==binding['run_id']
-               and status['config_sha256']==binding['capture_sha256'],'STATUS_BINDING')
-    validate_runtime_identity(a,c,status,binding)
+def _recording_path(a,c,status,recovered):
     raw=status['raw_recording'];path=Path(raw['partial_path' if recovered else 'job_path'])
     rt.require(path.parent==Path('/recordings') and path.name.startswith('capture-')
                and path.name.endswith('.partial')==recovered,'RECORDING_STATUS_PATH')
     return a.run_dir/c['name']/'recordings'/path.name
+
+
+def failed_recording_status(a,c,status,proc=Path('/proc')):
+    """Bind a failure to an existing pin, retaining exit as extra evidence.
+
+    This API cannot establish a first pin or certify a healthy recording. PID
+    reuse, process substitution and container replacement still fail closed.
+    Only a missing/exited process may accompany the already bound failure.
+    """
+    raw=status.get('raw_recording') or {};imu=status.get('imu') or {}
+    rt.require(raw.get('state')=='failed' or raw.get('whole_pair_queue_overflows',0)!=0
+               or imu.get('error') is not None or status.get('state') in ('failed','stopped'),
+               'TERMINAL_FAILURE_STATUS_REQUIRED')
+    binding=rt.read_json(a.run_dir/c['name']/'config/experiment.json')
+    info,_,pinned=_runtime_identity_context(a,c,status,binding)
+    rt.require(pinned is not None,'RUNTIME_IDENTITY_NOT_PINNED')
+    path=_recording_path(a,c,status,False)
+    diagnostic={'container_running':info['State']['Running'],'process_identity_verified':False}
+    if info['State']['Running']:
+        try:
+            process=observe_runtime_process(info,status,binding,pinned['process'],proc=proc)
+            rt.require(pinned['process']==process,'RUNTIME_IDENTITY_CHANGED')
+            diagnostic['process_identity_verified']=True
+        except (FileNotFoundError,ProcessLookupError) as error:
+            diagnostic['process_error']=type(error).__name__+':'+str(error)[:4096]
+        except ValueError as error:
+            if str(error)!='RUNTIME_PROCESS_EXITED':raise
+            diagnostic['process_error']=str(error)
+        run=rt.read_json(a.run_dir/'run.json')
+        after=own_container(run,c)
+        rt.require(_container_anchor(after)==_container_anchor(info),'RUNTIME_CONTAINER_CHANGED')
+        diagnostic['container_running_after']=after['State']['Running']
+    else:diagnostic['process_error']='RUNTIME_CONTAINER_EXITED'
+    return {'recording_path':str(path),'status_identity_pinned':True,'liveness':diagnostic}
+
+
+def recording_path(a,c,status,recovered,proc=Path('/proc'),require_live=False):
+    binding=rt.read_json(a.run_dir/c['name']/'config/experiment.json')
+    rt.require(status['generation']==binding['run_id']
+               and status['config_sha256']==binding['capture_sha256'],'STATUS_BINDING')
+    validate_runtime_identity(a,c,status,binding,proc=proc,require_live=require_live)
+    return _recording_path(a,c,status,recovered)
 
 
 def audit(a,run):
