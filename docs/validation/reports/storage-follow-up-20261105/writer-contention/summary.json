@@ -1,0 +1,217 @@
+{
+  "completed_groups": 6,
+  "error": null,
+  "groups": [
+    {
+      "group_rss_observed_runs": 3,
+      "median_group_peak_rss_bytes": 4829184,
+      "per_process_rows": [
+        {
+          "append_max_ns": 21988341,
+          "append_p99_ns": 21988341,
+          "cpu_cores": 0.3090477035940288,
+          "cpu_seconds": 0.353301147,
+          "extra_two_readers_ns": 117306609,
+          "overflow": 0,
+          "peak_rss_kib": 5996,
+          "producer_late_max_ns": 1468935,
+          "queue_peak": 1,
+          "queue_wait_p99_ns": 676753,
+          "verification_ns": "78835950"
+        },
+        {
+          "append_max_ns": 12020883,
+          "append_p99_ns": 12020883,
+          "cpu_cores": 0.3440963844979322,
+          "cpu_seconds": 0.437983168,
+          "extra_two_readers_ns": 211076162,
+          "overflow": 0,
+          "peak_rss_kib": 5992,
+          "producer_late_max_ns": 2952091,
+          "queue_peak": 1,
+          "queue_wait_p99_ns": 1660590,
+          "verification_ns": "114300679"
+        },
+        {
+          "append_max_ns": 5125104,
+          "append_p99_ns": 5125104,
+          "cpu_cores": 0.3095086949727239,
+          "cpu_seconds": 0.357886792,
+          "extra_two_readers_ns": 134447929,
+          "overflow": 0,
+          "peak_rss_kib": 5984,
+          "producer_late_max_ns": 1239450,
+          "queue_peak": 1,
+          "queue_wait_p99_ns": 1758674,
+          "verification_ns": "96052854"
+        }
+      ],
+      "resource_diagnostic_complete": true,
+      "runs": 3,
+      "variant": "after",
+      "writer_count": 1
+    },
+    {
+      "group_rss_observed_runs": 3,
+      "median_group_peak_rss_bytes": 14512128,
+      "per_process_rows": [
+        {
+          "append_max_ns": 8621577,
+          "append_p99_ns": 8621577,
+          "cpu_cores": 0.332331927168197,
+          "cpu_seconds": 0.396733536,
+          "extra_two_readers_ns": 158580987,
+          "overflow": 0,
+          "peak_rss_kib": 5976,
+          "producer_late_max_ns": 4130420,
+          "queue_peak": 1,
+          "queue_wait_p99_ns": 6235400,
+          "verification_ns": "105016558"
+        },
+        {
+          "append_max_ns": 15181938,
+          "append_p99_ns": 15181938,
+          "cpu_cores": 0.3359791853706699,
+          "cpu_seconds": 0.404428842,
+          "extra_two_readers_ns": 166529353,
+          "overflow": 0,
+          "peak_rss_kib": 5996,
+          "producer_late_max_ns": 16740755,
+          "queue_peak": 1,
+          "queue_wait_p99_ns": 5423314,
+          "verification_ns": "95772271"
+        },
+        {
+          "append_max_ns": 20719627,
+          "append_p99_ns": 20719627,
+          "cpu_cores": 0.3267891450088117,
+          "cpu_seconds": 0.389080668,
+          "extra_two_readers_ns": 156254519,
+          "overflow": 0,
+          "peak_rss_kib": 5980,
+          "producer_late_max_ns": 7591717,
+          "queue_peak": 1,
+          "queue_wait_p99_ns": 7206863,
+          "verification_ns": "103731138"
+        },
+        {
+          "append_max_ns": 10269292,
+          "append_p99_ns": 10269292,
+          "cpu_cores": 0.33668265210399095,
+          "cpu_seconds": 0.447850657,
+          "extra_two_readers_ns": 255504762,
+          "overflow": 0,
+          "peak_rss_kib": 5980,
+          "producer_late_max_ns": 3221824,
+          "queue_peak": 1,
+          "queue_wait_p99_ns": 2363010,
+          "verification_ns": "104625558"
+        },
+        {
+          "append_max_ns": 9566290,
+          "append_p99_ns": 9566290,
+          "cpu_cores": 0.32666329208918893,
+          "cpu_seconds": 0.438850368,
+          "extra_two_readers_ns": 269102693,
+          "overflow": 0,
+          "peak_rss_kib": 5992,
+          "producer_late_max_ns": 5349816,
+          "queue_peak": 1,
+          "queue_wait_p99_ns": 901628,
+          "verification_ns": "109685995"
+        },
+        {
+          "append_max_ns": 8895745,
+          "append_p99_ns": 8895745,
+          "cpu_cores": 0.33273696349948256,
+          "cpu_seconds": 0.443162515,
+          "extra_two_readers_ns": 248611400,
+          "overflow": 0,
+          "peak_rss_kib": 5988,
+          "producer_late_max_ns": 2458596,
+          "queue_peak": 1,
+          "queue_wait_p99_ns": 5324689,
+          "verification_ns": "107354442"
+        },
+        {
+          "append_max_ns": 16228817,
+          "append_p99_ns": 16228817,
+          "cpu_cores": 0.31876174205900876,
+          "cpu_seconds": 0.378466925,
+          "extra_two_readers_ns": 149760409,
+          "overflow": 0,
+          "peak_rss_kib": 5992,
+          "producer_late_max_ns": 2313663,
+          "queue_peak": 1,
+          "queue_wait_p99_ns": 1827300,
+          "verification_ns": "77153901"
+        },
+        {
+          "append_max_ns": 16736069,
+          "append_p99_ns": 16736069,
+          "cpu_cores": 0.3184761998748627,
+          "cpu_seconds": 0.375538744,
+          "extra_two_readers_ns": 144983014,
+          "overflow": 0,
+          "peak_rss_kib": 5992,
+          "producer_late_max_ns": 2296745,
+          "queue_peak": 1,
+          "queue_wait_p99_ns": 2440635,
+          "verification_ns": "76997027"
+        },
+        {
+          "append_max_ns": 20613502,
+          "append_p99_ns": 20613502,
+          "cpu_cores": 0.3244293953753769,
+          "cpu_seconds": 0.384463585,
+          "extra_two_readers_ns": 147112399,
+          "overflow": 0,
+          "peak_rss_kib": 5988,
+          "producer_late_max_ns": 2321163,
+          "queue_peak": 1,
+          "queue_wait_p99_ns": 448460,
+          "verification_ns": "72893551"
+        }
+      ],
+      "resource_diagnostic_complete": true,
+      "runs": 3,
+      "variant": "after",
+      "writer_count": 3
+    }
+  ],
+  "hardware_acceptance_verified": false,
+  "limits": "Synthetic owned-buffer FIFO, no SDK/USB/ROS or status-persistence background load. Single/three writer groups share the output filesystem; observer-selected camera count is irrelevant. Process CPU includes synthetic generation/hash and extra readers; VmHWM includes the whole child. Simultaneous group RSS is sampled, not a sum of individual peaks. /proc PID IO includes that process and its threads but page-cache/writeback attribution is incomplete; diskstats are whole-device. No cache dropping, filesystem tuning, queue increase or durability weakening. SIGKILL after a durable checkpoint tests process-crash recovery, not physical power loss. Alternation/repeats improve reproducibility, not statistical significance or proof of unique cause. Overlay/tmpfs/container results do not establish MiniPC/ext4 behavior. Before/after writer-only differences cannot establish capture-service status-path performance.",
+  "observed_aggregate_overrun_bytes": 0,
+  "ok": true,
+  "output_bytes_before_summary_and_sha256": 443806929,
+  "planned_groups": 6,
+  "recovery": {
+    "after": {
+      "after_explicit_durable_checkpoint": true,
+      "limits": "independent process-crash test; not an arbitrary kill point or physical power cut",
+      "ok": true,
+      "readback": {
+        "expected_imu_samples": 426,
+        "ordinary_reader_rejected": true,
+        "pairs_per_pass": [
+          32,
+          32
+        ],
+        "passes": 2,
+        "per_frame_color_depth_evidence_hashes": true,
+        "wall_ns": 190209617
+      },
+      "signal": "SIGKILL",
+      "source_unchanged_sha256": {
+        "checkpoint.json": "35e7645242bb74ceccbed0a81080af993c0cba6b77266770a21365689cab507b",
+        "payload-00000000000000000001.bin": "702c3c2d166c42c485b1e198edfacc45ef3fe535d6a380d0302f80524d2fe1f0",
+        "payload-00000000000000000002.bin": "98e3b295195f73a2db410fde31b69bf483a589caad2f45b81cbd241d5b072dfb",
+        "payload-00000000000000000003.bin": "fe67215e701e687779ba236da1088e2e50102bc433980b961372674388a3bbd8",
+        "payload-00000000000000000004.bin": "1cf2096bf4c20c6e0f6fd3f019e4b560350ccb9f6865dc91246ae5688ae9a0b3",
+        "payload-00000000000000000005.bin": "8fe5e270362b1001d0509c4b260021407a01640cfb81427a7732038bc4402d51",
+        "records.jsonl": "fb913431a94b4acde61af518a50ef2995df78e727329e4af5d3b1fec2817269c",
+        "snapshot.json": "c84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610"
+      }
+    }
+  }
+}

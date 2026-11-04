@@ -1,0 +1,305 @@
+{
+  "date": "2026-11-05",
+  "kind": "writer-observer-point-evidence-overhead",
+  "baseline_revision": "8c279f937db01397441c318d7fb9d116618a51e5",
+  "real_procfs_only": true,
+  "real_cameras": false,
+  "sdk_usb_ros_or_recording_exercised": false,
+  "host": "isolated Linux arm64 local container; Docker init; read-only source mounts; temporary own workers only; shared host had parallel build activity",
+  "method": {
+    "run_order": [
+      "before-2",
+      "after-1",
+      "after-2",
+      "before-3"
+    ],
+    "workers": 3,
+    "threads_per_worker": 4,
+    "worker_observed_lifetime_seconds": 4,
+    "interval_seconds": 0.2,
+    "perf_requested": false,
+    "attachment": "synthetic Docker inspect injected; actual supervisor/worker command line, environment token, executable, PID namespace and start_ticks checks executed; no pin checks disabled",
+    "start_control": "explicit worker ready marker and common start barrier; each attempt has a fresh output directory",
+    "status_specimen_bytes": [
+      50167,
+      49987,
+      49978
+    ],
+    "cost_scope": "observer process CPU and peak RSS, including status/proc reads and output; excludes fixture child CPU; short-run medians from two runs per version, not a stable performance claim",
+    "row_projection": "only rows with all 3 workers observed and at least 4 threads each; overrun metadata and terminal rows excluded; no assumption that stacks remain permission-denied on real hardware"
+  },
+  "primary_sources": {
+    "elf_machine": "Linux UAPI /usr/include/linux/elf-em.h in local image: EM_X86_64=62, EM_AARCH64=183",
+    "arm64_sync_syscalls": "/usr/include/aarch64-linux-gnu/asm/unistd.h includes asm-generic/unistd.h; fsync=82, fdatasync=83",
+    "x86_64_sync_syscalls": "https://github.com/torvalds/linux/blob/v6.6/arch/x86/entry/syscalls/syscall_64.tbl : fsync=74, fdatasync=75"
+  },
+  "harness_sha256": "fa751109b93bc468227faa944b72e5a0b845581e87fdb7e8b11f973d633bdb3f",
+  "status_specimens_sha256": "3083d9be83d394808680313d6b1ebef6a5e4b3a8e786e95e5647e3b002c9fa36",
+  "temporary_evidence_directory": "/var/folders/g8/0v6103r55c39jfs_ngl4fgbh0000gn/T/gdp-observer-point-evidence-20261105-mgs47gsz",
+  "runs": [
+    {
+      "variant": "before-2",
+      "mode": "before",
+      "elapsed_seconds": 4.703878434,
+      "observer_cpu_ns": 464907582,
+      "observer_cpu_cores": 0.09883494833531661,
+      "observer_cpu_ms_per_resource_sample": 21.132162818181815,
+      "peak_rss_kib": 21728,
+      "resource_samples": 22,
+      "raw_jsonl_records": 22,
+      "all_three_workers_with_four_threads_rows": 19,
+      "trace_bytes": 210111,
+      "mean_full_thread_resource_row_bytes": 10568.21052631579,
+      "projected_full_thread_one_hour_trace_bytes": 190227789,
+      "maximum_sample_gap_ns": 468796766,
+      "sampling_gap_count": 1,
+      "sampling_overruns": 1,
+      "ok": true,
+      "workflow_completed": true,
+      "diagnostic_data_complete": false,
+      "diagnostic_gaps": {},
+      "unavailable_thread_fields": {
+        "kernel_stack:permission-denied": 231
+      },
+      "point_evidence_counts": {
+        "tid_mapping:legacy-not-collected": 231,
+        "sync_file:legacy-not-collected": 231
+      },
+      "capabilities": {
+        "scope": "legacy observer has no syscall/fd capabilities field"
+      },
+      "tool_sha256": "e1bdcbf21f6a43ce7b08e5095c2a989562bcbd905cecea6124831937989449ef",
+      "tool_sha256_after": "e1bdcbf21f6a43ce7b08e5095c2a989562bcbd905cecea6124831937989449ef",
+      "input_hashes_unchanged": true,
+      "errors": [],
+      "output_sha256": {
+        "samples.jsonl": "fe0bba3d0cc110986505ab5d44672383fdf39ea795f4e251d480caee62e2bf2e",
+        "summary.json": "3e56d9af3e56014dc155bddd7b55c81edccbb72024261395ceb4e5397d2eed63"
+      }
+    },
+    {
+      "variant": "after-1",
+      "mode": "after",
+      "elapsed_seconds": 4.164679085,
+      "observer_cpu_ns": 502107690,
+      "observer_cpu_cores": 0.12056335668418014,
+      "observer_cpu_ms_per_resource_sample": 23.90989,
+      "peak_rss_kib": 21788,
+      "resource_samples": 21,
+      "raw_jsonl_records": 21,
+      "all_three_workers_with_four_threads_rows": 20,
+      "trace_bytes": 485151,
+      "mean_full_thread_resource_row_bytes": 24148.95,
+      "projected_full_thread_one_hour_trace_bytes": 434681100,
+      "maximum_sample_gap_ns": 293675711,
+      "sampling_gap_count": 0,
+      "sampling_overruns": 0,
+      "ok": true,
+      "workflow_completed": true,
+      "diagnostic_data_complete": false,
+      "diagnostic_gaps": {},
+      "unavailable_thread_fields": {
+        "kernel_stack:permission-denied": 240
+      },
+      "point_evidence_counts": {
+        "tid_mapping:verified": 240,
+        "sync_file:not-sync-syscall-observed": 240
+      },
+      "capabilities": {
+        "sampled_syscall_only": true,
+        "worker_abis": {
+          "a": {
+            "state": "verified",
+            "name": "linux-aarch64",
+            "elf_machine": 183,
+            "elf_class": 64,
+            "byte_order": "little"
+          },
+          "b": {
+            "state": "verified",
+            "name": "linux-aarch64",
+            "elf_machine": 183,
+            "elf_class": 64,
+            "byte_order": "little"
+          },
+          "c": {
+            "state": "verified",
+            "name": "linux-aarch64",
+            "elf_machine": 183,
+            "elf_class": 64,
+            "byte_order": "little"
+          }
+        },
+        "sync_file_identity": "consistent point samples of ABI-verified fsync/fdatasync only; matching samples do not establish one invocation or continuous duration",
+        "block_request_timeline": {
+          "state": "not-collected",
+          "available": false,
+          "scope": "diskstats interval means are whole-device aggregates, not device latency distributions"
+        },
+        "thread_scope": "non-atomic point reads; not a syscall start/end, continuous blocked duration, or block-request timeline"
+      },
+      "tool_sha256": "cb8b04968d5c596bbd195fba4a930703960f78df9d3cf91f5c3bcbed33c51faf",
+      "tool_sha256_after": "cb8b04968d5c596bbd195fba4a930703960f78df9d3cf91f5c3bcbed33c51faf",
+      "input_hashes_unchanged": true,
+      "errors": [],
+      "output_sha256": {
+        "samples.jsonl": "d40af73e35ee23bf4ce6a33b5e968fab26fef0ec9ae39706683bfad47d2dfad8",
+        "summary.json": "3a7a96c568e693788e70140561c14fc97ed3625de1ad6cb3e2c22723a1d2d9d7"
+      }
+    },
+    {
+      "variant": "after-2",
+      "mode": "after",
+      "elapsed_seconds": 4.944579259,
+      "observer_cpu_ns": 572926854,
+      "observer_cpu_cores": 0.11586968758912557,
+      "observer_cpu_ms_per_resource_sample": 23.87195225,
+      "peak_rss_kib": 21792,
+      "resource_samples": 24,
+      "raw_jsonl_records": 26,
+      "all_three_workers_with_four_threads_rows": 20,
+      "trace_bytes": 509869,
+      "mean_full_thread_resource_row_bytes": 24123.15,
+      "projected_full_thread_one_hour_trace_bytes": 434216700,
+      "maximum_sample_gap_ns": 374434877,
+      "sampling_gap_count": 2,
+      "sampling_overruns": 2,
+      "ok": false,
+      "workflow_completed": true,
+      "diagnostic_data_complete": false,
+      "diagnostic_gaps": {
+        "sampling-overrun": 2,
+        "sampling-gap-over-threshold": 2
+      },
+      "unavailable_thread_fields": {
+        "kernel_stack:permission-denied": 246,
+        "sync_file_observation:unknown:running-or-no-current-syscall": 6
+      },
+      "point_evidence_counts": {
+        "tid_mapping:verified": 246,
+        "sync_file:not-sync-syscall-observed": 240,
+        "sync_file:unknown": 6
+      },
+      "capabilities": {
+        "sampled_syscall_only": true,
+        "worker_abis": {
+          "a": {
+            "state": "verified",
+            "name": "linux-aarch64",
+            "elf_machine": 183,
+            "elf_class": 64,
+            "byte_order": "little"
+          },
+          "b": {
+            "state": "verified",
+            "name": "linux-aarch64",
+            "elf_machine": 183,
+            "elf_class": 64,
+            "byte_order": "little"
+          },
+          "c": {
+            "state": "verified",
+            "name": "linux-aarch64",
+            "elf_machine": 183,
+            "elf_class": 64,
+            "byte_order": "little"
+          }
+        },
+        "sync_file_identity": "consistent point samples of ABI-verified fsync/fdatasync only; matching samples do not establish one invocation or continuous duration",
+        "block_request_timeline": {
+          "state": "not-collected",
+          "available": false,
+          "scope": "diskstats interval means are whole-device aggregates, not device latency distributions"
+        },
+        "thread_scope": "non-atomic point reads; not a syscall start/end, continuous blocked duration, or block-request timeline"
+      },
+      "tool_sha256": "cb8b04968d5c596bbd195fba4a930703960f78df9d3cf91f5c3bcbed33c51faf",
+      "tool_sha256_after": "cb8b04968d5c596bbd195fba4a930703960f78df9d3cf91f5c3bcbed33c51faf",
+      "input_hashes_unchanged": true,
+      "errors": [],
+      "output_sha256": {
+        "samples.jsonl": "e5f89223bda3e8c4f51aa199fd14ffadf393018e8e1c2cd0ecb7399c88789f4f",
+        "summary.json": "bfa348fc501179b9a4f72496a17aa412780df814db718558c35da1dd04b1a449"
+      }
+    },
+    {
+      "variant": "before-3",
+      "mode": "before",
+      "elapsed_seconds": 4.174787503,
+      "observer_cpu_ns": 451689823,
+      "observer_cpu_cores": 0.1081946859990876,
+      "observer_cpu_ms_per_resource_sample": 21.50903919047619,
+      "peak_rss_kib": 21472,
+      "resource_samples": 21,
+      "raw_jsonl_records": 21,
+      "all_three_workers_with_four_threads_rows": 20,
+      "trace_bytes": 212149,
+      "mean_full_thread_resource_row_bytes": 10546.8,
+      "projected_full_thread_one_hour_trace_bytes": 189842400,
+      "maximum_sample_gap_ns": 246739893,
+      "sampling_gap_count": 0,
+      "sampling_overruns": 0,
+      "ok": true,
+      "workflow_completed": true,
+      "diagnostic_data_complete": false,
+      "diagnostic_gaps": {},
+      "unavailable_thread_fields": {
+        "kernel_stack:permission-denied": 240
+      },
+      "point_evidence_counts": {
+        "tid_mapping:legacy-not-collected": 240,
+        "sync_file:legacy-not-collected": 240
+      },
+      "capabilities": {
+        "scope": "legacy observer has no syscall/fd capabilities field"
+      },
+      "tool_sha256": "e1bdcbf21f6a43ce7b08e5095c2a989562bcbd905cecea6124831937989449ef",
+      "tool_sha256_after": "e1bdcbf21f6a43ce7b08e5095c2a989562bcbd905cecea6124831937989449ef",
+      "input_hashes_unchanged": true,
+      "errors": [],
+      "output_sha256": {
+        "samples.jsonl": "73a329aabddebe55729b454a7b06a5ea7e6bee28bcc4335acb46287c4b81e65f",
+        "summary.json": "8b97303d629985587f362379dcf8aa1e1353a0a04aae1e856990d8830ce91280"
+      }
+    }
+  ],
+  "median": {
+    "before": {
+      "observer_cpu_cores": 0.10351481716720211,
+      "observer_cpu_ms_per_resource_sample": 21.320601004329003,
+      "peak_rss_kib": 21600.0,
+      "mean_full_thread_resource_row_bytes": 10557.505263157895,
+      "projected_full_thread_one_hour_trace_bytes": 190035094.5
+    },
+    "after": {
+      "observer_cpu_cores": 0.11821652213665285,
+      "observer_cpu_ms_per_resource_sample": 23.890921125,
+      "peak_rss_kib": 21790.0,
+      "mean_full_thread_resource_row_bytes": 24136.050000000003,
+      "projected_full_thread_one_hour_trace_bytes": 434448900.0
+    }
+  },
+  "median_change_percent": {
+    "observer_cpu_cores": 14.202512617786734,
+    "observer_cpu_ms_per_resource_sample": 12.055570666835846,
+    "peak_rss_kib": 0.8796296296296191,
+    "mean_full_thread_resource_row_bytes": 128.61508849279585,
+    "projected_full_thread_one_hour_trace_bytes": 128.61508877772047
+  },
+  "observations": [
+    "All four workflows observed their selected workers exit and retained stable input/source hashes; none certifies camera capture or payload integrity.",
+    "The first baseline run had one >300ms sampling gap and one overrun but legacy ok=true. The second enhanced run correctly rejected ok after >300ms gaps and two overruns, while workflow_completed remained true.",
+    "Kernel stacks were permission-denied in this container and remained explicit missing diagnostics; the actual fsync/fdatasync file identity positive/race cases are covered by temporary-procfs regression fixtures, not claimed from these sleeping workers.",
+    "The enhanced output is larger. For a planned full hour at 5Hz with 12 selected threads use at least 512MiB as a starting budget; available/changing kernel stacks or additional threads can still hit the hard output limit and reject completion.",
+    "The default 256MiB hard cap and fresh-directory protections were not changed. Block-request timeline was not collected; syscall records are consistent point observations only."
+  ],
+  "failed_harness_preparations": {
+    "scope": "not performance samples; retained under temporary directories, never counted as successful runs",
+    "reasons": [
+      "earlier copy lacked a worker ready/common start barrier",
+      "direct Docker PID1 entry point violated existing init>1 pin condition; fixed by Docker --init"
+    ],
+    "pin_validation_weakened": false
+  },
+  "preserved_legacy_report": "docs/validation/reports/writer-tail-observer-20261104.json"
+}

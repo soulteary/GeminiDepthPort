@@ -10,7 +10,7 @@ use std::{
     os::{
         fd::AsRawFd,
         unix::{
-            fs::{OpenOptionsExt, PermissionsExt},
+            fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
             process::CommandExt,
         },
     },
@@ -318,20 +318,54 @@ fn unix_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |v| v.as_millis().min(u64::MAX as u128) as u64)
 }
-fn atomic_status(path: &Path, value: &Value) -> Result<()> {
-    let parent = path.parent().context("status parent required")?;
+fn prepare_status_parent(parent: &Path) -> Result<()> {
+    let mut missing = Vec::new();
+    let mut ancestor = parent;
+    loop {
+        match fs::symlink_metadata(ancestor) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                missing.push(ancestor.to_path_buf());
+                ancestor = ancestor.parent().context("status ancestor required")?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
     fs::create_dir_all(parent)?;
+    let metadata = fs::symlink_metadata(parent)?;
     ensure!(
-        !fs::symlink_metadata(parent)?.file_type().is_symlink(),
-        "status directory cannot be symlink"
+        metadata.is_dir() && metadata.uid() == unsafe { libc::geteuid() },
+        "status directory must be an owned directory, not a symlink"
     );
     fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    // A durable leaf alone does not persist its name in a newly created parent.
+    // Sync the missing chain bottom-up and then the closest existing ancestor.
+    // Existing ancestor aliases (e.g. macOS /tmp) remain supported.
+    for directory in &missing {
+        let metadata = fs::symlink_metadata(directory)?;
+        ensure!(
+            metadata.is_dir() && metadata.uid() == unsafe { libc::geteuid() },
+            "new status directory ownership changed"
+        );
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
+        File::open(directory)?.sync_all()?;
+    }
+    if !missing.is_empty() {
+        File::open(ancestor)?.sync_all()?;
+    }
+    Ok(())
+}
+// The caller may group several same-directory replacements behind one directory
+// barrier. A dependent status file must wait for that barrier before publication.
+fn atomic_status_file(path: &Path, value: &Value) -> Result<fs::Metadata> {
+    let parent = path.parent().context("status parent required")?;
+    prepare_status_parent(parent)?;
     let temporary = parent.join(format!(
         ".status-{}-{}.tmp",
         std::process::id(),
         random_session()?
     ));
-    let result = (|| -> Result<()> {
+    let result = (|| -> Result<fs::Metadata> {
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -341,11 +375,15 @@ fn atomic_status(path: &Path, value: &Value) -> Result<()> {
         file.write_all(b"\n")?;
         file.sync_all()?;
         fs::rename(&temporary, path)?;
-        File::open(parent)?.sync_all()?;
-        Ok(())
+        Ok(file.metadata()?)
     })();
     let _ = fs::remove_file(temporary);
     result
+}
+fn atomic_status(path: &Path, value: &Value) -> Result<()> {
+    atomic_status_file(path, value)?;
+    File::open(path.parent().context("status parent required")?)?.sync_all()?;
+    Ok(())
 }
 /// Runtime adapter owns observed receipts separately from snapshot-bound checks.
 /// Before an actual SDK snapshot exists, it never invents calibration/context IDs.
@@ -385,17 +423,24 @@ impl ServiceQuality {
             vec!["color".into(), "depth".into()],
         )
         .map_err(anyhow::Error::msg)?;
+        let root = status.parent().context("status parent")?;
+        let quality = root.join("quality");
+        let directory = quality.join(session.as_str());
+        prepare_status_parent(&directory)?;
+        prepare_status_parent(&quality)?;
+        prepare_status_parent(root)?;
+        // Bootstrap even pre-existing entries before opening SDK callbacks.
+        // These one-time barriers never enter the steady heartbeat path.
+        for path in [directory.as_path(), quality.as_path(), root] {
+            File::open(path)?.sync_all()?;
+        }
         Ok(Self {
             engine,
             policy,
             session: session.clone(),
             instance: instance.into(),
             origin,
-            directory: status
-                .parent()
-                .context("status parent")?
-                .join("quality")
-                .join(session.as_str()),
+            directory,
             snapshot: None,
             receipts: std::collections::BTreeMap::from([("color".into(), 0), ("depth".into(), 0)]),
             unbound: std::collections::BTreeMap::from([("color".into(), 0), ("depth".into(), 0)]),

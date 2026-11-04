@@ -1,16 +1,162 @@
 //! One in-flight batch and one replaceable pending snapshot; critical writes
 //! wait for their own durable completion. No SDK handle crosses this boundary.
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
-    path::PathBuf,
+    fs,
+    os::unix::fs::MetadataExt,
+    path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
 pub(super) type Batch = Vec<(PathBuf, Value)>;
+#[derive(PartialEq, Eq)]
+struct FileIdentity {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+    uid: u32,
+    mode: u32,
+    links: u64,
+}
+impl FileIdentity {
+    fn new(metadata: &fs::Metadata) -> Self {
+        Self {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+            len: metadata.len(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+            uid: metadata.uid(),
+            mode: metadata.mode(),
+            links: metadata.nlink(),
+        }
+    }
+}
+#[derive(PartialEq, Eq)]
+struct EventKey {
+    path: PathBuf,
+    session: String,
+    instance: String,
+    digest: Vec<u8>,
+}
+impl EventKey {
+    fn from_batch(batch: &Batch) -> Result<Option<Self>> {
+        let Some((_, status)) = batch.last() else {
+            return Ok(None);
+        };
+        let fields = (
+            status["quality"]["events_path"].as_str(),
+            status["session_id"].as_str(),
+            status["instance_id"].as_str(),
+        );
+        let (Some(path), Some(session), Some(instance)) = fields else {
+            return Ok(None);
+        };
+        let path = PathBuf::from(path);
+        let Some((_, events)) = batch.iter().find(|(p, _)| *p == path) else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            path,
+            session: session.into(),
+            instance: instance.into(),
+            digest: ring::digest::digest(&ring::digest::SHA256, &serde_json::to_vec(events)?)
+                .as_ref()
+                .to_vec(),
+        }))
+    }
+}
+struct EventCache {
+    key: EventKey,
+    file: FileIdentity,
+    directory: (u64, u64),
+}
+impl EventCache {
+    fn identity(path: &Path) -> Result<Option<(FileIdentity, (u64, u64))>> {
+        let parent = path.parent().context("events parent required")?;
+        let directory = fs::symlink_metadata(parent)?;
+        ensure!(
+            directory.is_dir() && directory.uid() == unsafe { libc::geteuid() },
+            "events directory must be owned and not a symlink"
+        );
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        Ok((metadata.is_file()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o077 == 0
+            && metadata.nlink() == 1)
+            .then(|| {
+                (
+                    FileIdentity::new(&metadata),
+                    (directory.dev(), directory.ino()),
+                )
+            }))
+    }
+    fn matches(&self, key: &EventKey) -> Result<bool> {
+        Ok(self.key == *key
+            && Self::identity(&key.path)?
+                .is_some_and(|(file, directory)| file == self.file && directory == self.directory))
+    }
+}
+#[derive(Default)]
+struct DurableWriter {
+    // One currently owned events file, not a map that grows across sessions.
+    events: Option<EventCache>,
+}
+impl DurableWriter {
+    fn write(&mut self, batch: Batch) -> Result<()> {
+        let event = EventKey::from_batch(&batch)?;
+        let mut written_event = None;
+        let mut directory: Option<PathBuf> = None;
+        for (path, value) in batch {
+            let parent = path.parent().context("status parent required")?;
+            if directory.as_deref() != Some(parent) {
+                if let Some(previous) = directory.take() {
+                    fs::File::open(previous)?.sync_all()?;
+                }
+                directory = Some(parent.into());
+            }
+            let is_event = event.as_ref().is_some_and(|event| event.path == path);
+            let unchanged = match (&event, &self.events) {
+                (Some(key), Some(cache)) if is_event => cache.matches(key)?,
+                _ => false,
+            };
+            if unchanged {
+                continue;
+            }
+            let metadata = super::atomic_status_file(&path, &value)?;
+            if is_event {
+                written_event = Some(FileIdentity::new(&metadata));
+            }
+        }
+        if let Some(directory) = directory {
+            fs::File::open(directory)?.sync_all()?;
+        }
+        if let Some(file) = written_event {
+            let key = event.unwrap();
+            let (actual, directory) = EventCache::identity(&key.path)?
+                .context("events file changed after publication")?;
+            ensure!(actual == file, "events file changed during persistence");
+            // No submitted/coalesced batch may populate this cache. Both the
+            // quality directory and the dependent status have completed fsync.
+            self.events = Some(EventCache {
+                key,
+                file,
+                directory,
+            });
+        }
+        Ok(())
+    }
+}
 #[derive(Default)]
 struct State {
     active: Option<(u64, Instant)>,
@@ -56,7 +202,7 @@ impl Report {
             "submitted_sequence":self.submitted,"completed_sequence":self.completed,
             "pending_snapshots":self.pending,"pending_capacity":1,"protected_sequence":self.protected,
             "coalesced_snapshots":self.coalesced,
-            "scope":"completed background batches; quality files precede service status; critical updates wait for fsync"})
+            "scope":"completed background batches; same-directory quality replacements share a directory fsync before service status; one identity-checked durable events cache; critical updates wait for all fsync"})
     }
 }
 type Shared = Arc<(Mutex<State>, Condvar)>;
@@ -88,14 +234,10 @@ pub(super) struct Persistence {
 }
 impl Persistence {
     pub(super) fn new() -> Result<Self> {
-        Self::with_writer(|batch| {
-            for (path, value) in batch {
-                super::atomic_status(&path, &value)?;
-            }
-            Ok(())
-        })
+        let mut writer = DurableWriter::default();
+        Self::with_writer(move |batch| writer.write(batch))
     }
-    fn with_writer(write: impl Fn(Batch) -> Result<()> + Send + 'static) -> Result<Self> {
+    fn with_writer(mut write: impl FnMut(Batch) -> Result<()> + Send + 'static) -> Result<Self> {
         let shared: Shared = Default::default();
         let worker_shared = shared.clone();
         let worker = thread::Builder::new()
@@ -303,6 +445,147 @@ mod tests {
     use std::{sync::mpsc, time::Duration};
     fn batch(n: u64) -> Batch {
         vec![(PathBuf::from("status"), json!(n))]
+    }
+    fn quality_batch(root: &Path, heartbeat: u64, event: u64, session: &str) -> Batch {
+        let quality = root.join("quality/session");
+        let events = quality.join("events.json");
+        vec![
+            (quality.join("query.json"), json!({"heartbeat":heartbeat})),
+            (quality.join("current.json"), json!({"heartbeat":heartbeat})),
+            (events.clone(), json!({"sequence":event})),
+            (
+                root.join("status.json"),
+                json!({"kind":"capture-service-status","heartbeat_sequence":heartbeat,"session_id":session,"instance_id":"instance","quality":{"events_path":events}}),
+            ),
+        ]
+    }
+    fn directory() -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "gdp-quality-durable-{}",
+            super::super::random_session().unwrap()
+        ));
+        fs::create_dir(&root).unwrap();
+        root
+    }
+    #[test]
+    fn stable_events_are_durable_cached_while_heartbeats_and_domains_advance() {
+        let root = directory();
+        let events = root.join("quality/session/events.json");
+        let mut writer = DurableWriter::default();
+        writer.write(Vec::new()).unwrap();
+        assert!(EventKey::from_batch(&batch(0)).unwrap().is_none());
+        let mut missing = quality_batch(&root, 1, 1, "a");
+        missing.remove(2);
+        assert!(EventKey::from_batch(&missing).unwrap().is_none());
+        writer.write(quality_batch(&root, 1, 1, "a")).unwrap();
+        let initial = fs::metadata(&events).unwrap().ino();
+        writer.write(quality_batch(&root, 2, 1, "a")).unwrap();
+        assert_eq!(fs::metadata(&events).unwrap().ino(), initial);
+        let saved: Value =
+            serde_json::from_slice(&fs::read(root.join("status.json")).unwrap()).unwrap();
+        assert_eq!(saved["heartbeat_sequence"], 2);
+        writer.write(quality_batch(&root, 3, 2, "a")).unwrap();
+        let changed = fs::metadata(&events).unwrap().ino();
+        assert_ne!(changed, initial);
+        writer.write(quality_batch(&root, 4, 2, "b")).unwrap();
+        assert_ne!(fs::metadata(&events).unwrap().ino(), changed);
+        let mut instance = quality_batch(&root, 5, 2, "b");
+        instance.last_mut().unwrap().1["instance_id"] = json!("another-instance");
+        let previous = fs::metadata(&events).unwrap().ino();
+        writer.write(instance).unwrap();
+        assert_ne!(fs::metadata(&events).unwrap().ino(), previous);
+        assert_eq!(
+            writer.events.as_ref().unwrap().key.instance,
+            "another-instance"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn replaced_removed_modified_or_untrusted_cached_files_are_rewritten() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = directory();
+        let events = root.join("quality/session/events.json");
+        let mut writer = DurableWriter::default();
+        writer.write(quality_batch(&root, 1, 1, "a")).unwrap();
+        for fault in [
+            "modify",
+            "replace",
+            "remove",
+            "mode",
+            "link",
+            "symlink",
+            "directory",
+        ] {
+            let previous = fs::metadata(&events).unwrap().ino();
+            match fault {
+                "modify" => fs::write(&events, b"corrupt").unwrap(),
+                "replace" => {
+                    fs::write(root.join("replacement"), b"corrupt").unwrap();
+                    fs::rename(root.join("replacement"), &events).unwrap();
+                }
+                "remove" => fs::remove_file(&events).unwrap(),
+                "mode" => fs::set_permissions(&events, fs::Permissions::from_mode(0o644)).unwrap(),
+                "link" => fs::hard_link(&events, root.join("linked")).unwrap(),
+                "symlink" => {
+                    fs::remove_file(&events).unwrap();
+                    symlink(root.join("outside"), &events).unwrap();
+                }
+                _ => {
+                    fs::remove_file(&events).unwrap();
+                    fs::create_dir(&events).unwrap();
+                    assert!(writer.write(quality_batch(&root, 2, 1, "a")).is_err());
+                    assert_eq!(writer.events.as_ref().unwrap().file.ino, previous);
+                    fs::remove_dir(&events).unwrap();
+                }
+            }
+            writer.write(quality_batch(&root, 3, 1, "a")).unwrap();
+            let value: Value = serde_json::from_slice(&fs::read(&events).unwrap()).unwrap();
+            assert_eq!(value["sequence"], 1, "{fault}");
+            assert!(fs::symlink_metadata(&events).unwrap().is_file());
+            assert_eq!(fs::metadata(&events).unwrap().mode() & 0o777, 0o600);
+        }
+        let parent = root.join("quality/session");
+        assert!(EventCache::identity(&parent.join("x".repeat(4096))).is_err());
+        assert!(super::super::prepare_status_parent(&parent.join("x".repeat(4096))).is_err());
+        fs::rename(&parent, root.join("old-parent")).unwrap();
+        std::os::unix::fs::symlink(root.join("old-parent"), &parent).unwrap();
+        assert!(writer.write(quality_batch(&root, 4, 1, "a")).is_err());
+        assert!(EventCache::identity(Path::new("/")).is_err());
+        assert!(super::super::atomic_status_file(Path::new("/"), &json!(1)).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn coalesced_events_do_not_populate_the_durable_cache() {
+        let root = directory();
+        let (entered_tx, entered) = mpsc::channel();
+        let (release_tx, release) = mpsc::channel();
+        let mut disk = DurableWriter::default();
+        let mut persistence = Persistence::with_writer(move |batch| {
+            if batch.last().unwrap().1["heartbeat_sequence"] == 1 {
+                entered_tx.send(()).unwrap();
+                release.recv().unwrap();
+            }
+            disk.write(batch)
+        })
+        .unwrap();
+        persistence
+            .submit(quality_batch(&root, 1, 1, "a"), false)
+            .unwrap();
+        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        persistence
+            .submit(quality_batch(&root, 2, 2, "a"), false)
+            .unwrap();
+        let ticket = persistence
+            .enqueue(quality_batch(&root, 3, 1, "a"), true)
+            .unwrap();
+        release_tx.send(()).unwrap();
+        persistence.wait(ticket).unwrap();
+        assert_eq!(persistence.report()["coalesced_snapshots"], 1);
+        let saved: Value =
+            serde_json::from_slice(&fs::read(root.join("quality/session/events.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved["sequence"], 1);
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn split_critical_fence_pumps_without_the_lock_or_early_ack() {

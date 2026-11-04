@@ -1,5 +1,7 @@
 # 一键三相机流水线复测与独立恢复验收
 
+8c279f9 后续状态同步减量、增强 writer 观测及同盘单/三 writer 对照见 [存储路径后续验证](../../docs/validation/8c279f9-storage-follow-up.md)。这些 Rust 修改需重建新镜像；所有实机和诊断运行继续使用新目录，旧失败证据保留。
+
 a095de0 失败后的 IMU/关键状态等待修复、控制器终态分类及 writer 只读观测见 [后续修复与新复测要求](../../docs/validation/a095de0-failure-follow-up.md)。验证这些 Rust 修复需要重新构建本版镜像，旧 c063450/a095de0 镜像只能作为基线。旧失败目录和已归档候选补丁保持不变。
 
 `run_retest.py` 提供包含 c063450 错误收尾观测的三相机检查点流水线复测入口。它不会修改生产配置或 SDK；只在私有配置副本中显式设置 `chunked-v3` 和 `checkpoint_pipeline=true`。现有队列容量保留，省略时明确设为16，其他相机/IMU/Global/QoS/quality 配置保留。生产与原入口默认值仍不变。

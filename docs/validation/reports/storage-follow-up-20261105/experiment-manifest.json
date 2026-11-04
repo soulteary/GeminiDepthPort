@@ -1,0 +1,27 @@
+{
+  "baseline_commit": "8c279f937db01397441c318d7fb9d116618a51e5",
+  "rust_toolchain": "1.90.0",
+  "optimization": "release default profile: opt-level 3, thin LTO",
+  "environment": "Docker ARM64 Linux data volume (XFS in VM), 3 CPU quota; shared host; no cameras; neither MiniPC nor ext4 verification",
+  "source_sha256": {
+    "crates/capture-probe/src/service.rs": "0155fc7b490909d22c51f82505b5981ff2db7fbda82f12c5e7124afbdc67a89d",
+    "crates/capture-probe/src/service/persistence.rs": "2db4c1fbdae2578806cb83c44cf9d3a810b03d77b3e367e3ced689244541ddcd",
+    "crates/capture-probe/tests/service_supervision.rs": "44e94d1220a3479d2a664ab0acab74db082395232e3f00864ee25ed8779be62b",
+    "crates/offline-depth/tests/writer_contention_benchmark.rs": "6c731452c0e45d0d843b903b51234ca959d4228544e31a979ab217727743c5bc",
+    "tests/support/io_faults.c": "4179d8b3634b45300cd97c2aaa9741425c179dabc652b0c56898237c3e482718",
+    "scripts/validation/writer_contention_ab.py": "0e8ffcd532a1baf23330760c816063ddfbb6837cf4aa1a1e20b2f8a7f3a53fc2"
+  },
+  "commands": {
+    "quality": "GDP_QUALITY_BASELINE_SERVICE=/before/release/capture-service GDP_QUALITY_BENCH_OUTPUT=<fresh.json> TMPDIR=<fresh-volume-dir> service_supervision-a0af33dba18b8611 --exact quality_persistence_ab_benchmark --ignored --nocapture --test-threads=1",
+    "storage": "python3 scripts/validation/writer_contention_ab.py --after /work/target/release/deps/writer_contention_benchmark-63ebedb1db5c063b --output /work/target/storage-contention-20261105 --seconds 1 --repeats 3 --max-output-bytes 2147483648 --max-wall-seconds 300"
+  },
+  "evidence_preservation": "Original 8c279f9 and a095de0 bundles/report are read-only; original archived checkpoint-worker candidate patch remains unapplied",
+  "hardware_acceptance_verified": false,
+  "validation_image_id": "sha256:3f5741d2c17af33c5873e980d83c3dd1139638c4b6910e71f01dfdb17aaf6209",
+  "post_benchmark_harness_corrections": {
+    "patch": "post-benchmark-fixture-corrections.patch",
+    "final_harness_source_sha256": "23b903a226f3334b7bf5205d8413fc039fd0c38d7ca317afe08b1985098ddf13",
+    "scope": "Two test functions only: frameset-boundary fault latch and normal-rate pending-limit fixture/accounting. No production, shared C ABI fixture or benchmark workload changes. Reverse this patch on committed harness to recover the source_sha256 used by the archived performance binaries."
+  },
+  "archived_logs": "Raw logs are losslessly gzip-compressed with mtime=0; decompress to compare original full-run SHA256 names. Original /private/tmp logs and Docker recording evidence remain untouched."
+}

@@ -1,0 +1,11 @@
+{
+  "expected_imu_samples": 426,
+  "ordinary_reader_rejected": true,
+  "pairs_per_pass": [
+    32,
+    32
+  ],
+  "passes": 2,
+  "per_frame_color_depth_evidence_hashes": true,
+  "wall_ns": 190209617
+}

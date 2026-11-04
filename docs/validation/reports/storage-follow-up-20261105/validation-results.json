@@ -1,0 +1,82 @@
+{
+  "rust_workspace": {
+    "passed": 654,
+    "ignored": 32,
+    "successful_suites": 71,
+    "production_line_coverage": {
+      "covered": 19374,
+      "executable": 19561,
+      "percent": 99.04401615459332
+    },
+    "clean_profiles": true,
+    "local_real_compose": false
+  },
+  "external_contract_tests": {
+    "passed": true,
+    "suites": [
+      {
+        "suite": "management",
+        "tests": 46,
+        "skipped": 0,
+        "errors": 0,
+        "failures": 0,
+        "instrumented_profiles_changed": true,
+        "passed": true
+      },
+      {
+        "suite": "native_gate",
+        "tests": 7,
+        "skipped": 0,
+        "errors": 0,
+        "failures": 0,
+        "instrumented_profiles_changed": true,
+        "passed": true
+      },
+      {
+        "suite": "sdk_grid",
+        "tests": 5,
+        "skipped": 0,
+        "errors": 0,
+        "failures": 0,
+        "instrumented_profiles_changed": true,
+        "passed": true
+      },
+      {
+        "suite": "recording",
+        "tests": 5,
+        "skipped": 0,
+        "errors": 0,
+        "failures": 0,
+        "instrumented_profiles_changed": true,
+        "passed": true
+      }
+    ]
+  },
+  "python": {
+    "linux": {
+      "tests": 489,
+      "skipped": 1,
+      "passed": true,
+      "seconds": 112.376
+    },
+    "macos": {
+      "tests": 489,
+      "skipped": 11,
+      "passed": true,
+      "seconds": 88.712
+    }
+  },
+  "coverage_filter_tests": {
+    "tests": 18,
+    "passed": true
+  },
+  "lint": {
+    "rust": "1.90.0",
+    "workspace": true,
+    "all_targets": true,
+    "deny_warnings": true,
+    "passed": true
+  },
+  "rustfmt": true,
+  "physical_hardware_acceptance_verified": false
+}

@@ -2756,6 +2756,32 @@ fn native_global_capture_rejects_missing_invalid_and_changed_sdk_metadata_withou
         configure_runtime_quality(&f, 1000, 20_000_000);
         acquisition(&f, "strict-rgbd", true);
         let gate = f.root.join("arm-fault");
+        // Arm complete framesets, not individual property reads. Otherwise the
+        // parent can create the file after native capture validated this frame
+        // but before ROS reads its Global stamp, exercising a different fault.
+        let source_path = f.root.join("mock-sdk.c");
+        let mut source = fs::read_to_string(&source_path).unwrap();
+        source.insert_str(
+            0,
+            "static int requested_frame_fault(void);\nstatic int native_frame_fault;\n",
+        );
+        replace(
+            &mut source,
+            "static int fault_active(void){const char *gate",
+            "static int requested_frame_fault(void){const char *gate",
+        );
+        assert_eq!(
+            source.matches("service_sequence++;return make(5);").count(),
+            1
+        );
+        replace(
+            &mut source,
+            "service_sequence++;return make(5);",
+            "service_sequence++;native_frame_fault=requested_frame_fault();return make(5);",
+        );
+        source.push_str("\nstatic int fault_active(void){return native_frame_fault;}\n");
+        fs::write(&source_path, source).unwrap();
+        compile("cc", &source_path, &f.root.join("mock-sdk.so"), None);
         let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
         // This verifies injected SDK corruption and recovery, not the 500 ms
         // supervision deadline. Instrumented CI status fsync can exceed it
@@ -3859,31 +3885,16 @@ fn recording_critical_fence_retains_the_real_pending_imu_limit() {
     fs::write(&f.config, config.to_string()).unwrap();
     let marker = f.root.join("ready-critical");
     let release = f.root.join("release-critical");
-    let more_samples = f.root.join("allow-sample-129");
-    // Only this ABI fixture changes: each sensor supplies its first sample for
-    // readiness, then resumes its unchanged 200Hz schedule at the fsync marker.
-    // Hold the 129th new sample until all 128 preceding samples were published.
-    // This makes the recorder's actual pending limit observable without relying
-    // on how the two callback threads happen to divide batches between drains.
-    let source = f.root.join("mock-sdk.c");
-    let mut text = fs::read_to_string(&source).unwrap();
-    text.insert_str(0, "static _Atomic unsigned pending_fence_samples;\n");
-    replace(
-        &mut text,
-        "obj *f=make(5);f->stream=s->stream;f->imu_sequence=++sequence;f->imu_period_us=s->period_us;",
-        "const char *fence=getenv(\"GDP_MOCK_IMU_PENDING_FENCE\");if(fence){if(sequence>0&&access(fence,F_OK)!=0)continue;if(access(fence,F_OK)==0&&atomic_fetch_add(&pending_fence_samples,1)>=128){const char *more=getenv(\"GDP_MOCK_IMU_PENDING_RELEASE\");while(s->running&&more&&access(more,F_OK)!=0)nanosleep(&delay,NULL);if(!s->running)break;}}obj *f=make(5);f->stream=s->stream;f->imu_sequence=++sequence;f->imu_period_us=s->period_us;",
-    );
-    fs::write(&source, text).unwrap();
-    compile("cc", &source, &f.root.join("mock-sdk.so"), None);
+    // Keep both SDK sources running at their normal 200Hz throughout startup.
+    // Pausing them while waiting for readiness would itself create a stale
+    // stream under a slow runner, rather than exercise the recorder's bound.
     let library = io_faults::compile(&f.root);
     let mut command = cleanup_fault_command(&f);
     io_faults::inject(&mut command, &library, "fsync", ".tmp", &marker);
     command
         .env("GDP_IO_REQUIRE_CONTENT", "\"state\":\"ready\"")
         .env("GDP_IO_RELEASE", &release)
-        .env("GDP_IO_DELAY_MS", "0")
-        .env("GDP_MOCK_IMU_PENDING_FENCE", &marker)
-        .env("GDP_MOCK_IMU_PENDING_RELEASE", &more_samples);
+        .env("GDP_IO_DELAY_MS", "0");
     let mut child = command.spawn().unwrap();
     await_fault_marker(&marker, &mut child);
     let held_since = Instant::now();
@@ -3900,21 +3911,35 @@ fn recording_critical_fence_retains_the_real_pending_imu_limit() {
         .expect("ready status must remain in its pre-fsync temporary file");
     assert_eq!(held["raw_recording"]["state"], "recording");
     assert_eq!(held["raw_recording"]["imu_samples_pending"], 0);
-    assert_eq!(held["imu"]["published"], json!([1, 1]));
+    let submitted = held["raw_recording"]["imu_samples_submitted"]
+        .as_u64()
+        .unwrap();
+    let published: u64 = held["imu"]["published"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .sum();
+    let excluded_before = held["raw_recording"]["imu_samples_outside_recording_excluded"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(published, submitted + excluded_before);
     assert_eq!(held["raw_recording"]["queue_capacity"], 16);
     assert_ne!(status(&f).unwrap()["ready"], true);
     let start = Instant::now();
-    while imu_publish_count(&f) < 130 {
-        assert!(start.elapsed() < Duration::from_secs(2));
+    // A real batch must attempt sample 129 while no video poll can consume the
+    // recorder's pending list. The batch is rejected whole, so its retained
+    // pending length may be below 128; no sample is discarded to make it fit.
+    while imu_publish_count(&f) as u64 <= published + 128 {
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "normal SDK source did not reach the pending bound; published={}, submitted={submitted}, status={:?}",
+            imu_publish_count(&f),
+            status(&f)
+        );
         assert!(child.try_wait().unwrap().is_none());
         thread::sleep(Duration::from_millis(5));
     }
-    // Give the final successful pump time to append its published batch. There
-    // are exactly 128 new samples and no video poll to consume the pending list.
-    thread::sleep(Duration::from_millis(30));
-    assert_eq!(imu_publish_count(&f), 130);
-    assert_ne!(status(&f).unwrap()["ready"], true);
-    fs::write(&more_samples, b"1").unwrap();
     thread::sleep(Duration::from_millis(800).saturating_sub(held_since.elapsed()));
     assert_ne!(status(&f).unwrap()["ready"], true);
     fs::write(&release, b"1").unwrap();
@@ -3924,9 +3949,29 @@ fn recording_critical_fence_retains_the_real_pending_imu_limit() {
     assert_eq!(end["worker_reason"], "SESSION_FAILED");
     assert_eq!(end["raw_recording"]["state"], "failed");
     assert_eq!(end["raw_recording"]["reason"], "RAW_IMU_QUEUE_OVERFLOW");
-    assert_eq!(end["raw_recording"]["imu_samples_pending"], 128);
+    let pending = end["raw_recording"]["imu_samples_pending"]
+        .as_u64()
+        .unwrap();
+    assert!(pending > 0 && pending <= 128);
+    let published: u64 = end["imu"]["published"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .sum();
+    let excluded = end["raw_recording"]["imu_samples_outside_recording_excluded"]
+        .as_u64()
+        .unwrap();
+    assert!(
+        published > submitted + excluded + 128,
+        "a complete real batch must exceed the unchanged pending bound"
+    );
+    assert!(
+        end["imu"]["error"].is_null() || end["imu"]["error"] == "IMU_QUEUE_OVERFLOW",
+        "{end}"
+    );
     assert_eq!(end["raw_recording"]["submitted_pairs"], 2);
-    assert_eq!(end["raw_recording"]["imu_samples_submitted"], 2);
+    assert_eq!(end["raw_recording"]["imu_samples_submitted"], submitted);
     assert_eq!(end["status_persistence"]["errors"], 0);
     assert_eq!(end["status_persistence"]["submission_errors"], 0);
     let event = end["status_persistence"]["critical_events"]
@@ -3957,4 +4002,359 @@ fn recording_critical_fence_retains_the_real_pending_imu_limit() {
         json!({"critical":event,"raw_reason":end["raw_recording"]["reason"],"pending_imu":end["raw_recording"]["imu_samples_pending"],"imu_error":end["imu"]["error"]})
     );
     io_faults::assert_injected(&marker, "fsync");
+}
+
+fn gate_skew_at_armed_file(f: &Fixture) {
+    let source_path = f.root.join("mock-sdk.c");
+    let mut source = fs::read_to_string(&source_path).unwrap();
+    replace(
+        &mut source,
+        "getenv(\"GDP_MOCK_SKEW\")&&p->stream==3",
+        "getenv(\"GDP_MOCK_SKEW\")&&fault_active()&&p->stream==3",
+    );
+    fs::write(&source_path, source).unwrap();
+    compile("cc", &source_path, &f.root.join("mock-sdk.so"), None);
+}
+fn quality_persistence_fault_fixture() -> Fixture {
+    let f = normal_rate_wait_fixture(1000);
+    let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    // Filesystem contract tests isolate the injected fault from runner startup
+    // stalls. The dedicated 200Hz pump/128-limit tests remain unchanged above.
+    config["imu"]["accel_rate_hz"] = json!(25);
+    config["imu"]["gyro_rate_hz"] = json!(25);
+    fs::write(&f.config, config.to_string()).unwrap();
+    f
+}
+#[test]
+fn quality_directory_bootstrap_is_durable_before_any_sdk_access() {
+    for succeeds in [false, true] {
+        let f = quality_persistence_fault_fixture();
+        let library = io_faults::compile(&f.root);
+        let marker = f.root.join("quality-bootstrap");
+        let release = f.root.join("release-bootstrap");
+        let mut command = cleanup_fault_command(&f);
+        io_faults::inject(&mut command, &library, "fsync", "/quality", &marker);
+        command.env("GDP_IO_FAIL_FD_TYPE", "directory");
+        if succeeds {
+            command
+                .env("GDP_IO_RELEASE", &release)
+                .env("GDP_IO_DELAY_MS", "0");
+        }
+        let mut child = command.spawn().unwrap();
+        await_fault_marker(&marker, &mut child);
+        assert!(
+            !f.events.exists(),
+            "no SDK context/callback may open before the intermediate directory barrier"
+        );
+        let quality = f.root.join("quality");
+        assert!(
+            fs::read_dir(&quality).unwrap().all(|entry| !entry
+                .unwrap()
+                .path()
+                .join("events.json")
+                .exists())
+        );
+        if succeeds {
+            fs::write(&release, b"1").unwrap();
+            wait_status(&f, &mut child, |v| v["ready"] == true);
+            stop(&mut child);
+        } else {
+            await_failed_exit(&mut child);
+            assert_eq!(status(&f).unwrap()["ready"], false);
+            assert!(!f.events.exists());
+        }
+        io_faults::assert_injected(&marker, "fsync");
+    }
+}
+#[test]
+fn quality_file_rename_and_group_directory_failures_never_acknowledge_success() {
+    for (operation, suffix, fd_type) in [
+        ("fsync", ".tmp", "file"),
+        ("rename", "/events.json", "file"),
+        ("fsync", "", "directory"),
+    ] {
+        let f = quality_persistence_fault_fixture();
+        gate_skew_at_armed_file(&f);
+        let library = io_faults::compile(&f.root);
+        let marker = f.root.join("quality-failure");
+        let armed = f.root.join("armed");
+        let counts = f.root.join("sync-counts");
+        let mut command = cleanup_fault_command(&f);
+        io_faults::inject(&mut command, &library, operation, suffix, &marker);
+        command
+            .env("GDP_IO_FAIL_CONTAINS", "/quality/")
+            .env("GDP_IO_FAIL_FD_TYPE", fd_type)
+            .env("GDP_IO_ARMED", &armed)
+            .env("GDP_IO_SYNC_COUNTS", &counts)
+            .env("GDP_MOCK_FAULT_ARMED", &armed)
+            .env("GDP_MOCK_SKEW", "1");
+        let mut child = command.spawn().unwrap();
+        let ready = wait_status(&f, &mut child, |v| v["ready"] == true);
+        fs::write(&armed, b"1").unwrap();
+        await_fault_marker(&marker, &mut child);
+        await_failed_exit(&mut child);
+        let end = status(&f).unwrap();
+        assert_eq!(end["ready"], false);
+        assert_eq!(end["restart_attempt"], 0);
+        assert!(!Path::new(ready["raw_recording"]["job_path"].as_str().unwrap()).exists());
+        assert!(
+            !Path::new(ready["raw_recording"]["partial_path"].as_str().unwrap())
+                .join("COMPLETE")
+                .exists()
+        );
+        let counter: Value = serde_json::from_slice(
+            &fs::read(format!(
+                "{}.{}.json",
+                counts.display(),
+                ready["pid"].as_u64().unwrap()
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        if operation == "fsync" {
+            let role = if fd_type == "directory" {
+                "quality_directory"
+            } else {
+                "quality_file"
+            };
+            assert_eq!(counter["roles"][role]["injected_error"], 1);
+        }
+        io_faults::assert_injected(&marker, operation);
+    }
+}
+
+#[test]
+fn critical_quality_directory_fence_precedes_status_and_keeps_imu_pumping() {
+    let f = quality_persistence_fault_fixture();
+    gate_skew_at_armed_file(&f);
+    let library = io_faults::compile(&f.root);
+    let marker = f.root.join("quality-directory-held");
+    let release = f.root.join("release-quality");
+    let armed = f.root.join("armed");
+    let mut command = cleanup_fault_command(&f);
+    io_faults::inject(&mut command, &library, "fsync", "", &marker);
+    command
+        .env("GDP_IO_FAIL_CONTAINS", "/quality/")
+        .env("GDP_IO_FAIL_FD_TYPE", "directory")
+        .env("GDP_IO_ARMED", &armed)
+        .env("GDP_IO_RELEASE", &release)
+        .env("GDP_IO_DELAY_MS", "0")
+        .env("GDP_MOCK_FAULT_ARMED", &armed)
+        .env("GDP_MOCK_SKEW", "1");
+    let mut child = command.spawn().unwrap();
+    let ready = wait_status(&f, &mut child, |v| v["ready"] == true);
+    fs::write(&armed, b"1").unwrap();
+    await_fault_marker(&marker, &mut child);
+    let before = status(&f).unwrap()["heartbeat_sequence"].clone();
+    let published = imu_publish_count(&f);
+    let start = Instant::now();
+    while imu_publish_count(&f) < published + 40 {
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(child.try_wait().unwrap().is_none());
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(status(&f).unwrap()["heartbeat_sequence"], before);
+    assert!(!release.exists());
+    fs::write(&release, b"1").unwrap();
+    let changed = wait_status(&f, &mut child, |v| {
+        v["quality"]["latest_event_sequence"].as_u64().unwrap_or(0)
+            > ready["quality"]["latest_event_sequence"].as_u64().unwrap()
+    });
+    assert!(
+        changed["quality"]["latest_event_sequence"]
+            .as_u64()
+            .unwrap()
+            > ready["quality"]["latest_event_sequence"].as_u64().unwrap()
+    );
+    let current: Value = serde_json::from_slice(
+        &fs::read(changed["quality"]["current_path"].as_str().unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(current["quality"]["state"], "degraded");
+    assert!(changed["imu"]["error"].is_null());
+    stop(&mut child);
+    io_faults::assert_injected(&marker, "fsync");
+}
+
+#[test]
+#[ignore = "release paired quality persistence experiment; synthetic ABI, no camera/DDS claim"]
+fn quality_persistence_ab_benchmark() {
+    let baseline =
+        std::env::var_os("GDP_QUALITY_BASELINE_SERVICE").expect("baseline binary required");
+    let output = std::env::var_os("GDP_QUALITY_BENCH_OUTPUT").expect("fresh output path required");
+    let mut rows = Vec::new();
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
+    for repeat in 0..3 {
+        for candidate in if repeat % 2 == 0 {
+            [false, true]
+        } else {
+            [true, false]
+        } {
+            let f = large_imu_benchmark_fixture();
+            let source_path = f.root.join("mock-sdk.c");
+            let mut source = fs::read_to_string(&source_path).unwrap();
+            replace(&mut source, "bytes[640*400*2]", "bytes[640*480*2]");
+            replace(
+                &mut source,
+                "w!=640||h!=400||fps!=30",
+                "w!=640||h!=(s==2?480:400)||fps!=30",
+            );
+            replace(
+                &mut source,
+                "ob_video_frame_get_height(const obj *p,error **e){(void)p;(void)e;return 400;}",
+                "ob_video_frame_get_height(const obj *p,error **e){(void)e;return p->stream==2?480:400;}",
+            );
+            replace(
+                &mut source,
+                "ob_video_stream_profile_get_height(const profile *p,error **e){(void)p;(void)e;return 400;}",
+                "ob_video_stream_profile_get_height(const profile *p,error **e){(void)e;return p->stream==2?480:400;}",
+            );
+            replace(
+                &mut source,
+                "(intrinsic){1,2,.5f,.5f,640,400}",
+                "(intrinsic){1,2,.5f,.5f,640,p->stream==2?480:400}",
+            );
+            replace(
+                &mut source,
+                "uint32_t ob_frame_get_data_size(const obj *p,error **e){(void)p;(void)e;",
+                "uint32_t ob_frame_get_data_size(const obj *p,error **e){(void)e;if(p->stream==3)return 640*400*2;",
+            );
+            replace(
+                &mut source,
+                "getenv(\"GDP_MOCK_ZERO_PIXELS\")?zero:bytes",
+                "getenv(\"GDP_MOCK_ZERO_PIXELS\")&&fault_active()?zero:bytes",
+            );
+            fs::write(&source_path, source).unwrap();
+            compile("cc", &source_path, &f.root.join("mock-sdk.so"), None);
+            configure_runtime_quality(&f, 90, 200 * 1024 * 1024);
+            enable_imu(&f);
+            let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+            config["color"]["height"] = json!(480);
+            config["quality_policy"]["max_zero_fraction"] = json!(0.5);
+            config["quality_runtime"]["quality"]["max_zero_fraction"] = json!(0.5);
+            config["imu"]["accel_rate_hz"] = json!(200);
+            config["imu"]["gyro_rate_hz"] = json!(200);
+            config["service"]["heartbeat_ms"] = json!(500);
+            config["service"]["heartbeat_timeout_ms"] = json!(10000);
+            config["service"]["shutdown_timeout_ms"] = json!(5000);
+            config["raw_recording"]["checkpoint_pipeline"] = json!(true);
+            config["raw_recording"]["checkpoint_observation"] = json!(true);
+            config["raw_recording"]["queue_capacity"] = json!(16);
+            fs::write(&f.config, config.to_string()).unwrap();
+            let library = io_faults::compile(&f.root);
+            let counter = f.root.join("sync-counts");
+            let armed = f.root.join("zero-pixels-armed");
+            let mut command = Command::new(if candidate {
+                std::ffi::OsStr::new(env!("CARGO_BIN_EXE_capture-service"))
+            } else {
+                baseline.as_os_str()
+            });
+            command
+                .args(["--config", f.config.to_str().unwrap()])
+                .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+                .env("GDP_ROS_MOCK_EVENTS", &f.events)
+                .env("GDP_MOCK_WAIT_DELAY_MS", "33")
+                .env("GDP_MOCK_ZERO_PIXELS", "1")
+                .env("GDP_MOCK_FAULT_ARMED", &armed)
+                .env("LD_PRELOAD", &library)
+                .env("GDP_IO_SYNC_COUNTS", &counter)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let mut child = command.spawn().unwrap();
+            let ready = wait_status(&f, &mut child, |v| v["ready"] == true);
+            let worker = ready["pid"].as_u64().unwrap() as u32;
+            let start = process_measurement(worker);
+            let begun = Instant::now();
+            let observed = std::cell::RefCell::new((
+                ready["heartbeat_sequence"].as_u64().unwrap(),
+                ready["quality"]["latest_event_sequence"].as_u64().unwrap(),
+                0,
+                0,
+            ));
+            let complete = wait_status_for(
+                &f,
+                &mut child,
+                |v| {
+                    if begun.elapsed() >= Duration::from_secs(1) && !armed.exists() {
+                        fs::write(&armed, b"1").unwrap();
+                    }
+                    let heartbeat = v["heartbeat_sequence"].as_u64().unwrap();
+                    let event = v["quality"]["latest_event_sequence"].as_u64().unwrap();
+                    let mut observation = observed.borrow_mut();
+                    if heartbeat != observation.0 {
+                        if event == observation.1 {
+                            observation.2 += 1;
+                        } else {
+                            observation.3 += 1;
+                        }
+                        observation.0 = heartbeat;
+                        observation.1 = event;
+                    }
+                    v["raw_recording"]["state"] == "complete"
+                },
+                Duration::from_secs(30),
+            );
+            let end = process_measurement(worker);
+            let wall = begun.elapsed().as_secs_f64();
+            let raw = &complete["raw_recording"];
+            assert_eq!(raw["written_pairs"], 90);
+            assert_eq!(
+                raw["disk_stages"]["validation_image_bytes"]
+                    .as_u64()
+                    .unwrap(),
+                2 * raw["payload_bytes_submitted"].as_u64().unwrap()
+            );
+            assert_eq!(
+                raw["disk_stages"]["validation_imu_samples"]
+                    .as_u64()
+                    .unwrap(),
+                2 * raw["imu_samples_submitted"].as_u64().unwrap()
+            );
+            assert!(complete["imu"]["error"].is_null());
+            let observation = observed.into_inner();
+            assert!(
+                observation.2 > 0 && observation.3 > 0,
+                "benchmark must observe stable and changed quality events"
+            );
+            let job = Path::new(raw["job_path"].as_str().unwrap());
+            let mut reader = offline_depth::recording::RecordingDirectorySource::open(job).unwrap();
+            let mut count = 0;
+            while reader.next_frame().unwrap().is_some() {
+                count += 1;
+            }
+            assert_eq!(count, 90);
+            let artifacts: Value = [
+                "records.jsonl",
+                "checkpoint.json",
+                "manifest.json",
+                "COMPLETE",
+            ]
+            .into_iter()
+            .map(|name| {
+                (
+                    name.to_string(),
+                    json!(
+                        digest::digest(&digest::SHA256, &fs::read(job.join(name)).unwrap())
+                            .as_ref()
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<String>()
+                    ),
+                )
+            })
+            .collect();
+            stop(&mut child);
+            let counts: Value = serde_json::from_slice(
+                &fs::read(format!("{}.{}.json", counter.display(), worker)).unwrap(),
+            )
+            .unwrap();
+            rows.push(json!({"candidate":candidate,"repeat":repeat,"workers":1,"window_seconds":wall,"worker_cpu_cores":(end.0-start.0) as f64/hz/wall,"worker_peak_rss_kib":end.1,"actual_fsync_counts":counts,"heartbeat_start":ready["heartbeat_sequence"],"heartbeat_end":complete["heartbeat_sequence"],"observed_stable_event_heartbeats":observation.2,"observed_changed_event_heartbeats":observation.3,"quality_event_start":ready["quality"]["latest_event_sequence"],"quality_event_end":complete["quality"]["latest_event_sequence"],"raw_recording":raw,"imu":complete["imu"],"artifact_sha256":artifacts,"independent_pairs_read_back":count}));
+        }
+    }
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)
+        .unwrap();
+    serde_json::to_writer_pretty(file, &json!({"kind":"quality-durable-writer-ab","repeats":3,"color_profile":[640,480,30],"depth_profile":[640,400,30],"rows":rows,"scope":"single writer, 30FPS synthetic SDK ABI with 200Hz accel+gyro, real filesystem fsync; no USB/real DDS/multiwriter inference; counters separate real success/error from injected failures; worker CPU readiness-to-COMPLETE; VmHWM before independent materialized readback; new-directory bootstrap syncs included in whole-worker counts; 6/5 fsync statement describes steady-state batches"})).unwrap();
 }

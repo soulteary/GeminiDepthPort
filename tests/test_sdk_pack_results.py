@@ -36,6 +36,7 @@ def fixture(root):
         write(source, path, {'evidence': path})
     write(source, 'frozen/recordings/capture.json', {'camera_named_recordings': True})
     write(source, 'frozen/raw/capture.json', {'camera_named_raw': True})
+    (source/'ab/on-01/writer-tails/SHA256SUMS').write_text('original writer checksum manifest\n')
     write(source, 'crash/b/recordings/capture.partial/checkpoint.json', {'record_count': 32})
     write(source, 'crash/b/recordings/capture.partial/snapshot.json', {'snapshot': 'hash'})
     for path in ('crash/b/recordings/capture.partial/payload-0001.bin',
@@ -71,10 +72,13 @@ class PackTests(unittest.TestCase):
                          'retest/ab/on-01/lifecycle/samples.jsonl','retest/ab/on-01/lifecycle/summary.json',
                          'retest/ab/on-01/writer-tails/samples.jsonl','retest/ab/on-01/writer-tails/summary.json',
                          'retest/ab/on-01/writer-tails/manifest.json',
+                         'retest/ab/on-01/writer-tails/SHA256SUMS',
                          'retest/crash-lifecycle/samples.jsonl','retest/crash-lifecycle/summary.json',
                          'retest/crash/b/recordings/capture.partial/checkpoint.json'):
                 self.assertIn(name, files)
             self.assertFalse(any(b'RAW-MUST-NOT-APPEAR' in raw for raw in files.values()))
+            self.assertEqual(files['retest/ab/on-01/writer-tails/SHA256SUMS'],
+                             b'original writer checksum manifest\n')
             for line in files['SHA256SUMS'].decode().splitlines():
                 digest, name = line.split('  ', 1)
                 self.assertEqual(hashlib.sha256(files[name]).hexdigest(), digest)

@@ -1,0 +1,6 @@
+{
+  "/before/release/capture-service": "9c409a8edc5ed569dd7d62d716f2abd08490ad77a8236ad4d64fc2bb3f05a1fe",
+  "/target/release/capture-service": "adb7a397c99b09b5bc07db6778ba19c89f75a2bed319042409466e9905b672b4",
+  "/target/release/deps/service_supervision-a0af33dba18b8611": "a74c7303d33c04799b7533dfff63e89a7d8a0a9b6a99f7c76f26841d919cc915",
+  "/target/release/deps/writer_contention_benchmark-63ebedb1db5c063b": "fa710e158658e32ba206e5b459bdb3ae8ca15d5739ea5a8c6d5ef5d093507dd2"
+}

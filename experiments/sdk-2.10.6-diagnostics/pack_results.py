@@ -120,7 +120,7 @@ class Bundle:
                         self.recording_metadata(root, source, path)
                     else: self.walk(root, source, path, depth+1)
                 elif stat.S_ISREG(info.st_mode):
-                    if name != 'records.jsonl' and (Path(name).suffix.lower() in TEXT or name == 'COMPLETE'): self.add(root, source, path)
+                    if name != 'records.jsonl' and (Path(name).suffix.lower() in TEXT or name in ('COMPLETE', 'SHA256SUMS')): self.add(root, source, path)
                     else: self.exclude(source, path, 'raw-or-nontext; includes DDS databases, perf binaries and images')
                 else: self.exclude(source, path, 'special-file')
             rt.require(signature(os.fstat(fd)) == signature(before), 'SOURCE_DIRECTORY_CHANGED')

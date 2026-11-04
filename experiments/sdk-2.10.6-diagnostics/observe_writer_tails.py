@@ -25,6 +25,147 @@ import hardware as hw
 
 MAX_JSON = 4 * 1024**2
 THREAD_PREFIXES = ('native-depth', 'recording-check', 'status-persiste')
+# Linux v6.6 primary UAPI sources (arm64 includes asm-generic/unistd.h):
+# https://github.com/torvalds/linux/blob/v6.6/arch/x86/entry/syscalls/syscall_64.tbl
+# https://github.com/torvalds/linux/blob/v6.6/include/uapi/asm-generic/unistd.h
+# https://github.com/torvalds/linux/blob/v6.6/include/uapi/linux/elf-em.h
+SYNC_ABIS = {62: ('linux-x86_64', {74:'fsync',75:'fdatasync'}),
+             183: ('linux-aarch64', {82:'fsync',83:'fdatasync'})}
+POINT_SCOPE = 'non-atomic point reads; not a syscall start/end, continuous blocked duration, or block-request timeline'
+
+
+def clock_point():
+    return {'monotonic_ns':time.monotonic_ns(),'unix_ns':time.time_ns()}
+
+
+def read_window(start):
+    end=clock_point()
+    return {'read_start_monotonic_ns':start['monotonic_ns'],'read_start_unix_ns':start['unix_ns'],
+            'read_end_monotonic_ns':end['monotonic_ns'],'read_end_unix_ns':end['unix_ns'],
+            'read_scope':POINT_SCOPE}
+
+
+def executable_abi(path):
+    """Verify the worker's ELF ABI; the observer host's CPU is not sufficient."""
+    try:
+        before=path.stat()
+        # /proc/PID/exe is an intentional link, already bound to the pinned
+        # executable. Read only its ELF header, never the rest of the binary.
+        fd=os.open(path,os.O_RDONLY|os.O_NONBLOCK)
+        try:info=os.fstat(fd);header=os.read(fd,64)
+        finally:os.close(fd)
+        after=path.stat()
+        identity=lambda value:(value.st_dev,value.st_ino,value.st_size,value.st_mtime_ns,value.st_ctime_ns)
+        require(identity(before)==identity(info)==identity(after),'EXECUTABLE_CHANGED_DURING_ABI_READ')
+        if (len(header)<64 or header[:4]!=b'\x7fELF' or header[4:7]!=b'\x02\x01\x01'
+                or header[7] not in (0,3) or int.from_bytes(header[20:24],'little')!=1
+                or int.from_bytes(header[52:54],'little')!=64):
+            return {'state':'unavailable','reason':'unsupported-or-invalid-elf64-little-endian-abi'}
+        kind=int.from_bytes(header[16:18],'little');machine=int.from_bytes(header[18:20],'little')
+        if kind not in (2,3) or machine not in SYNC_ABIS:
+            return {'state':'unavailable','reason':'unsupported-elf-abi','elf_machine':machine}
+        return {'state':'verified','name':SYNC_ABIS[machine][0],'elf_machine':machine,'elf_class':64,'byte_order':'little'}
+    except OSError as error:return {'state':'unavailable','reason':type(error).__name__,'errno':error.errno}
+
+
+def thread_namespace(path):
+    for line in read_bytes(path/'status',16384).decode().splitlines():
+        if line.startswith('NSpid:'):
+            values=line.split()[1:]
+            require(1<=len(values)<=32 and all(value.isdigit() and int(value)>0 for value in values),'THREAD_NSPID_SCHEMA')
+            ids=list(map(int,values));require(ids[0]==int(path.name),'THREAD_HOST_TID_DIFFERS')
+            return ids
+    raise ValueError('THREAD_NSPID_UNAVAILABLE')
+
+
+def syscall_record(path,abi):
+    """Keep raw registers private: only an ABI-verified sync operation is used."""
+    raw=read_bytes(path/'syscall',1024).decode().strip()
+    fields=raw.split()
+    if raw=='running' or (fields and fields[0]=='-1'):
+        return None,'running-or-no-current-syscall'
+    if len(fields)!=9:return None,'syscall-schema-unavailable'
+    try:values=tuple(int(value,0) for value in fields)
+    except ValueError:return None,'syscall-schema-unavailable'
+    number=values[0]
+    if number<0 or number&0x40000000:return None,'unsupported-syscall-abi'
+    operation=SYNC_ABIS[abi['elf_machine']][1].get(number)
+    if operation is None:return None,'not-sync-syscall'
+    if not 0<=values[1]<=1_048_576:return None,'invalid-sync-fd'
+    return (values,operation),None
+
+
+def owned_fd(path,fd,owned_roots):
+    """Resolve only a run-owned file, never export an unrelated fd path."""
+    link=path/'fd'/str(fd)
+    text=os.readlink(link)
+    if len(text)>4096 or not text.startswith('/') or text.endswith(' (deleted)'):
+        return None,'unresolved-or-deleted-fd'
+    target=Path(text)
+    if '..' in target.parts:return None,'fd-path-outside-owned-roots'
+    try:canonical_target=target.resolve(strict=True)
+    except (OSError,RuntimeError):canonical_target=None
+    for label,host in owned_roots:
+        host=Path(host)
+        namespace=Path('/'+label)
+        if target.is_relative_to(host):relative=target.relative_to(host)
+        elif target.is_relative_to(namespace):relative=target.relative_to(namespace)
+        elif canonical_target is not None and canonical_target.is_relative_to(host):relative=canonical_target.relative_to(host)
+        else:continue
+        try:
+            root_info=host.lstat()
+            if not stat.S_ISDIR(root_info.st_mode) or root_info.st_uid!=os.geteuid() or root_info.st_mode&0o022:
+                return None,'owned-fd-root-unavailable'
+            candidate=(host/relative).resolve(strict=True)
+            if not candidate.is_relative_to(host):return None,'fd-path-outside-owned-roots'
+            file_info=link.stat();bound_info=candidate.stat()
+            if (file_info.st_dev,file_info.st_ino)!=(bound_info.st_dev,bound_info.st_ino):
+                return None,'fd-does-not-match-owned-bind-path'
+            if not (stat.S_ISREG(file_info.st_mode) or stat.S_ISDIR(file_info.st_mode)):
+                return None,'fd-not-regular-file-or-directory'
+            return {'fd':fd,'owned_root':label,'path':str(Path(label)/relative),
+                    'device':file_info.st_dev,'inode':file_info.st_ino,
+                    'kind':'directory' if stat.S_ISDIR(file_info.st_mode) else 'file'},None
+        except FileNotFoundError:return None,'owned-fd-path-unavailable'
+    return None,'fd-path-outside-owned-roots'
+
+
+def sync_fd_sample(path,abi,owned_roots,namespace_ids):
+    unknown=lambda reason,**extra:{'state':'unknown','reason':reason,'scope':POINT_SCOPE,**extra}
+    if abi.get('state')!='verified':return unknown('worker-abi-unavailable')
+    if not namespace_ids:return unknown('thread-namespace-unavailable')
+    try:
+        first,reason=syscall_record(path,abi)
+        if first is None:
+            if reason=='not-sync-syscall':return {'state':'not-sync-syscall-observed','scope':POINT_SCOPE}
+            return unknown(reason)
+        values,operation=first
+        before,reason=owned_fd(path,values[1],owned_roots)
+        if before is None:return unknown(reason,operation=operation)
+        after,reason=owned_fd(path,values[1],owned_roots)
+        second,second_reason=syscall_record(path,abi)
+        if after is None:return unknown(reason,operation=operation)
+        if second is None or first!=second or before!=after:
+            return unknown('syscall-or-fd-changed-during-read',operation=operation)
+        return {'state':'consistent-sampled-observation','operation':operation,**before,'scope':POINT_SCOPE,
+                'consistency':'matching bracketing syscall registers and fd path/device/inode; an ABA reuse or repeated identical invocation cannot be excluded'}
+    except OSError as error:return unknown(type(error).__name__,errno=error.errno)
+    except (ValueError,UnicodeError):return unknown('syscall-or-fd-schema-unavailable')
+
+
+def wait_evidence(row):
+    stack=row.get('kernel_stack') or {};wchan=row.get('wchan') or {}
+    text=stack.get('value','') if stack.get('state')=='available' else ''
+    wait_path=bool(re.search(r'\b(?:[A-Za-z0-9_]*wait[A-Za-z0-9_]*|io_schedule|schedule)\b',text))
+    channel=wchan.get('value','') if wchan.get('state')=='available' else ''
+    blocked_before=row['task_state_before'] in ('D','S');blocked_after=row['task_state_after'] in ('D','S')
+    return {'classification':'wait-path-and-sleep-state-observed' if wait_path and blocked_before and blocked_after
+                else 'wait-path-snapshot-only' if wait_path else 'task-sleep-state-only' if blocked_before or blocked_after else 'no-wait-evidence-observed',
+            'task_sleep_state_before':blocked_before,'task_sleep_state_after':blocked_after,
+            'task_state_changed':row['task_state_before']!=row['task_state_after'],
+            'kernel_wait_path_observed':wait_path,'kernel_stack_state':stack.get('state','unavailable'),
+            'wchan_state':wchan.get('state','unavailable'),'nonzero_wchan_observed':bool(channel and channel!='0'),
+            'scope':POINT_SCOPE}
 
 
 def require(ok, code):
@@ -93,6 +234,13 @@ class Attachment:
         require(observed == self.pin['process'], 'PIN_PROCESS_BINDING')
         self.pid = observed['worker_host_pid']; self.started = observed['worker_start_ticks']
         self.namespace = observed['pid_namespace']; self.exe = (proc/str(self.pid)/'exe').stat()
+        self.abi=executable_abi(proc/str(self.pid)/'exe')
+        self.owned_roots=tuple((label,root/self.name/label) for label in ('state','recordings'))
+        for _,path in self.owned_roots:
+            require(path.resolve().is_relative_to(root),'OWNED_FD_ROOT_ESCAPE')
+            if path.exists():
+                owner=path.lstat()
+                require(stat.S_ISDIR(owner.st_mode) and owner.st_uid==os.geteuid() and not owner.st_mode&0o022,'OWNED_FD_ROOT_BINDING')
         self.terminal = False; self.identity_failed = False;self.stack_cache={};self.sample_index=0
 
     def check(self):
@@ -104,6 +252,12 @@ class Attachment:
         return identity
 
     def sample(self, all_threads=False, max_threads=64, stack_bytes=8192):
+        start=clock_point()
+        result=self._sample(all_threads,max_threads,stack_bytes)
+        result.update(read_window(start))
+        return result
+
+    def _sample(self, all_threads=False, max_threads=64, stack_bytes=8192):
         status_issue = None
         try:
             before = self.check()
@@ -136,7 +290,7 @@ class Attachment:
                         candidates.append(Path(entry.path))
                     if len(candidates) > max_threads:break
             truncated = len(candidates) > max_threads
-            rows = [thread_sample(path, stack_bytes) for path in candidates[:max_threads]]
+            rows = [thread_sample(path,stack_bytes,self.abi,self.owned_roots) for path in candidates[:max_threads]]
             after = self.check()
             require(before['start_ticks'] == after['start_ticks'], 'WORKER_PID_REUSED')
             self.sample_index+=1
@@ -152,6 +306,7 @@ class Attachment:
                         if len(self.stack_cache)>=1024:self.stack_cache.pop(next(iter(self.stack_cache)))
                         self.stack_cache[key]=(digest,self.sample_index)
             return {'name': self.name, 'state': 'status-unavailable' if status_issue else 'observed', 'pid': self.pid, 'start_ticks': self.started,'worker_sample':self.sample_index,
+                'worker_namespace_pid':self.pin['worker_pid'],'worker_abi':self.abi,
                 **({'status_read':status_issue} if status_issue else {}),
                 'status': compacted, 'threads': rows,
                 'thread_selection': 'all-bounded' if all_threads else 'main-and-native-checkpoint-status',
@@ -190,7 +345,7 @@ def compact_status(status):
         'writer_queue':{key:queue.get(key) for key in ('capacity_pairs','queued_pairs','inflight_pairs','oldest_queued_age_ns','high_water_pairs','discarded_pairs','closed')},
         'writer_wait':maximum(queue.get('wait')),'append':maximum(disk.get('append')),
         'checkpoint':{key:observation.get(key) for key in ('enabled','latest_event_id','active_limit_hits','active')},
-        'persistence':{**{key:persistence.get(key) for key in ('active_write','submitted_sequence','completed_sequence','pending_snapshots','errors','submission_errors')},
+        'persistence':{**{key:persistence.get(key) for key in ('active_write','submitted_sequence','completed_sequence','protected_sequence','pending_snapshots','errors','submission_errors','pump_errors')},
             'recent_critical_events':persistence.get('critical_events',[])[-2:]},
         'imu':{**{key:imu.get(key) for key in ('error','queue_high_water','failure_observation')},'drain_interval':maximum(imu.get('drain_interval'))},
         'sdk_wait':maximum((status.get('pipeline_timing') or {}).get('sdk_wait_call')),
@@ -207,11 +362,26 @@ def read_field(path, limit):
     except ValueError as error:return {'state': 'limit-or-schema', 'detail': str(error)}
 
 
-def thread_sample(path, stack_bytes):
+def thread_sample(path,stack_bytes,abi=None,owned_roots=()):
+    start=clock_point()
+    result=_thread_sample(path,stack_bytes,abi or {'state':'unavailable'},owned_roots)
+    result.update(read_window(start))
+    return result
+
+
+def _thread_sample(path,stack_bytes,abi,owned_roots):
     try:
         before = read_bytes(path/'stat', 16384).decode(); fields = before.rsplit(') ', 1)[1].split()
         start = int(fields[19]); comm = before.split('(', 1)[1].rsplit(') ', 1)[0][:64]
-        row = {'tid': int(path.name), 'start_ticks': start, 'comm': comm, 'task_state': fields[0],
+        namespace_ids=None;namespace_issue=None
+        try:namespace_ids=thread_namespace(path)
+        except (OSError,ValueError) as error:
+            if str(error)=='THREAD_HOST_TID_DIFFERS':raise
+            namespace_issue=type(error).__name__
+        row = {'tid':int(path.name),'host_tid':int(path.name),'namespace_tid':namespace_ids[-1] if namespace_ids else None,
+            'namespace_tids':namespace_ids,'tid_mapping':{'state':'verified' if namespace_ids else 'unknown',
+                **({'reason':namespace_issue} if namespace_issue else {})},
+            'start_ticks': start, 'comm': comm, 'task_state': fields[0],'task_state_before':fields[0],
             'cpu_ticks': int(fields[11])+int(fields[12]), 'wchan': read_field(path/'wchan', 1024),
             'kernel_stack': read_field(path/'stack', stack_bytes), 'schedstat': read_field(path/'schedstat', 1024)}
         if row['schedstat']['state'] == 'available':
@@ -219,8 +389,21 @@ def thread_sample(path, stack_bytes):
             if len(values) == 3 and all(v.isdigit() for v in values):
                 row['schedstat']['counters'] = dict(zip(('runtime_ns','runqueue_wait_ns','timeslices'), map(int, values)))
             else:row['schedstat']['state'] = 'schema-unavailable'
+        row['sync_file_observation']=sync_fd_sample(path,abi,owned_roots,namespace_ids)
         after = read_bytes(path/'stat', 16384).decode().rsplit(') ',1)[1].split()
         require(int(after[19]) == start, 'THREAD_TID_REUSED')
+        try:after_ids=thread_namespace(path)
+        except (OSError,ValueError) as error:
+            if str(error)=='THREAD_HOST_TID_DIFFERS':raise
+            after_ids=None
+        if namespace_ids is not None and after_ids is not None:
+            require(namespace_ids==after_ids,'THREAD_NAMESPACE_TID_CHANGED')
+        else:
+            row['tid_mapping']={'state':'unknown','reason':'namespace-read-unavailable'}
+            row['sync_file_observation']={'state':'unknown','reason':'thread-namespace-unavailable','scope':POINT_SCOPE}
+        row['task_state_after']=after[0]
+        row['cpu_ticks_after']=int(after[11])+int(after[12])
+        row['wait_evidence']=wait_evidence(row)
         return row
     except FileNotFoundError:return {'tid': int(path.name), 'state': 'exited', 'kernel_stack': {'state': 'unavailable'}}
     except (ValueError, IndexError) as error:return {'tid': int(path.name), 'state': 'identity-or-schema-rejected', 'detail': str(error)}
@@ -394,6 +577,12 @@ def run(args, proc=Path('/proc'), inspect=None, sleep=time.sleep):
                     for field in ('kernel_stack','wchan','schedstat'):
                         state = (thread.get(field) or {}).get('state','unavailable')
                         if state not in ('available','same-as-earlier-observation'):unavailable[field+':'+state] = unavailable.get(field+':'+state,0)+1
+                    for field,allowed in (('tid_mapping',('verified',)),
+                                          ('sync_file_observation',('consistent-sampled-observation','not-sync-syscall-observed'))):
+                        value=thread.get(field) or {};state=value.get('state','unknown')
+                        if state not in allowed:
+                            key=field+':'+state+':'+value.get('reason','unavailable')
+                            unavailable[key]=unavailable.get(key,0)+1
             if any(target.identity_failed for target in targets) and perf.child is not None and perf.child.poll() is None:
                 perf.result['stopped_for_identity_rejection']=True
                 perf.finish()
@@ -406,12 +595,19 @@ def run(args, proc=Path('/proc'), inspect=None, sleep=time.sleep):
             gap_ns=at-last if last is not None else None
             if gap_ns is not None:
                 max_gap=max(max_gap,gap_ns)
-                if gap_ns>args.interval*1.5e9:gap_count+=1
+                if gap_ns>args.interval*1.5e9:
+                    gap_count+=1;gaps['sampling-gap-over-threshold']=gap_count
             last = at;duration = time.monotonic_ns()-at
-            if duration > args.interval*1e9:overruns += 1
             out.emit({'kind':'writer-tail-sample','monotonic_ns':at,'unix_ns':time.time_ns(),'targets':rows,'disks':disks,'memory':memory,
                 'iteration_wall_ns':duration,'overrun':duration>args.interval*1e9,
+                'iteration_wall_scope':'collection before emission; total collection/emission overruns have separate records',
                 'sample_gap_ns':gap_ns,'gap_over_requested_interval':gap_ns>args.interval*1e9 if gap_ns is not None else False})
+            total_wall=time.monotonic_ns()-at
+            if total_wall>args.interval*1e9:
+                overruns+=1;gaps['sampling-overrun']=overruns
+                out.emit({'kind':'writer-tail-overrun','monotonic_ns':time.monotonic_ns(),'unix_ns':time.time_ns(),
+                          'sample_monotonic_ns':at,'collection_and_emission_wall_ns':total_wall,
+                          'threshold_ns':round(args.interval*1e9)})
             samples += 1
             if targets and all(t.terminal for t in targets):
                 terminal_at = terminal_at or time.monotonic()
@@ -438,14 +634,21 @@ def run(args, proc=Path('/proc'), inspect=None, sleep=time.sleep):
     requested_disks_complete=not any(key.startswith('disk:') for key in gaps)
     status_evidence_complete=not any(key.startswith('status-unavailable:') for key in gaps)
     process_batches_complete=not any(key.startswith('proc-batch-unavailable:') for key in gaps)
+    sampling_timing_complete=not gap_count and not overruns
     full = bool(targets) and all(t.terminal for t in targets) and not any(t.identity_failed for t in targets)
     summary = {'version':1,'observation_only':True,'hardware_acceptance_verified':False,
-        'ok':not errors and full and requested_disks_complete and status_evidence_complete and process_batches_complete,'workflow_completed':not errors and full,
+        'ok':not errors and full and requested_disks_complete and status_evidence_complete and process_batches_complete and sampling_timing_complete,'workflow_completed':not errors and full,
         'diagnostic_data_complete':not errors and full and not unavailable and not gaps,
         'diagnostic_gaps':gaps,'requested_disks_complete':requested_disks_complete,
         'status_evidence_complete':status_evidence_complete,'process_batches_complete':process_batches_complete,'stop_reason':stop_reason,'full_selected_worker_lifecycle_end_observed':full,
         'started_monotonic_ns':started,'finished_monotonic_ns':time.monotonic_ns(),'samples':samples,'bytes':out.used,
         'maximum_sample_gap_ns':max_gap,'sampling_overruns':overruns,'sampling_gap_count':gap_count,'sampling_gap_threshold_ns':round(args.interval*1.5e9),'unavailable_thread_fields':unavailable,
+        'sampling_timing_complete':sampling_timing_complete,'sampling_overrun_threshold_ns':round(args.interval*1e9),
+        'sampling_overrun_scope':'collection and output emission; a severe gap or overrun rejects ok while workflow completion remains independent',
+        'capabilities':{'sampled_syscall_only':True,'worker_abis':{target.name:target.abi for target in targets},
+            'sync_file_identity':'consistent point samples of ABI-verified fsync/fdatasync only; matching samples do not establish one invocation or continuous duration',
+            'block_request_timeline':{'state':'not-collected','available':False,'scope':'diskstats interval means are whole-device aggregates, not device latency distributions'},
+            'thread_scope':POINT_SCOPE},
         'observer_cpu_ns':time.process_time_ns()-cpu0,'observer_peak_rss_kib':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
         'errors':errors,'input_sha256':inputs,'input_sha256_after':after,'tool_sha256':tool_hash,'tool_sha256_after':final_tool_hash,
         'runtime_sha256':run_info.get('runtime_sha256') if run_info else None,

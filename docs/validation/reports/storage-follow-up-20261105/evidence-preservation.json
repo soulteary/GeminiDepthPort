@@ -1,0 +1,31 @@
+{
+  "input_files": {
+    "gdp-8c279f9-full-lifecycle-01(1).tar.gz": {
+      "bytes": 4056339,
+      "sha256": "1b854ad574f041fd9535a45c60c305feb716fe7341b5a545f85c5fdd4a611598"
+    },
+    "gdp-8c279f9-full-lifecycle-01-context(1).tar.gz": {
+      "bytes": 13518699,
+      "sha256": "6a5944e580b573fd1fc7be500b6bd7c80a2a40e0e0b36d89ad03fca5bc84aa5b"
+    },
+    "REPORT(6)(1).md": {
+      "bytes": 8983,
+      "sha256": "8bd19b42ee458d4c222ed0b05218bef111b06b65db487e4d87659d368eed35f0"
+    },
+    "gdp-a095de0-full-lifecycle-01(1).tar.gz": {
+      "bytes": 4446889,
+      "sha256": "0f44bdc6b24f650e074da483b353365c530198dab1c862ad570f1e57cf65e1a0"
+    },
+    "gdp-a095de0-full-lifecycle-01-context(1).tar.gz": {
+      "bytes": 14212387,
+      "sha256": "eb3d369babac1c40c93b24e8e7f31d88dca50224391589c4fd8515778289e5f5"
+    }
+  },
+  "all_original_bytes_and_hashes_unchanged": true,
+  "archived_candidate_unapplied": true,
+  "protected_archives": {
+    "docs/validation/reports/checkpoint-worker-candidate.patch": "ae38e44e8b8ec0930d3c2c534e095cb00261aa07f46e99b69bced64656536899",
+    "docs/validation/reports/checkpoint-worker-ab-20261104.json": "687b8040cf6f3069bd469c9a7b06c0281221d8a4178d53fc57c33c07fa2c81a3"
+  },
+  "production_raw_sdk_ros_paths_unchanged": true
+}

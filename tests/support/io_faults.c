@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/uio.h>
 #include <unistd.h>
@@ -50,6 +51,11 @@ static int fail_fd(const char *op,int fd) {
     ssize_t n=readlink(link,path,sizeof(path)-1);
     if(n<0)return 0;
     path[n]=0;
+    const char *type=getenv("GDP_IO_FAIL_FD_TYPE");
+    if(type) {
+        struct stat st;if(fstat(fd,&st)!=0)return 0;
+        if((!strcmp(type,"directory")&&!S_ISDIR(st.st_mode))||(!strcmp(type,"file")&&!S_ISREG(st.st_mode)))return 0;
+    }
     const char *content=getenv("GDP_IO_REQUIRE_CONTENT");
     if(content) {
         int input=open(path,O_RDONLY);if(input<0)return 0;
@@ -108,9 +114,31 @@ ssize_t write(int fd,const void *buf,size_t n) {
     }
     return real(fd,buf,n);
 }
+static _Atomic unsigned long long sync_calls[5][3];
+static void count_sync(int fd,int result,int injected) {
+    if(!getenv("GDP_IO_SYNC_COUNTS"))return;
+    int role=4;struct stat st;char link[64],path[4096];
+    snprintf(link,sizeof(link),"/proc/self/fd/%d",fd);
+    ssize_t n=readlink(link,path,sizeof(path)-1);
+    if(n>=0&&fstat(fd,&st)==0){path[n]=0;int quality=strstr(path,"/quality/")!=NULL;
+        if(S_ISREG(st.st_mode))role=quality?0:2;else if(S_ISDIR(st.st_mode))role=quality?1:3;}
+    atomic_fetch_add(&sync_calls[role][injected?2:result==0?0:1],1);
+}
+__attribute__((destructor)) static void save_sync_counts(void) {
+    const char *prefix=getenv("GDP_IO_SYNC_COUNTS");if(!prefix)return;
+    char path[4096],raw[1024];int size=snprintf(path,sizeof(path),"%s.%ld.json",prefix,(long)getpid());
+    if(size<0||(size_t)size>=sizeof(path))return;
+    const char *roles[]={"quality_file","quality_directory","other_file","other_directory","unknown"};
+    int used=snprintf(raw,sizeof(raw),"{\"pid\":%ld,\"roles\":{",(long)getpid());
+    for(int i=0;i<5;i++)used+=snprintf(raw+used,sizeof(raw)-(size_t)used,"%s\"%s\":{\"real_success\":%llu,\"real_error\":%llu,\"injected_error\":%llu}",i?",":"",roles[i],atomic_load(&sync_calls[i][0]),atomic_load(&sync_calls[i][1]),atomic_load(&sync_calls[i][2]));
+    used+=snprintf(raw+used,sizeof(raw)-(size_t)used,"}}\n");
+    int fd=open(path,O_WRONLY|O_CREAT|O_TRUNC,0600);
+    if(fd>=0){ssize_t (*real)(int,const void*,size_t)=dlsym(RTLD_NEXT,"write");(void)real(fd,raw,(size_t)used);close(fd);}
+}
 int fsync(int fd) {
-    if(fail_fd("fsync",fd))return -1;
-    int (*real)(int)=dlsym(RTLD_NEXT,"fsync");return real(fd);
+    int injected=fail_fd("fsync",fd),result=-1;
+    if(!injected){int (*real)(int)=dlsym(RTLD_NEXT,"fsync");result=real(fd);}
+    int saved=errno;count_sync(fd,result,injected);errno=saved;return result;
 }
 int linkat(int a,const char *b,int c,const char *d,int e) {
     if(fail("linkat",d))return -1;

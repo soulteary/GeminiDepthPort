@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -34,10 +35,19 @@ def process(proc,pid,parent,start,args,token,namespace):
     task=root/'task'/str(pid);task.mkdir(parents=True)
     (task/'stat').write_text((root/'stat').read_text());write(task/'children','')
     write(task/'comm','capture-service');write(task/'stack','[<0>] io_schedule\n');write(task/'wchan','io_schedule');write(task/'schedstat','100 200 3')
+    write(task/'status',f'NSpid:\t{pid}\t{namespace}\n');write(task/'syscall','202 0x1 0x2 0x3 0x4 0x5 0x6 0x7 0x8')
+    (task/'fd').mkdir()
+
+
+def elf(machine=62,elf_class=2):
+    value=bytearray(64);value[:7]=b'\x7fELF'+bytes((elf_class,1,1))
+    value[16:18]=(3).to_bytes(2,'little');value[18:20]=machine.to_bytes(2,'little')
+    value[20:24]=(1).to_bytes(4,'little');value[52:54]=(64).to_bytes(2,'little')
+    return bytes(value)
 
 
 def fixture(base):
-    root=base/'capture';root.mkdir(mode=0o700);proc=base/'proc';proc.mkdir();write(proc/'binary','ELF-fixture')
+    root=base/'capture';root.mkdir(mode=0o700);proc=base/'proc';proc.mkdir();(proc/'binary').write_bytes(elf())
     image='sha256:'+'c'*64;run_id='b'*32
     cp=root/'a/config';cp.mkdir(parents=True)
     write(cp/'capture.json',{'service':{'generation':run_id}});config_hash=observer.sha(cp/'capture.json')
@@ -46,6 +56,7 @@ def fixture(base):
     status={'generation':run_id,'config_sha256':config_hash,'instance_id':'f'*64,'session_id':'a'*32,'pid':17,'restart_attempt':0,
             'raw_recording':{'state':'recording'},'updated_unix_ms':1,'state':'ready','ready':True}
     write(root/'a/state/status.json',status)
+    (root/'a/recordings').mkdir(mode=0o700)
     camera={'name':'a','container':'owned-a','status':str(root/'a/state/status.json')}
     run={'experiment':observer.rt.EXPERIMENT,'run_id':run_id,'image_id':image,'runtime_sha256':observer.hw.digest(runtime),'cameras':[camera],
          'files':{str(p.relative_to(root)):observer.sha(p) for p in cp.iterdir()}}
@@ -79,6 +90,9 @@ class WriterTailTests(unittest.TestCase):
             row=targets[0].sample()
             self.assertEqual(row['state'],'observed');self.assertEqual(row['threads'][0]['wchan']['value'],'io_schedule')
             self.assertEqual(row['threads'][0]['schedstat']['counters']['runqueue_wait_ns'],200)
+            self.assertEqual(row['threads'][0]['namespace_tid'],17)
+            self.assertEqual(row['threads'][0]['host_tid'],117)
+            self.assertEqual(row['worker_abi']['name'],'linux-x86_64')
             self.assertNotIn('do-not-copy',json.dumps(row));self.assertIn('a/runtime-identity.json',hashes)
             self.assertEqual({str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()},before)
 
@@ -268,3 +282,159 @@ class WriterTailTests(unittest.TestCase):
                 self.assertTrue(rows[0]['targets'][0]['threads'])
                 self.assertEqual(rows[-1]['targets'][0]['state'],'exited')
                 self.assertEqual((root/'a/runtime-identity.json').read_bytes(),pin)
+
+
+class PointEvidenceTests(unittest.TestCase):
+    def attach(self,base,machine=62):
+        root,proc,info=fixture(base);(proc/'binary').write_bytes(elf(machine))
+        _,targets,_=observer.load_attachments(root,[],proc,lambda *_:info)
+        return root,proc,info,targets[0],proc/'117/task/117'
+
+    def sync_file(self,root,task,number=74,name='chunk.bin'):
+        target=root/'a/recordings'/name;target.write_bytes(b'owned image bytes')
+        (task/'fd/9').symlink_to(target)
+        write(task/'syscall',str(number)+' 0x9 0xdeadbeef 0x2 0x3 0x4 0x5 0x6 0x7')
+        return target
+
+    def test_non_atomic_windows_namespace_mapping_and_changed_task_state_are_explicit(self):
+        with tempfile.TemporaryDirectory() as d:
+            root,proc,info,target,task=self.attach(Path(d))
+            write(task/'stat',(task/'stat').read_text().replace(') S ',') R '))
+            write(task/'stack','[<0>] jbd2_log_wait_commit+0x1/0x2\n')
+            original=observer.read_field
+            def read(path,limit):
+                value=original(path,limit)
+                if Path(path)==task/'stack':write(task/'stat',(task/'stat').read_text().replace(') R ',') D '))
+                return value
+            with patch.object(observer,'read_field',side_effect=read):row=target.sample()
+            thread=row['threads'][0]
+            self.assertEqual((thread['host_tid'],thread['namespace_tid']),(117,17))
+            self.assertEqual(thread['namespace_tids'],[117,17])
+            self.assertEqual((thread['task_state_before'],thread['task_state_after']),('R','D'))
+            self.assertEqual(thread['wait_evidence']['classification'],'wait-path-snapshot-only')
+            self.assertTrue(thread['wait_evidence']['task_state_changed'])
+            self.assertIn('not a syscall start/end',thread['wait_evidence']['scope'])
+            self.assertLessEqual(row['read_start_monotonic_ns'],thread['read_start_monotonic_ns'])
+            self.assertLessEqual(thread['read_end_monotonic_ns'],row['read_end_monotonic_ns'])
+            self.assertLessEqual(thread['read_start_unix_ns'],thread['read_end_unix_ns'])
+
+    def test_abi_verified_sync_fd_matches_owned_host_file_without_register_export(self):
+        for machine,number,operation in ((62,74,'fsync'),(62,75,'fdatasync'),(183,82,'fsync'),(183,83,'fdatasync')):
+            with self.subTest(machine=machine,operation=operation),tempfile.TemporaryDirectory() as d:
+                root,proc,info,target,task=self.attach(Path(d),machine)
+                file=self.sync_file(root,task,number)
+                row=target.sample();observed=row['threads'][0]['sync_file_observation']
+                self.assertEqual(observed['state'],'consistent-sampled-observation')
+                self.assertEqual(observed['operation'],operation)
+                self.assertEqual(observed['inode'],file.stat().st_ino)
+                self.assertEqual(observed['path'],'recordings/chunk.bin')
+                self.assertIn('cannot be excluded',observed['consistency'])
+                self.assertNotIn('deadbeef',json.dumps(row));self.assertNotIn(str(file),json.dumps(observed))
+
+    def test_unknown_arch_compat_running_bad_schema_and_permission_never_claim_a_sync_file(self):
+        for fault in ('machine','elf32','x32','running','no-current','schema','permission','mapping'):
+            with self.subTest(fault=fault),tempfile.TemporaryDirectory() as d:
+                root,proc,info=fixture(Path(d));task=proc/'117/task/117'
+                self.sync_file(root,task)
+                if fault=='machine':(proc/'binary').write_bytes(elf(243))
+                elif fault=='elf32':(proc/'binary').write_bytes(elf(62,1))
+                elif fault=='x32':write(task/'syscall',str(0x40000000+74)+' 9 0 0 0 0 0 0 0')
+                elif fault=='running':write(task/'syscall','running')
+                elif fault=='no-current':write(task/'syscall','-1 0x123 0x456')
+                elif fault=='schema':write(task/'syscall','74 9 incomplete')
+                elif fault=='mapping':(task/'status').unlink()
+                original=observer.read_bytes
+                def read(path,limit):
+                    if fault=='permission' and Path(path)==task/'syscall':raise PermissionError(errno.EACCES,'denied')
+                    return original(path,limit)
+                with patch.object(observer,'read_bytes',side_effect=read):
+                    _,targets,_=observer.load_attachments(root,[],proc,lambda *_:info);row=targets[0].sample()
+                value=row['threads'][0]['sync_file_observation']
+                self.assertEqual(value['state'],'unknown');self.assertNotIn('path',value)
+                self.assertNotIn('inode',value)
+
+    def test_fd_reuse_or_syscall_change_is_unknown_but_a_new_sample_can_observe_new_file(self):
+        for fault in ('fd','syscall'):
+            with self.subTest(fault=fault),tempfile.TemporaryDirectory() as d:
+                root,proc,info,target,task=self.attach(Path(d));first=self.sync_file(root,task)
+                second=root/'a/recordings/second.bin';second.write_bytes(b'other owned bytes')
+                original=observer.owned_fd;calls=[0]
+                def read(path,fd,owned):
+                    value=original(path,fd,owned);calls[0]+=1
+                    if calls[0]==1:
+                        if fault=='fd':(task/'fd/9').unlink();(task/'fd/9').symlink_to(second)
+                        else:write(task/'syscall','75 0x9 0xdeadbeef 0x2 0x3 0x4 0x5 0x6 0x7')
+                    return value
+                with patch.object(observer,'owned_fd',side_effect=read):value=target.sample()['threads'][0]['sync_file_observation']
+                self.assertEqual(value['state'],'unknown');self.assertNotIn('inode',value)
+                new=target.sample()['threads'][0]['sync_file_observation']
+                self.assertEqual(new['state'],'consistent-sampled-observation')
+                self.assertEqual(new['inode'],(second if fault=='fd' else first).stat().st_ino)
+
+    def test_unowned_or_symlink_escaping_fd_paths_are_redacted(self):
+        for fault in ('outside','escape','deleted'):
+            with self.subTest(fault=fault),tempfile.TemporaryDirectory() as d:
+                base=Path(d);root,proc,info,target,task=self.attach(base)
+                outside=base/'private-do-not-export';outside.write_bytes(b'not owned by run')
+                self.sync_file(root,task);(task/'fd/9').unlink()
+                if fault=='escape':
+                    escape=root/'a/recordings/escape';escape.symlink_to(outside);(task/'fd/9').symlink_to(escape)
+                elif fault=='deleted':(task/'fd/9').symlink_to(str(outside)+' (deleted)')
+                else:(task/'fd/9').symlink_to(outside)
+                value=target.sample()['threads'][0]['sync_file_observation']
+                self.assertEqual(value['state'],'unknown')
+                self.assertNotIn('private-do-not-export',json.dumps(value));self.assertNotIn('path',value)
+
+    def test_namespace_tid_or_worker_pid_change_discards_file_claim(self):
+        for fault in ('namespace-tid','worker-pid'):
+            with self.subTest(fault=fault),tempfile.TemporaryDirectory() as d:
+                root,proc,info,target,task=self.attach(Path(d));self.sync_file(root,task)
+                original=observer.read_field
+                def read(path,limit):
+                    value=original(path,limit)
+                    if Path(path)==task/'stack':
+                        if fault=='namespace-tid':write(task/'status','NSpid:\t117\t18\n')
+                        else:write(proc/'117/stat',(proc/'117/stat').read_text().replace(' 300 ',' 301 '))
+                    return value
+                with patch.object(observer,'read_field',side_effect=read):row=target.sample()
+                if fault=='worker-pid':self.assertEqual(row['state'],'identity-rejected');self.assertIsNone(row['threads'])
+                else:
+                    self.assertEqual(row['threads'][0]['state'],'identity-or-schema-rejected')
+                    self.assertNotIn('sync_file_observation',row['threads'][0])
+
+    def test_sampling_gap_or_collection_emission_overrun_rejects_ok_not_workflow_completion(self):
+        for fault in ('gap','collection','emission'):
+            with self.subTest(fault=fault),tempfile.TemporaryDirectory() as d:
+                base=Path(d);root,proc,info=fixture(base);a=args(root,base/'observe')
+                original_read=observer.read_field;original_emit=observer.Output.emit;delayed=[False]
+                def read(path,limit):
+                    if fault=='collection' and Path(path)==proc/'meminfo' and not delayed[0]:
+                        delayed[0]=True;time.sleep(.08)
+                    return original_read(path,limit)
+                def emit(out,value):
+                    if fault=='emission' and value['kind']=='writer-tail-sample' and not delayed[0]:
+                        delayed[0]=True;time.sleep(.08)
+                    return original_emit(out,value)
+                def exit_worker(_):
+                    if fault=='gap':time.sleep(.09)
+                    shutil.rmtree(proc/'117',ignore_errors=True)
+                with patch.object(observer,'read_field',side_effect=read),patch.object(observer.Output,'emit',emit):
+                    result=observer.run(a,proc,lambda *_:info,sleep=exit_worker)
+                self.assertTrue(result['workflow_completed']);self.assertFalse(result['ok'])
+                self.assertFalse(result['sampling_timing_complete']);self.assertFalse(result['diagnostic_data_complete'])
+                self.assertIn('sampling-gap-over-threshold' if fault=='gap' else 'sampling-overrun',result['diagnostic_gaps'])
+                self.assertTrue(result['capabilities']['sampled_syscall_only'])
+                self.assertFalse(result['capabilities']['block_request_timeline']['available'])
+                if fault!='gap':
+                    rows=list(map(json.loads,(a.output/'samples.jsonl').read_text().splitlines()))
+                    self.assertTrue(any(row['kind']=='writer-tail-overrun' for row in rows))
+
+    def test_compact_fence_fields_and_abi_header_change_are_not_hidden(self):
+        compact=observer.compact_status({'status_persistence':{'protected_sequence':9,'pump_errors':2}})
+        self.assertEqual(compact['persistence']['protected_sequence'],9);self.assertEqual(compact['persistence']['pump_errors'],2)
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d)/'elf';path.write_bytes(elf());original=observer.os.read
+            def read(fd,limit):
+                result=original(fd,limit);path.write_bytes(elf(183));return result
+            with patch.object(observer.os,'read',side_effect=read),self.assertRaisesRegex(ValueError,'EXECUTABLE_CHANGED'):
+                observer.executable_abi(path)

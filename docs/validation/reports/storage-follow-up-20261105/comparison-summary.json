@@ -1,0 +1,186 @@
+{
+  "quality_batches": [
+    {
+      "batch": "volume",
+      "candidate": false,
+      "runs": 3,
+      "median_cpu_cores": 0.4382662621874532,
+      "median_peak_rss_kib": 10136,
+      "median_window_seconds": 4.569778672,
+      "median_append_p99_upper_ns": 25139062,
+      "median_verification_ns": 504198204,
+      "quality_directory_syncs": [
+        31,
+        34,
+        37
+      ],
+      "all_independent_pairs": [
+        90,
+        90,
+        90
+      ],
+      "heartbeat_advances": [
+        7,
+        8,
+        8
+      ],
+      "event_advances": [
+        1,
+        1,
+        1
+      ],
+      "stable_event_heartbeat_observations": [
+        6,
+        7,
+        7
+      ],
+      "changed_event_heartbeat_observations": [
+        1,
+        1,
+        1
+      ],
+      "imu_errors": [
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "batch": "volume",
+      "candidate": true,
+      "runs": 3,
+      "median_cpu_cores": 0.6117720625269242,
+      "median_peak_rss_kib": 11084,
+      "median_window_seconds": 4.298986765,
+      "median_append_p99_upper_ns": 149502450,
+      "median_verification_ns": 524735327,
+      "quality_directory_syncs": [
+        14,
+        14,
+        13
+      ],
+      "all_independent_pairs": [
+        90,
+        90,
+        90
+      ],
+      "heartbeat_advances": [
+        8,
+        9,
+        7
+      ],
+      "event_advances": [
+        1,
+        1,
+        1
+      ],
+      "stable_event_heartbeat_observations": [
+        7,
+        7,
+        6
+      ],
+      "changed_event_heartbeat_observations": [
+        1,
+        1,
+        1
+      ],
+      "imu_errors": [
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "batch": "volume-02",
+      "candidate": false,
+      "runs": 3,
+      "median_cpu_cores": 0.31092534119592097,
+      "median_peak_rss_kib": 10576,
+      "median_window_seconds": 3.739197998,
+      "median_append_p99_upper_ns": 7064113,
+      "median_verification_ns": 283796920,
+      "quality_directory_syncs": [
+        31,
+        31,
+        31
+      ],
+      "all_independent_pairs": [
+        90,
+        90,
+        90
+      ],
+      "heartbeat_advances": [
+        7,
+        7,
+        7
+      ],
+      "event_advances": [
+        1,
+        1,
+        1
+      ],
+      "stable_event_heartbeat_observations": [
+        6,
+        6,
+        6
+      ],
+      "changed_event_heartbeat_observations": [
+        1,
+        1,
+        1
+      ],
+      "imu_errors": [
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "batch": "volume-02",
+      "candidate": true,
+      "runs": 3,
+      "median_cpu_cores": 0.2504983196645026,
+      "median_peak_rss_kib": 10192,
+      "median_window_seconds": 3.849489369,
+      "median_append_p99_upper_ns": 8866495,
+      "median_verification_ns": 250472908,
+      "quality_directory_syncs": [
+        13,
+        13,
+        13
+      ],
+      "all_independent_pairs": [
+        90,
+        90,
+        90
+      ],
+      "heartbeat_advances": [
+        7,
+        7,
+        7
+      ],
+      "event_advances": [
+        1,
+        1,
+        1
+      ],
+      "stable_event_heartbeat_observations": [
+        6,
+        6,
+        6
+      ],
+      "changed_event_heartbeat_observations": [
+        1,
+        1,
+        1
+      ],
+      "imu_errors": [
+        null,
+        null,
+        null
+      ]
+    }
+  ],
+  "hardware_acceptance_verified": false,
+  "limits": "Instrumented C ABI SDK/ROS mocks; nominal IMU rates, not a hardware rate guarantee. 90 pairs/run; bounded histogram P99. Data-volume batches retain all repetitions; an earlier overlay IMU_STREAM_STALE trial is retained separately, not counted as a pass. Shared Docker host; no overall CPU or P99 improvement established."
+}

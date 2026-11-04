@@ -1,0 +1,53 @@
+{
+  "barrier_clock": "CLOCK_MONOTONIC across children in the same Linux time namespace; Unix time is display only",
+  "binaries": {
+    "after": {
+      "path": "/work/target/release/deps/writer_contention_benchmark-63ebedb1db5c063b",
+      "sha256": "fa710e158658e32ba206e5b459bdb3ae8ca15d5739ea5a8c6d5ef5d093507dd2"
+    }
+  },
+  "boot_id": "c182d362-1c9a-4b7a-8eeb-f9f85dc77e5c",
+  "capacity_guard": "planned writer byte credits include payload/records/checkpoint/failed partials/recovery; hard per-file RLIMIT_FSIZE; before-write resource-log cap; whole-tree watchdog at <=1s. No filesystem project quota: unexpected output may exceed the observed aggregate threshold before termination, and actual excess is reported",
+  "checkpoint_credit_bytes": 16777216,
+  "checkpoint_credit_pairs": 32,
+  "common_driver_sha256": "6c731452c0e45d0d843b903b51234ca959d4228544e31a979ab217727743c5bc",
+  "counts": [
+    1,
+    3
+  ],
+  "filesystem": {
+    "filesystem": "xfs",
+    "limits": "mountinfo identifies this namespace only; ext4 name alone does not verify physical device or MiniPC",
+    "major_minor": "253:4",
+    "mount_options": "rw,nosuid,nodev,relatime",
+    "mountpoint": "/work/target",
+    "physical_ext4_verified": false,
+    "source": "/dev/vda4",
+    "st_dev": 64772,
+    "super_options": [
+      "rw,seclabel,inode64,logbufs=8,logbsize=32k,prjquota"
+    ]
+  },
+  "fps": 30,
+  "imu_hz_per_stream": 200,
+  "kind": "writer-contention-ab-v1",
+  "limits": "Synthetic owned-buffer FIFO, no SDK/USB/ROS or status-persistence background load. Single/three writer groups share the output filesystem; observer-selected camera count is irrelevant. Process CPU includes synthetic generation/hash and extra readers; VmHWM includes the whole child. Simultaneous group RSS is sampled, not a sum of individual peaks. /proc PID IO includes that process and its threads but page-cache/writeback attribution is incomplete; diskstats are whole-device. No cache dropping, filesystem tuning, queue increase or durability weakening. SIGKILL after a durable checkpoint tests process-crash recovery, not physical power loss. Alternation/repeats improve reproducibility, not statistical significance or proof of unique cause. Overlay/tmpfs/container results do not establish MiniPC/ext4 behavior. Before/after writer-only differences cannot establish capture-service status-path performance.",
+  "max_output_bytes": 2147483648,
+  "max_wall_seconds": 300,
+  "output": "/work/target/storage-contention-20261105",
+  "pairs_per_writer": 30,
+  "planned_upper_bound_bytes": 789938176,
+  "queue_capacity": 16,
+  "repeats": 3,
+  "seconds_per_recording": 1,
+  "status_background_load": false,
+  "tool_sha256": "0e8ffcd532a1baf23330760c816063ddfbb6837cf4aa1a1e20b2f8a7f3a53fc2",
+  "uname": [
+    "Linux",
+    "611ecfb8761b",
+    "7.0.9-205.fc44.aarch64",
+    "#1 SMP PREEMPT_DYNAMIC Thu May 21 16:34:10 UTC 2026",
+    "aarch64",
+    ""
+  ]
+}
