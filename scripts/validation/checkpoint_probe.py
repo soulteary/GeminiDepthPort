@@ -182,14 +182,25 @@ class Trace:
         self.supported = obs.get('version') == 1
         self.enabled = obs.get('enabled')
         if type(obs.get('latest_event_id')) is int and obs['latest_event_id'] < self.cursor:raise ValueError('TRACE_COUNTER_RESET')
-        events = sorted((e for e in obs.get('events', []) if isinstance(e,dict) and type(e.get('event_id')) is int), key=lambda e: e['event_id'])
-        fresh = [e for e in events if e['event_id'] > self.cursor]
+        by_id = {}
+        for event in obs.get('events', []):
+            if not isinstance(event, dict) or type(event.get('event_id')) is not int or event['event_id'] <= 0:
+                raise ValueError('TRACE_EVENT_SCHEMA')
+            previous = by_id.setdefault(event['event_id'], event)
+            if previous != event:raise ValueError('TRACE_EVENT_CONFLICT')
+        events = [by_id[key] for key in sorted(by_id)]
+        fresh = [event for event in events if event['event_id'] > self.cursor]
         if fresh:
-            missing = max(0, fresh[0]['event_id']-self.cursor-1)
-            if self.cursor:
-                self.lost += missing
-            else:
-                self.before_start += missing
+            if type(obs.get('latest_event_id')) is int and fresh[-1]['event_id'] > obs['latest_event_id']:
+                raise ValueError('TRACE_EVENT_AFTER_LATEST')
+            expected = self.cursor + 1
+            first = True
+            for event in fresh:
+                missing = max(0, event['event_id'] - expected)
+                if self.cursor == 0 and first:self.before_start += missing
+                else:self.lost += missing
+                expected = event['event_id'] + 1
+                first = False
             self.cursor = fresh[-1]['event_id']
         # Do not copy status paths, configuration, device IDs or image payloads.
         status = {k: value.get(k) for k in ('state','ready','updated_unix_ms','pairs_published','pairs_rejected','publish_failures')}
@@ -227,9 +238,46 @@ class Target:
             if not self.status.is_absolute() or not pid or pid <= 0:
                 raise ValueError('HOST_STATUS_AND_PID_REQUIRED')
 
+    def _status_signature(self):
+        try:
+            info=self.status.stat()
+            return (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+        except OSError:return None
+
+    def _event_result(self, value, status, signature):
+        updated=value.get('updated_unix_ms')
+        result={'epoch':self.trace.epoch,'source_updated_unix_ms':updated,
+                'state':status['state'],'ready':status['ready'],'raw':status['raw']}
+        # Runtime status uses atomic rename. Cache only an unchanged inode/
+        # metadata version across the read; races force another validated read.
+        self._events_signature=signature if signature is not None and signature==self._status_signature() else None
+        self._events_cache=result
+        return dict(result, status_age_ms=time.time_ns()//1_000_000-updated if type(updated) is int else None)
+
+    def events(self, now):
+        """Read only the published status between resource/identity refreshes.
+
+        The resource path checks /proc identities once per resource sample.
+        Fast event polls require the same namespace PID and bind the trace to
+        the cached host PID/start ticks plus both session IDs; a changed PID
+        cannot silently reuse cached resource identity.
+        """
+        signature=self._status_signature()
+        if signature is not None and signature==getattr(self,'_events_signature',None):
+            result=self._events_cache.copy();updated=result['source_updated_unix_ms']
+            result['status_age_ms']=time.time_ns()//1_000_000-updated if type(updated) is int else None
+            return result, []
+        value = bounded_json(self.status)
+        event_identity=(value.get('pid'),value.get('session_id'),(value.get('raw_recording') or {}).get('session_id'))
+        if self.last_process is None or event_identity != getattr(self,'event_identity',None):
+            raise ValueError('WORKER_IDENTITY_REFRESH_REQUIRED')
+        status, events = self.trace.extract(value, self.last_process)
+        return self._event_result(value,status,signature), events
+
     def sample(self, now):
         if self.init and read_process(self.init)['start_ticks'] != self.init_start:
             raise ValueError('CONTAINER_PID_CHANGED')
+        signature=self._status_signature()
         value = bounded_json(self.status)
         ns_pid = value.get('pid')
         if type(ns_pid) is not int or ns_pid <= 0:
@@ -254,7 +302,9 @@ class Target:
                 raise ValueError('PROCESS_COUNTER_RESET')
             rates = {'cpu_cores': delta/os.sysconf('SC_CLK_TCK')/elapsed}
         status, events = self.trace.extract(value, process)
+        self.event_identity=(ns_pid,value.get('session_id'),(value.get('raw_recording') or {}).get('session_id'))
         self.last_process, self.last_time = process, now
+        self._event_result(value,status,signature)
         return {'process':process,'rates':rates,'status':status,'cgroup':read_group(self.group),'epoch':self.trace.epoch}, events
 
 

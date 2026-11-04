@@ -35,13 +35,17 @@ def validate_status(status, capacity):
 
 
 class Lifecycle:
-    def __init__(self, root, run, capacities, phase, disks=(), factory=None, interval=1., max_bytes=128*1024**2):
+    def __init__(self, root, run, capacities, phase, disks=(), factory=None, interval=1., event_interval=.2, max_bytes=128*1024**2):
         self.root=Path(root);self.root.mkdir(mode=0o700)
         self.run=run;self.capacities=capacities;self.phase=phase;self.disks=disks
         self.factory=factory or (lambda c:probe.Target(spec=c['container']+':/state/status.json'))
-        rt.require(0.2<=interval<=10 and max_bytes>0,"LIFECYCLE_LIMITS")
-        self.interval=interval;self.max_bytes=max_bytes;self.used=0;self.samples=0;self.errors=[];self.error_count=0
+        rt.require(0.2<=interval<=10 and .05<=event_interval<=.2 and event_interval<=interval and max_bytes>0,"LIFECYCLE_LIMITS")
+        self.interval=interval;self.event_interval=event_interval;self.max_bytes=max_bytes;self.used=0;self.samples=0;self.errors=[];self.error_count=0
         self.resource_seen={c['name']:0 for c in run['cameras']}
+        self.event_polls=0
+        self.polls={c['name']:{'reads':0,'maximum_read_gap_ns':0,'last_read_monotonic_ns':None,
+                    'last_status_age_ms':None,'maximum_status_age_ms':None,'lost_events_after_start':0,
+                    'history_events_before_start':0,'epoch':None,'loss_reports':0,'initial_history_reports':0} for c in run['cameras']}
         self.seen={c['name']:set() for c in run['cameras']};self.lock=threading.Lock();self.done=threading.Event()
         self.started=time.monotonic_ns();self.started_unix_ns=time.time_ns();self.max_gap_ns=0;self.last_sample_ns=None;self.cpu_ns=0;self.finished=None
         self.out=(self.root/'samples.jsonl').open('x')
@@ -69,32 +73,84 @@ class Lifecycle:
         self.error_count+=1
         if len(self.errors)<256:self.errors.append(error)
 
+    def _poll_meta(self, name, target, now, updated=None):
+        stats=self.polls[name]
+        last=stats['last_read_monotonic_ns']
+        gap=None if last is None else now-last
+        stats['reads']+=1;stats['last_read_monotonic_ns']=now
+        if gap is not None:stats['maximum_read_gap_ns']=max(stats['maximum_read_gap_ns'],gap)
+        age=time.time_ns()//1_000_000-updated if type(updated) is int else None
+        stats['last_status_age_ms']=age
+        if age is not None:stats['maximum_status_age_ms']=age if stats['maximum_status_age_ms'] is None else max(age,stats['maximum_status_age_ms'])
+        trace=getattr(target,'trace',None)
+        lost=getattr(trace,'lost',0)
+        if lost<stats['lost_events_after_start']:raise ValueError('TRACE_LOSS_COUNTER_RESET')
+        if lost>stats['lost_events_after_start']:
+            delta=lost-stats['lost_events_after_start']
+            self._error(name+':CHECKPOINT_EVENTS_LOST:'+str(lost))
+            stats['loss_reports']+=1
+        else:delta=0
+        stats['lost_events_after_start']=lost
+        before=getattr(trace,'before_start',0)
+        if before<stats['history_events_before_start']:raise ValueError('TRACE_INITIAL_HISTORY_COUNTER_RESET')
+        initial_delta=before-stats['history_events_before_start']
+        if initial_delta:
+            self._error(name+':CHECKPOINT_HISTORY_BEFORE_FIRST_READ:'+str(before))
+            stats['initial_history_reports']+=1
+        stats['history_events_before_start']=before
+        stats['epoch']=getattr(trace,'epoch',None)
+        return {'read_monotonic_ns':now,'read_gap_ns':gap,'status_age_ms':age,
+                'lost_events_after_start':lost,'new_lost_events':delta,
+                'history_events_before_start':stats['history_events_before_start'],'new_history_events_before_start':initial_delta,'epoch':stats['epoch']}
+
     def _run(self):
-        targets={};start_cpu=time.thread_time_ns()
+        targets={};start_cpu=time.thread_time_ns();next_resource=0
         try:
             while not self.done.is_set():
                 now=time.monotonic_ns();phase=self.phase();rows=[]
+                resource_due=now>=next_resource
                 for camera in self.run['cameras']:
-                    name=camera['name']
+                    name=camera['name'];read_at=time.monotonic_ns()
                     try:
                         if name not in targets:targets[name]=self.factory(camera)
-                        result,events=targets[name].sample(now)
-                        rows.append({'name':name,**result,'checkpoint_events':events})
-                        self.resource_seen[name]+=1
-                        if target_loss:=getattr(getattr(targets[name],'trace',None),'lost',0):self._error(name+':CHECKPOINT_EVENTS_LOST:'+str(target_loss))
+                        target=targets[name];read_at=time.monotonic_ns()
+                        if resource_due:
+                            result,events=target.sample(read_at)
+                            if getattr(target,'pid',None):result['thread_cpu']=probe.thread_cpu(target.pid)
+                            updated=(result.get('status') or {}).get('updated_unix_ms')
+                            self.resource_seen[name]+=1
+                        elif hasattr(target,'events'):
+                            result,events=target.events(read_at)
+                            updated=result.get('source_updated_unix_ms')
+                        else:
+                            # Compatibility for synthetic test factories without
+                            # a fast event API; production Target always has it.
+                            continue
+                        meta=self._poll_meta(name,target,read_at,updated)
+                        rows.append({'name':name,**result,'poll':meta,'checkpoint_events':events})
                     except Exception as error:
-                        rows.append({'name':name,'error':type(error).__name__+':'+str(error)})
+                        meta=self._poll_meta(name,targets.get(name),read_at)
+                        rows.append({'name':name,'poll':meta,'error':type(error).__name__+':'+str(error)})
                         if self.phase() in ('sample','wait-complete'):self._error(name+':'+str(error))
                 with self.lock:
-                    disk_values=probe.read_disks(self.disks) if self.disks else {}
-                    if set(disk_values)!=set(self.disks):self._error('MISSING_LIFECYCLE_DISK')
-                    if self.last_sample_ns is not None:self.max_gap_ns=max(self.max_gap_ns,now-self.last_sample_ns)
-                    self.last_sample_ns=now
-                    self._emit({'kind':'resource-sample','monotonic_ns':now,'unix_ns':time.time_ns(),'phase':phase,
-                                'cameras':rows,'disks':disk_values,'iteration_wall_ns':time.monotonic_ns()-now})
-                    self.samples+=1
-                    rt.require(self.samples<=100000,"LIFECYCLE_SAMPLE_LIMIT")
-                self.done.wait(self.interval)
+                    row={'kind':'resource-sample' if resource_due else 'event-sample',
+                         'monotonic_ns':now,'unix_ns':time.time_ns(),'phase':phase,
+                         'cameras':rows,'iteration_wall_ns':time.monotonic_ns()-now}
+                    if resource_due:
+                        disk_values=probe.read_disks(self.disks) if self.disks else {}
+                        if set(disk_values)!=set(self.disks):self._error('MISSING_LIFECYCLE_DISK')
+                        row['disks']=disk_values
+                        if self.last_sample_ns is not None:self.max_gap_ns=max(self.max_gap_ns,now-self.last_sample_ns)
+                        self.last_sample_ns=now
+                        self.samples+=1
+                        finished=time.monotonic_ns();period=int(self.interval*1e9)
+                        next_resource=(finished if finished-now>=period else now)+period
+                        rt.require(self.samples<=100000,"LIFECYCLE_SAMPLE_LIMIT")
+                    self._emit(row)
+                    self.event_polls+=1
+                    rt.require(self.event_polls<=500000,"LIFECYCLE_EVENT_POLL_LIMIT")
+                remaining=self.event_interval-(time.monotonic_ns()-now)/1e9
+                self.done.wait(max(0,remaining))
         except Exception as error:self._error(type(error).__name__+':'+str(error))
         finally:self.cpu_ns=time.thread_time_ns()-start_cpu
 
@@ -106,6 +162,8 @@ class Lifecycle:
         self.finished={'version':1,'samples':self.samples,'bytes':self.used,'max_bytes':self.max_bytes,
                        'started_monotonic_ns':self.started,'finished_monotonic_ns':time.monotonic_ns(),
                        'started_unix_ns':self.started_unix_ns,'finished_unix_ns':time.time_ns(),'maximum_sample_gap_ns':self.max_gap_ns,
+                       'resource_interval_seconds':self.interval,'event_interval_seconds':self.event_interval,
+                       'event_polls':self.event_polls,'event_targets':self.polls,
                        'observer_thread_cpu_ns':self.cpu_ns,'errors':self.errors,'error_count':self.error_count,'resource_samples':self.resource_seen,
                        'sampling_ok':not self.errors and all(self.resource_seen.values()),
                        'states':{k:sorted(s for s in v if s is not None) for k,v in self.seen.items()},

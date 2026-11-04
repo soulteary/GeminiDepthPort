@@ -1,0 +1,71 @@
+{
+  "rows": [
+    {
+      "variant": "before",
+      "repeat": 0,
+      "status_bytes": 45618,
+      "observer_cpu_seconds": 0.049237245,
+      "elapsed_seconds": 5.005826536,
+      "resources": 5,
+      "event_polls": 5,
+      "bytes": 179301,
+      "errors": []
+    },
+    {
+      "variant": "after",
+      "repeat": 0,
+      "status_bytes": 45618,
+      "observer_cpu_seconds": 0.055241259,
+      "elapsed_seconds": 5.003446475,
+      "resources": 5,
+      "event_polls": 25,
+      "bytes": 219131,
+      "errors": []
+    },
+    {
+      "variant": "after",
+      "repeat": 1,
+      "status_bytes": 45618,
+      "observer_cpu_seconds": 0.032261916,
+      "elapsed_seconds": 5.001273875,
+      "resources": 5,
+      "event_polls": 25,
+      "bytes": 219156,
+      "errors": []
+    },
+    {
+      "variant": "before",
+      "repeat": 1,
+      "status_bytes": 45618,
+      "observer_cpu_seconds": 0.026415246,
+      "elapsed_seconds": 5.002311924,
+      "resources": 5,
+      "event_polls": 5,
+      "bytes": 179378,
+      "errors": []
+    },
+    {
+      "variant": "before",
+      "repeat": 2,
+      "status_bytes": 45618,
+      "observer_cpu_seconds": 0.0134855,
+      "elapsed_seconds": 5.001866046,
+      "resources": 5,
+      "event_polls": 5,
+      "bytes": 179389,
+      "errors": []
+    },
+    {
+      "variant": "after",
+      "repeat": 2,
+      "status_bytes": 45618,
+      "observer_cpu_seconds": 0.043148,
+      "elapsed_seconds": 5.001601044,
+      "resources": 5,
+      "event_polls": 25,
+      "bytes": 219304,
+      "errors": []
+    }
+  ],
+  "scope": "synthetic three status targets sharing the real observer process; 5-second samples with atomic publication every 500ms, not camera/SDK throughput, no Docker children in fast path"
+}

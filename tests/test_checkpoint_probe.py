@@ -75,4 +75,73 @@ class CheckpointProbeTests(unittest.TestCase):
             finally:
                 worker.terminate();worker.wait(timeout=5)
 
+
+class EventCadenceTests(unittest.TestCase):
+    @staticmethod
+    def published(t):
+        # 30 FPS / 7 pairs per checkpoint, 11 completion events/checkpoint.
+        # Each 500 ms publication can expose a burst, rather than uniform events.
+        published=int(t/.5)*.5
+        latest=int((published+1e-8)/(7/30))*11
+        return {'session_id':'session','raw_recording':{'session_id':'raw','disk_stages':{
+            'checkpoint_observation':{'version':1,'enabled':True,'latest_event_id':latest,
+                'events':[{'event_id':i,'phase':'payload_sync'} for i in range(max(1,latest-63),latest+1)]}}}}
+
+    def test_fast_polls_cover_64_ring_with_publication_phase_and_completion_bursts(self):
+        process={'host_pid':1,'start_ticks':2}
+        slow=probe.Trace();fast=probe.Trace();seen=[]
+        for i in range(121):
+            _,events=fast.extract(self.published(i*.2),process);seen += [v['event_id'] for v in events]
+        for i in range(24):slow.extract(self.published(i*1.045),process)
+        self.assertEqual(fast.lost,0)
+        self.assertEqual(fast.before_start,0)
+        self.assertEqual(len(seen),len(set(seen)))
+        self.assertGreater(slow.lost,0)
+
+    def test_internal_gaps_duplicates_conflicts_and_counter_reset(self):
+        process={'host_pid':1,'start_ticks':2};trace=probe.Trace()
+        def source(ids):
+            value=self.published(0)
+            value['raw_recording']['disk_stages']['checkpoint_observation'].update(
+                latest_event_id=max(ids,default=0),events=[{'event_id':i,'phase':'payload_sync'} for i in ids])
+            return value
+        _,events=trace.extract(source([1,1,3]),process)
+        self.assertEqual([v['event_id'] for v in events],[1,3]);self.assertEqual(trace.lost,1)
+        self.assertEqual(trace.extract(source([1,3]),process)[1],[])
+        with self.assertRaisesRegex(ValueError,'COUNTER_RESET'):trace.extract(source([1]),process)
+        bad=source([4,4]);bad['raw_recording']['disk_stages']['checkpoint_observation']['events'][1]['phase']='readback'
+        with self.assertRaisesRegex(ValueError,'CONFLICT'):trace.extract(bad,process)
+
+    def test_fast_path_does_not_read_resource_counters_and_refuses_changed_identity(self):
+        from unittest.mock import patch
+        target=probe.Target.__new__(probe.Target)
+        target.status=Path('/private/synthetic-status');target.trace=probe.Trace()
+        target.last_process={'host_pid':123,'start_ticks':456}
+        target.ns_pid=17;target.event_identity=(17,'session','raw')
+        value=self.published(1);value.update(pid=17,updated_unix_ms=1)
+        with patch.object(probe,'bounded_json',return_value=value),patch.object(probe,'read_process',side_effect=AssertionError('resource read')):
+            result,events=target.events(2)
+            self.assertGreater(len(events),0);self.assertEqual(result['epoch'],0)
+            value['session_id']='changed'
+            with self.assertRaisesRegex(ValueError,'IDENTITY_REFRESH'):target.events(3)
+            value['session_id']='session';value['pid']=18
+            with self.assertRaisesRegex(ValueError,'IDENTITY_REFRESH'):target.events(4)
+
+    def test_fast_path_caches_only_the_same_published_file_version(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d)/'status.json';value=self.published(1)
+            value.update(version=1,kind='capture-service-status',pid=17,updated_unix_ms=1)
+            path.write_text(json.dumps(value))
+            target=probe.Target.__new__(probe.Target);target.status=path;target.trace=probe.Trace()
+            target.last_process={'host_pid':123,'start_ticks':456};target.event_identity=(17,'session','raw')
+            with patch.object(probe,'bounded_json',wraps=probe.bounded_json) as read:
+                self.assertTrue(target.events(1)[1]);self.assertEqual(target.events(2)[1],[])
+                self.assertEqual(read.call_count,1)
+                value['pid']=18
+                replacement=path.with_suffix('.tmp');replacement.write_text(json.dumps(value));replacement.replace(path)
+                with self.assertRaisesRegex(ValueError,'IDENTITY_REFRESH'):target.events(3)
+                with self.assertRaisesRegex(ValueError,'IDENTITY_REFRESH'):target.events(4)
+                self.assertEqual(read.call_count,3)
+
 if __name__=='__main__':unittest.main()

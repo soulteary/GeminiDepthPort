@@ -6,6 +6,8 @@ compiler/profile. Both children opt into checkpoint_pipeline. Long-tail injectio
 is confined to payload fsync; it delays real I/O and does not replace it.
 """
 import argparse
+import hashlib
+import shutil
 import json
 import os
 from pathlib import Path
@@ -19,6 +21,7 @@ def main():
     p.add_argument('--after', type=Path, required=True)
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--repeats', type=int, default=3)
+    p.add_argument('--remove-generated-recordings',action='store_true',help='remove only generated capture trees inside the new output after verification')
     a = p.parse_args()
     if not 3 <= a.repeats <= 10:
         p.error('repeats must be 3..10')
@@ -28,7 +31,7 @@ def main():
     library = (a.output / 'io-faults.so').resolve()
     subprocess.run(['cc', '-shared', '-fPIC', '-std=c11', '-Wall', '-Wextra', '-Werror',
                     str(source), '-ldl', '-o', str(library)], check=True)
-    rows = []
+    rows = []; expected_artifacts = {}
     for repeat in range(a.repeats):
         for profile in ('burst', 'paced'):
             for delay in (0, 200):
@@ -58,6 +61,14 @@ def main():
                         raise ValueError('readback/durability verification failed')
                     if d['uncommitted_pairs_peak'] > 32 or d['uncommitted_payload_bytes_peak'] > 16*1024*1024:
                         raise ValueError('credit limit exceeded')
+                    artifacts={name:hashlib.sha256((root/'capture'/name).read_bytes()).hexdigest()
+                               for name in ('snapshot.json','records.jsonl','checkpoint.json','manifest.json','COMPLETE')}
+                    key=(profile,delay)
+                    if key in expected_artifacts and artifacts!=expected_artifacts[key]:
+                        raise ValueError('before/after artifact SHA256 mismatch')
+                    expected_artifacts[key]=artifacts
+                    row['artifact_sha256']=artifacts
+                    if a.remove_generated_recordings:shutil.rmtree(root/'capture')
                     row.update(variant=variant, profile=profile, payload_fsync_delay_ms=delay,
                                repeat=repeat, verification_ns=int(d['verification']['total_ns']))
                     rows.append(row)

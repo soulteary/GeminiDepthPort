@@ -121,3 +121,78 @@ class LifecycleTests(unittest.TestCase):
                 if scenario=='lifecycle-fail':
                     self.assertEqual(saved['failed_stage'],'wait-complete')
                     self.assertTrue(any(v['kind']=='controller-status' and any((c.get('capture') or {}).get('imu',{}).get('error')=='IMU_QUEUE_OVERFLOW' for c in v['cameras']) for v in trace))
+
+class SplitCadenceTests(unittest.TestCase):
+    class Target:
+        def __init__(self,losses=()):
+            from types import SimpleNamespace
+            self.trace=SimpleNamespace(lost=0,before_start=0,epoch=0)
+            self.resources=0;self.reads=0;self.losses=losses
+        def _events(self):
+            if self.reads<len(self.losses):self.trace.lost=self.losses[self.reads]
+            self.reads+=1
+            return []
+        def sample(self,now):
+            self.resources+=1
+            return {'process':{'host_pid':1},'status':{'updated_unix_ms':time.time_ns()//1_000_000-100}},self._events()
+        def events(self,now):
+            return {'source_updated_unix_ms':time.time_ns()//1_000_000-100,'epoch':self.trace.epoch},self._events()
+
+    def test_resource_rate_remains_one_second_while_event_polls_are_fast_and_small(self):
+        with tempfile.TemporaryDirectory() as d:
+            target=self.Target()
+            run={'cameras':[{'name':'a'}]}
+            c=lifecycle.Lifecycle(Path(d)/'trace',run,{'a':128},lambda:'sample',factory=lambda _:target)
+            deadline=time.monotonic()+3
+            while target.reads<7:
+                self.assertLess(time.monotonic(),deadline);time.sleep(.01)
+            summary=c.stop()
+            self.assertLessEqual(target.resources,3);self.assertGreaterEqual(target.resources,2)
+            self.assertGreater(summary['event_polls'],summary['samples'])
+            self.assertEqual(summary['event_interval_seconds'],.2)
+            self.assertEqual(summary['resource_interval_seconds'],1.)
+            self.assertGreater(summary['event_targets']['a']['maximum_read_gap_ns'],0)
+            self.assertGreaterEqual(summary['event_targets']['a']['maximum_status_age_ms'],100)
+            rows=[json.loads(v) for v in (Path(d)/'trace/samples.jsonl').read_text().splitlines()]
+            fast=[r for r in rows if r['kind']=='event-sample']
+            self.assertTrue(fast)
+            self.assertTrue(all('process' not in r['cameras'][0] and 'disks' not in r for r in fast))
+            self.assertTrue(all(r['cameras'][0]['poll']['read_gap_ns']>0 for r in fast))
+
+    def test_repeated_cumulative_loss_is_reported_once_but_new_gaps_remain_terminal(self):
+        with tempfile.TemporaryDirectory() as d:
+            target=self.Target([0,3,3,3,5,5,5])
+            c=lifecycle.Lifecycle(Path(d)/'trace',{'cameras':[{'name':'a'}]},{'a':128},lambda:'wait-complete',factory=lambda _:target)
+            deadline=time.monotonic()+3
+            while target.reads<7:
+                self.assertLess(time.monotonic(),deadline);time.sleep(.01)
+            summary=c.stop()
+            self.assertFalse(summary['sampling_ok'])
+            self.assertEqual(summary['error_count'],2)
+            self.assertEqual(summary['event_targets']['a']['lost_events_after_start'],5)
+            self.assertEqual(summary['event_targets']['a']['loss_reports'],2)
+            self.assertEqual(summary['errors'],['a:CHECKPOINT_EVENTS_LOST:3','a:CHECKPOINT_EVENTS_LOST:5'])
+            rows=[json.loads(v) for v in (Path(d)/'trace/samples.jsonl').read_text().splitlines()]
+            deltas=[r['cameras'][0]['poll']['new_lost_events'] for r in rows if r['kind'] in ('resource-sample','event-sample')]
+            self.assertEqual(sum(deltas),5)
+
+    def test_initial_history_gaps_and_new_epoch_history_are_distinct_and_terminal(self):
+        class InitialTarget(self.Target):
+            def _events(self):
+                self.trace.before_start=4 if self.reads<3 else 7
+                self.trace.epoch=0 if self.reads<3 else 1
+                return super()._events()
+        with tempfile.TemporaryDirectory() as d:
+            target=InitialTarget()
+            c=lifecycle.Lifecycle(Path(d)/'trace',{'cameras':[{'name':'a'}]},{'a':128},lambda:'wait-complete',factory=lambda _:target)
+            deadline=time.monotonic()+3
+            while target.reads<6:
+                self.assertLess(time.monotonic(),deadline);time.sleep(.01)
+            with self.assertRaisesRegex(ValueError,'LIFECYCLE_INCOMPLETE'):c.stop(successful=True)
+            summary=c.finished
+            self.assertFalse(summary['sampling_ok'])
+            self.assertEqual(summary['event_targets']['a']['lost_events_after_start'],0)
+            self.assertEqual(summary['event_targets']['a']['history_events_before_start'],7)
+            self.assertEqual(summary['event_targets']['a']['initial_history_reports'],2)
+            self.assertEqual(summary['event_targets']['a']['epoch'],1)
+            self.assertEqual(summary['errors'],['a:CHECKPOINT_HISTORY_BEFORE_FIRST_READ:4','a:CHECKPOINT_HISTORY_BEFORE_FIRST_READ:7'])

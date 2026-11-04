@@ -1,0 +1,545 @@
+diff --git a/crates/offline-depth/src/recording/chunked.rs b/crates/offline-depth/src/recording/chunked.rs
+index 184c28b..f1ae961 100644
+--- a/crates/offline-depth/src/recording/chunked.rs
++++ b/crates/offline-depth/src/recording/chunked.rs
+@@ -2,6 +2,7 @@
+ //! an open chunk: payload, index and directory entries are synced first.
+ use super::*;
+ use std::io::{Read, Seek, SeekFrom, Write};
++use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
+ 
+ pub(super) const INDEX_BUFFER_BYTES: usize = 64 * 1024;
+ pub(super) const CHUNK_PAIRS: u64 = 32;
+@@ -15,16 +16,123 @@ pub(super) struct Chunked {
+     pub index_buffer: Vec<u8>,
+     pipeline: bool,
+     pending: Option<PendingCheckpoint>,
++    worker: Option<CheckpointWorker>,
+     checkpoint_bytes: u64,
+     verified: Option<VerifiedPrefix>,
+ }
+ struct PendingCheckpoint {
+-    task: std::thread::JoinHandle<Result<VerifiedPrefix>>,
++    task: CheckpointCompletion,
+     checkpoint_bytes: u64,
+     payload_bytes: u64,
+     pairs: u64,
+     info: CheckpointInfo,
+ }
++// Files are retained by the one recording-local worker. sync_all does not
++// change the shared index file offset. Directory barriers use the same inode
++// throughout the private stage lifetime, including after checkpoint rename.
++struct CheckpointFiles {
++    records: fs::File,
++    directory: fs::File,
++}
++impl CheckpointFiles {
++    fn new(records: &fs::File, stage: &Path) -> Result<Self> {
++        Ok(Self {
++            records: records.try_clone()?,
++            directory: fs::File::open(stage)?,
++        })
++    }
++}
++type CheckpointWork = Box<dyn FnOnce(&CheckpointFiles) -> Result<VerifiedPrefix> + Send>;
++struct CheckpointJob {
++    work: CheckpointWork,
++    done: SyncSender<Result<VerifiedPrefix>>,
++}
++struct CheckpointCompletion {
++    receiver: Receiver<Result<VerifiedPrefix>>,
++    ready: Option<Result<VerifiedPrefix>>,
++}
++impl CheckpointCompletion {
++    fn is_finished(&mut self) -> bool {
++        if self.ready.is_none() {
++            match self.receiver.try_recv() {
++                Ok(result) => self.ready = Some(result),
++                Err(TryRecvError::Disconnected) => {
++                    self.ready = Some(Err(OfflineError::Invalid("RECORDING_VERIFIER_PANIC")))
++                }
++                Err(TryRecvError::Empty) => return false,
++            }
++        }
++        true
++    }
++    fn join(self) -> Result<VerifiedPrefix> {
++        self.ready.unwrap_or_else(|| {
++            self.receiver
++                .recv()
++                .unwrap_or(Err(OfflineError::Invalid("RECORDING_VERIFIER_PANIC")))
++        })
++    }
++}
++struct CheckpointWorker {
++    sender: Option<SyncSender<CheckpointJob>>,
++    thread: Option<std::thread::JoinHandle<()>>,
++}
++impl CheckpointWorker {
++    fn new(files: CheckpointFiles) -> Result<Self> {
++        // The writer still owns exactly one PendingCheckpoint and the original
++        // 32-pair / 16-MiB credits. This channel never accumulates extra prefixes.
++        let (sender, receiver) = mpsc::sync_channel::<CheckpointJob>(1);
++        let thread = std::thread::Builder::new()
++            .name("recording-checkpoint".into())
++            .spawn(move || {
++                while let Ok(job) = receiver.recv() {
++                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++                        (job.work)(&files)
++                    }))
++                    .unwrap_or(Err(OfflineError::Invalid("RECORDING_VERIFIER_PANIC")));
++                    let failed = result.is_err();
++                    let _ = job.done.send(result);
++                    // Failed recording work is terminal; no later prefix may use
++                    // partially advanced verification or checkpoint state.
++                    if failed {
++                        break;
++                    }
++                }
++            })?;
++        Ok(Self {
++            sender: Some(sender),
++            thread: Some(thread),
++        })
++    }
++    fn dispatch(
++        &self,
++        work: impl FnOnce(&CheckpointFiles) -> Result<VerifiedPrefix> + Send + 'static,
++    ) -> Result<CheckpointCompletion> {
++        let (done, receiver) = mpsc::sync_channel(1);
++        match self.sender.as_ref().unwrap().try_send(CheckpointJob {
++            work: Box::new(work),
++            done,
++        }) {
++            Ok(()) => Ok(CheckpointCompletion {
++                receiver,
++                ready: None,
++            }),
++            Err(TrySendError::Full(_)) => {
++                Err(OfflineError::Invalid("RECORDING_CHECKPOINT_QUEUE_FULL"))
++            }
++            Err(TrySendError::Disconnected(_)) => {
++                Err(OfflineError::Invalid("RECORDING_CHECKPOINT_WORKER_STOPPED"))
++            }
++        }
++    }
++}
++impl Drop for CheckpointWorker {
++    fn drop(&mut self) {
++        self.sender.take();
++        if let Some(thread) = self.thread.take() {
++            let _ = thread.join();
++        }
++    }
++}
+ impl Chunked {
+     pub(super) fn pending_credits(&self) -> (u64, u64) {
+         self.pending
+@@ -288,6 +396,12 @@ impl RawRecordingWriter {
+             .chunked
+             .as_mut()
+             .ok_or(OfflineError::Invalid("RECORDING_PIPELINE_REQUIRES_V3"))?;
++        if state.worker.is_none() {
++            state.worker = Some(CheckpointWorker::new(CheckpointFiles::new(
++                &self.records,
++                &self.stage,
++            )?)?);
++        }
+         state.pipeline = true;
+         Ok(())
+     }
+@@ -321,8 +435,8 @@ impl RawRecordingWriter {
+             .and_then(|n| n.checked_add(evidence))
+             .ok_or(OfflineError::Invalid("RECORDING_RANGE_OVERFLOW"))? as u64;
+         require(length <= MAX_CHUNK, "RECORDING_RANGE_LIMIT")?;
+-        let state = self.chunked.as_ref().unwrap();
+-        if state.pending.as_ref().is_some_and(|p| p.task.is_finished()) {
++        let state = self.chunked.as_mut().unwrap();
++        if state.pending.as_mut().is_some_and(|p| p.task.is_finished()) {
+             self.complete_pending()?;
+         }
+         let state = self.chunked.as_ref().unwrap();
+@@ -480,19 +594,18 @@ impl RawRecordingWriter {
+         // offset. Readers remain bounded by the sealed index_bytes prefix while
+         // the append thread may write later records to the same append-only file.
+         let chunk_pairs = chunk.pairs;
+-        let records = self.records.try_clone()?;
+         let stage = self.stage.clone();
+         let checkpoint_bytes = raw.len() as u64;
+         let work_diagnostics = diagnostics.clone();
+-        let work = move || -> Result<VerifiedPrefix> {
++        let work = move |files: &CheckpointFiles| -> Result<VerifiedPrefix> {
+             work_diagnostics.1.measure(info, Phase::PayloadSync, || {
+                 work_diagnostics.measure("fsync", || chunk.file.sync_all())
+             })?;
+             work_diagnostics.1.measure(info, Phase::IndexSync, || {
+-                work_diagnostics.measure("fsync", || records.sync_all())
++                work_diagnostics.measure("fsync", || files.records.sync_all())
+             })?;
+             work_diagnostics.1.measure(info, Phase::DirectorySync, || {
+-                work_diagnostics.measure("fsync", || fs::File::open(&stage)?.sync_all())
++                work_diagnostics.measure("fsync", || files.directory.sync_all())
+             })?;
+             let verified = verify_checkpoint(
+                 stage.clone(),
+@@ -501,16 +614,27 @@ impl RawRecordingWriter {
+                 work_diagnostics.clone(),
+                 info,
+             )?;
+-            persist_checkpoint(&stage, &checkpoint, &raw, &work_diagnostics, info)?;
++            persist_checkpoint(
++                &stage,
++                &checkpoint,
++                &raw,
++                &work_diagnostics,
++                info,
++                &files.directory,
++            )?;
+             Ok(verified)
+         };
+         if asynchronous {
+             let payload_bytes = info.payload_bytes.unwrap();
+             let pairs = chunk_pairs;
+             let task = diagnostics.1.measure(info, Phase::VerifyDispatch, || {
+-                std::thread::Builder::new()
+-                    .name("recording-checkpoint".into())
+-                    .spawn(work)
++                self.chunked
++                    .as_ref()
++                    .unwrap()
++                    .worker
++                    .as_ref()
++                    .unwrap()
++                    .dispatch(work)
+             })?;
+             self.chunked.as_mut().unwrap().pending = Some(PendingCheckpoint {
+                 task,
+@@ -521,7 +645,8 @@ impl RawRecordingWriter {
+             });
+             Ok(())
+         } else {
+-            let verified = work()?;
++            let files = CheckpointFiles::new(&self.records, &self.stage)?;
++            let verified = work(&files)?;
+             self.accept_checkpoint(verified, checkpoint_bytes);
+             Ok(())
+         }
+@@ -534,10 +659,7 @@ impl RawRecordingWriter {
+                 self.diagnostics
+                     .1
+                     .measure(pending.info, Phase::VerifyWait, || -> Result<_> {
+-                        pending
+-                            .task
+-                            .join()
+-                            .map_err(|_| OfflineError::Invalid("RECORDING_VERIFIER_PANIC"))?
++                        pending.task.join()
+                     })?;
+             self.accept_checkpoint(verified, pending.checkpoint_bytes);
+         }
+@@ -559,6 +681,7 @@ fn persist_checkpoint(
+     raw: &[u8],
+     diagnostics: &RawRecordingDiagnostics,
+     info: CheckpointInfo,
++    directory: &fs::File,
+ ) -> Result<()> {
+     let temporary = stage.join(".checkpoint.tmp");
+     diagnostics.1.measure(info, Phase::CheckpointWrite, || {
+@@ -572,7 +695,7 @@ fn persist_checkpoint(
+     diagnostics
+         .1
+         .measure(info, Phase::CheckpointDirectorySync, || {
+-            diagnostics.measure("fsync", || fs::File::open(stage)?.sync_all())
++            diagnostics.measure("fsync", || directory.sync_all())
+         })?;
+     let mut stats = diagnostics.0.lock().unwrap_or_else(|e| e.into_inner());
+     stats.durable_pairs = checkpoint.record_count;
+@@ -848,3 +971,166 @@ mod write_tests {
+         assert_eq!(calls, 0);
+     }
+ }
++
++#[cfg(test)]
++mod checkpoint_worker_tests {
++    use super::*;
++    use std::{sync::mpsc, time::Duration};
++
++    fn prefix(count: u64) -> VerifiedPrefix {
++        VerifiedPrefix {
++            imu: ImuProgress::default(),
++            count,
++            index_bytes: count,
++            digest: ring::digest::Context::new(&ring::digest::SHA256),
++            previous: None,
++            position: None,
++        }
++    }
++    fn worker(root: &Path) -> CheckpointWorker {
++        let records = fs::File::create(root.join("records")).unwrap();
++        CheckpointWorker::new(CheckpointFiles::new(&records, root).unwrap()).unwrap()
++    }
++    #[test]
++    fn one_worker_reuses_files_and_bounded_dispatch_never_blocks_append() {
++        let root = tempfile::tempdir().unwrap();
++        let worker = worker(root.path());
++        let (entered_tx, entered) = mpsc::channel();
++        let (release_tx, release) = mpsc::channel();
++        let mut first = worker
++            .dispatch(move |files| {
++                entered_tx
++                    .send((
++                        std::thread::current().id(),
++                        files.records.metadata().unwrap().len(),
++                    ))
++                    .unwrap();
++                release.recv().unwrap();
++                Ok(prefix(1))
++            })
++            .unwrap();
++        let (thread, length) = entered.recv_timeout(Duration::from_secs(2)).unwrap();
++        assert_eq!(length, 0);
++        assert!(!first.is_finished());
++        let (next_tx, next) = mpsc::channel();
++        let second = worker
++            .dispatch(move |files| {
++                next_tx
++                    .send((
++                        std::thread::current().id(),
++                        files.records.metadata().unwrap().len(),
++                    ))
++                    .unwrap();
++                Ok(prefix(2))
++            })
++            .unwrap();
++        assert_eq!(
++            worker.dispatch(|_| Ok(prefix(3))).err().unwrap().code(),
++            "RECORDING_CHECKPOINT_QUEUE_FULL"
++        );
++        release_tx.send(()).unwrap();
++        assert_eq!(first.join().unwrap().count, 1);
++        assert_eq!(second.join().unwrap().count, 2);
++        assert_eq!(
++            next.recv_timeout(Duration::from_secs(2)).unwrap(),
++            (thread, 0)
++        );
++    }
++    #[test]
++    fn error_and_panic_wake_waiters_and_stop_later_dispatch() {
++        for panic in [false, true] {
++            let root = tempfile::tempdir().unwrap();
++            let worker = worker(root.path());
++            let task = worker
++                .dispatch(move |_| {
++                    assert!(!panic, "injected checkpoint panic");
++                    Err(OfflineError::Invalid("INJECTED_CHECKPOINT_IO"))
++                })
++                .unwrap();
++            assert_eq!(
++                task.join().err().unwrap().code(),
++                if panic {
++                    "RECORDING_VERIFIER_PANIC"
++                } else {
++                    "INJECTED_CHECKPOINT_IO"
++                }
++            );
++            let start = std::time::Instant::now();
++            while !worker.thread.as_ref().unwrap().is_finished() {
++                assert!(start.elapsed() < Duration::from_secs(2));
++                std::thread::yield_now();
++            }
++            assert_eq!(
++                worker.dispatch(|_| Ok(prefix(9))).err().unwrap().code(),
++                "RECORDING_CHECKPOINT_WORKER_STOPPED"
++            );
++        }
++    }
++    #[test]
++    fn completed_and_disconnected_results_are_observable_without_blocking() {
++        let (tx, receiver) = mpsc::sync_channel(1);
++        tx.send(Ok(prefix(7))).unwrap();
++        let mut task = CheckpointCompletion {
++            receiver,
++            ready: None,
++        };
++        assert!(task.is_finished());
++        assert!(task.is_finished());
++        assert_eq!(task.join().unwrap().count, 7);
++        let (tx, receiver) = mpsc::sync_channel(1);
++        drop(tx);
++        let mut task = CheckpointCompletion {
++            receiver,
++            ready: None,
++        };
++        assert!(task.is_finished());
++        assert_eq!(
++            task.join().err().unwrap().code(),
++            "RECORDING_VERIFIER_PANIC"
++        );
++        let (tx, receiver) = mpsc::sync_channel(1);
++        drop(tx);
++        let task = CheckpointCompletion {
++            receiver,
++            ready: None,
++        };
++        assert_eq!(
++            task.join().err().unwrap().code(),
++            "RECORDING_VERIFIER_PANIC"
++        );
++    }
++    #[test]
++    fn drop_waits_for_active_and_bounded_pending_work_even_if_results_are_dropped() {
++        let root = tempfile::tempdir().unwrap();
++        let worker = worker(root.path());
++        let (entered_tx, entered) = mpsc::channel();
++        let (release_tx, release) = mpsc::channel();
++        let first = worker
++            .dispatch(move |_| {
++                entered_tx.send(()).unwrap();
++                release.recv().unwrap();
++                Ok(prefix(1))
++            })
++            .unwrap();
++        entered.recv_timeout(Duration::from_secs(2)).unwrap();
++        let (last_tx, last) = mpsc::channel();
++        let second = worker
++            .dispatch(move |_| {
++                last_tx.send(()).unwrap();
++                Ok(prefix(2))
++            })
++            .unwrap();
++        drop(first);
++        drop(second);
++        let (done_tx, done) = mpsc::channel();
++        let dropping = std::thread::spawn(move || {
++            drop(worker);
++            done_tx.send(()).unwrap();
++        });
++        assert!(done.recv_timeout(Duration::from_millis(30)).is_err());
++        release_tx.send(()).unwrap();
++        done.recv_timeout(Duration::from_secs(2)).unwrap();
++        dropping.join().unwrap();
++        last.recv_timeout(Duration::from_secs(2)).unwrap();
++    }
++}
+diff --git a/crates/offline-depth/tests/chunked_recording.rs b/crates/offline-depth/tests/chunked_recording.rs
+index 7adad0a..18356f9 100644
+--- a/crates/offline-depth/tests/chunked_recording.rs
++++ b/crates/offline-depth/tests/chunked_recording.rs
+@@ -1172,6 +1172,14 @@ fn pipeline_commit_failure_child() {
+     let (snapshot, pair, pixels) = fixture();
+     let mut writer =
+         RawRecordingWriter::begin_chunked(&root, "capture", snapshot, 1_000_000).unwrap();
++    let thread_start_fault =
++        std::env::var("GDP_IO_FAIL_OP").ok().as_deref() == Some("pthread_create");
++    if thread_start_fault {
++        fs::write(root.join("armed"), b"1").unwrap();
++        assert!(writer.enable_checkpoint_pipeline().is_err());
++        assert!(!root.join("capture/COMPLETE").exists());
++        return;
++    }
+     writer.enable_checkpoint_pipeline().unwrap();
+     for n in 1..=16 {
+         append(&mut writer, &pair, &pixels, n);
+@@ -1706,6 +1714,24 @@ fn checkpoint_observation_preserves_artifacts_and_both_readbacks() {
+                         report["checkpoints"].as_u64().unwrap() - 1
+                     );
+                 }
++                #[cfg(target_os = "linux")]
++                if pipeline {
++                    let worker_tids: std::collections::BTreeSet<_> = obs["events"]
++                        .as_array()
++                        .unwrap()
++                        .iter()
++                        .filter(|event| {
++                            event["phase"] == "payload_sync"
++                                && event["info"]["asynchronous"] == true
++                        })
++                        .map(|event| event["tid"].as_u64().unwrap())
++                        .collect();
++                    assert_eq!(
++                        worker_tids.len(),
++                        1,
++                        "all asynchronous checkpoints reuse one recording-local worker"
++                    );
++                }
+                 for event in obs["events"].as_array().unwrap() {
+                     assert_eq!(event["ok"], true);
+                     assert!(event["info"]["prefix_pairs"].as_u64().unwrap() <= 33);
+@@ -1821,3 +1847,78 @@ fn reader_cpu_profile_is_opt_in_and_keeps_validation_and_error_guards() {
+         );
+     }
+ }
++
++#[cfg(target_os = "linux")]
++#[test]
++#[ignore = "isolated repeated checkpoint synchronization tail child"]
++fn pipeline_repeated_sync_tails_child() {
++    let root = std::path::PathBuf::from(std::env::var_os("GDP_PIPELINE_ROOT").unwrap());
++    let (snapshot, pair, pixels) = fixture();
++    let diagnostics = RawRecordingDiagnostics::with_checkpoint_observation(true);
++    let mut writer = RawRecordingWriter::begin_chunked_with_diagnostics(
++        &root,
++        "repeated",
++        snapshot,
++        1_000_000,
++        diagnostics.clone(),
++    )
++    .unwrap();
++    writer.enable_checkpoint_pipeline().unwrap();
++    // Enabling an already enabled, empty pipeline must not start another worker.
++    writer.enable_checkpoint_pipeline().unwrap();
++    for n in 1..=97 {
++        append(&mut writer, &pair, &pixels, n);
++    }
++    let path = writer.finish().unwrap();
++    let report = diagnostics.report();
++    assert_eq!(report["durable_pairs"], 97);
++    assert_eq!(
++        report["validation_image_bytes"],
++        97 * 2 * (4 + pixels.len())
++    );
++    assert!(report["uncommitted_pairs_peak"].as_u64().unwrap() <= 32);
++    assert!(report["uncommitted_payload_bytes_peak"].as_u64().unwrap() <= 16 * 1024 * 1024);
++    assert_eq!(read_all(&path, false).len(), 97);
++    let events = report["checkpoint_observation"]["events"]
++        .as_array()
++        .unwrap();
++    let tids: std::collections::BTreeSet<_> = events
++        .iter()
++        .filter(|event| event["phase"] == "payload_sync" && event["info"]["asynchronous"] == true)
++        .map(|event| event["tid"].as_u64().unwrap())
++        .collect();
++    assert_eq!(tids.len(), 1);
++    assert!(
++        report["checkpoint_observation"]["stages"]["payload_sync"]["wall"]["samples"]
++            .as_u64()
++            .unwrap()
++            >= 7
++    );
++}
++#[cfg(target_os = "linux")]
++#[test]
++fn repeated_checkpoint_sync_tails_keep_credits_hashes_and_one_worker() {
++    let root = tempfile::tempdir().unwrap();
++    let library = io_faults::compile(root.path());
++    let marker = root.path().join("injected");
++    let mut command = Command::new(std::env::current_exe().unwrap());
++    command
++        .args([
++            "--exact",
++            "pipeline_repeated_sync_tails_child",
++            "--ignored",
++            "--nocapture",
++        ])
++        .env("GDP_PIPELINE_ROOT", root.path())
++        .env("GDP_IO_REPEAT", "1")
++        .env("GDP_IO_DELAY_MS", "40");
++    io_faults::inject(&mut command, &library, "fsync", ".bin", &marker);
++    let output = command.output().unwrap();
++    assert!(
++        output.status.success(),
++        "{}{}",
++        String::from_utf8_lossy(&output.stdout),
++        String::from_utf8_lossy(&output.stderr)
++    );
++    io_faults::assert_injected(&marker, "fsync");
++}
