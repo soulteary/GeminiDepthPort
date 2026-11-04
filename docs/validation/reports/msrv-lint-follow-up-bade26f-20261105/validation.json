@@ -1,0 +1,42 @@
+{
+  "base_commit": "bade26f7079eb683cfa38c87379c57af1eafa0f7",
+  "rust_1_85_actual": {
+    "version": "1.85.0 (4d91de4e4 2025-02-17)",
+    "fmt": true,
+    "data_plane_packages": 11,
+    "clippy_all_targets_deny_warnings": true,
+    "raw_overflow_test_passed": true,
+    "critical": {
+      "critical": {
+        "completed_sequence": 37,
+        "entered_unix_ms": 1793815242902,
+        "ok": true,
+        "pump_calls": 98,
+        "pump_failed": false,
+        "returned_unix_ms": 1793815243922,
+        "sequence": 37,
+        "target": {
+          "raw_state": "failed",
+          "state": "ready"
+        },
+        "wall_ns": 1019612934
+      },
+      "imu_queue_peak": 19,
+      "max_drain_ns": 103588168,
+      "publish_progress_while_fenced": 303
+    }
+  },
+  "release_driver": {
+    "rust": "1.90.0",
+    "groups": 6,
+    "independent_recovery": true,
+    "hash_encoding_values_unchanged": true,
+    "performance_comparison": false
+  },
+  "source_sha256": {
+    "crates/capture-probe/tests/service_supervision.rs": "5fbc91e676e640d961e80304d020f3d5b9957c989e2898a750413fef13f61b17",
+    "crates/offline-depth/tests/writer_contention_benchmark.rs": "7f0f597c472f4acafd59ebf757c7c95ec3b28fb6363370061dc16e59cd487db9"
+  },
+  "production_code_unchanged": true,
+  "old_experiment_and_failure_evidence_unchanged": true
+}

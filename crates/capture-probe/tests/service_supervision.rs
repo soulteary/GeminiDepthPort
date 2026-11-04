@@ -3801,7 +3801,7 @@ fn raw_overflow_critical_fsync_does_not_create_a_secondary_imu_overflow() {
         loop {
             let latest = status(&f);
             if done(&latest) {
-                return latest;
+                break latest;
             }
             let exit = child.try_wait().unwrap();
             if exit.is_some() || started.elapsed() >= Duration::from_secs(8) {
@@ -4452,8 +4452,10 @@ fn quality_persistence_ab_benchmark() {
                         digest::digest(&digest::SHA256, &fs::read(job.join(name)).unwrap())
                             .as_ref()
                             .iter()
-                            .map(|b| format!("{b:02x}"))
-                            .collect::<String>()
+                            .fold(String::with_capacity(64), |mut hex, byte| {
+                                write!(&mut hex, "{byte:02x}").unwrap();
+                                hex
+                            })
                     ),
                 )
             })

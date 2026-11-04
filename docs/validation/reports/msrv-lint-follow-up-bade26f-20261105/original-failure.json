@@ -1,0 +1,11 @@
+{
+  "commit": "bade26f7079eb683cfa38c87379c57af1eafa0f7",
+  "job_id": 126750103430,
+  "rust": "1.85.0",
+  "data_plane_tests_passed": true,
+  "failed_step": "Lint data plane",
+  "lint": "clippy::format_collect",
+  "file": "crates/offline-depth/tests/writer_contention_benchmark.rs",
+  "line": 434,
+  "production_code_change": false
+}

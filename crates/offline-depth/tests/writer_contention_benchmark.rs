@@ -13,6 +13,7 @@ use ring::digest::{Context, SHA256};
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
+    fmt::Write,
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex},
@@ -431,7 +432,13 @@ fn writer_contention_child() {
     let state = queue.state.lock().unwrap();
     let complete = reason.is_none() && error.is_none() && written == pairs;
     let digest = input.finish();
-    let input_sha256: String = digest.as_ref().iter().map(|n| format!("{n:02x}")).collect();
+    let input_sha256 = digest
+        .as_ref()
+        .iter()
+        .fold(String::with_capacity(64), |mut hex, byte| {
+            write!(&mut hex, "{byte:02x}").unwrap();
+            hex
+        });
     let report = json!({"kind":"writer-contention-child-v1","common_driver_sha256":sha256(include_bytes!("writer_contention_benchmark.rs")),"ok":complete,"pairs":pairs,
         "submitted_pairs":submitted,"written_pairs":written,"reason":reason,"writer_error":error,
         "queue_capacity":CAPACITY,"queue_peak":state.peak,"overflow":u64::from(reason == Some("RAW_QUEUE_OVERFLOW")),"discarded_pairs":state.discarded,

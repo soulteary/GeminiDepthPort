@@ -111,3 +111,10 @@ Rust 失败只留下了“worker exited before injection”，也不能据此认
 超窗耗时加固前的中间本地验证：Linux 全量 Python 495 项通过、1 项既有条件跳过（113.313 秒）；带 init 的完整服务测试 70 项通过、5 项具名忽略（137.83 秒）；最终 Clippy、格式、真实 writer 六组和独立恢复全部通过。源码摘要、前后补丁、正反回归及失败尝试的原始日志均在新归档清单内。
 
 实际耗时超窗保护后的最终结果：Linux 全量 Python 496 项通过、1 项既有条件跳过（135.479 秒）；Linux Python 3.11/3.13 与显式忽略 SIGTERM 的专项各 22 项通过、无跳过；最终脚本在另一新目录完成真实 writer 六组与独立 SIGKILL 恢复。此前中间控制实验和源码 diff 原样另行保留，最终结果清单绑定当前文件摘要。
+
+
+## Rust 1.85 最低版本兼容复验
+
+`bade26f` 的十项远端检查最终九项通过，全部数据面测试亦通过，唯一失败为 Rust 1.85 的 `clippy::format_collect`：公共实验驱动用逐字节 `format!().collect()` 生成十六进制。两处 benchmark 编码现改为预分配 64 字节字符串并用 `fmt::Write` 追加；在确认阶段的闭包里使用等价 `break latest`，避免该旧 Clippy 把闭包内 `return` 误认为外层提前返回而报告 zombie。没有屏蔽 lint，没有修改生产逻辑、真实 wait/stop、队列或期限。
+
+独立 Linux 容器实际安装 Rust 1.85.0，CI 同款 11 个数据面包的格式检查、all-targets Clippy（`-D warnings`）及 raw overflow 故障单项均通过；故障单项约 1.02 秒 fence、98 次 pump、IMU 峰值 19/128、无二次溢出。重新编译的公共 release 驱动在另一新目录完成六组及独立恢复，新旧真实输入 SHA256 完全一致。这些是兼容与正确性验证，不作为新的性能 A/B。原失败日志、实际工具链验证和源码摘要另存 `reports/msrv-lint-follow-up-bade26f-20261105/`；旧实验、首次 CI 及实机证据保持原字节。公共 driver 的源码身份随兼容修正更新，使用最新脚本时需按前文重新构建同一份 driver。
