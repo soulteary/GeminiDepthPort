@@ -104,9 +104,28 @@ class Attachment:
         return identity
 
     def sample(self, all_threads=False, max_threads=64, stack_bytes=8192):
+        status_issue = None
         try:
             before = self.check()
-            status = read_json(self.status_path); status_matches(status, self.pin)
+            status = None
+            try:
+                candidate = read_json(self.status_path)
+            except (OSError,ValueError) as error:
+                status_issue = {'state':'unavailable','detail':type(error).__name__+':'+str(error)}
+            else:
+                keys = ('generation','config_sha256','instance_id','session_id','pid','restart_attempt')
+                if type(candidate) is not dict or not all(key in candidate for key in keys):
+                    status_issue = {'state':'schema-unavailable','detail':'status identity fields missing or invalid JSON object'}
+                else:
+                    # A present but different identity remains a hard rejection;
+                    # unreadable diagnostics never re-pin or change the worker.
+                    status_matches(candidate,self.pin)
+                    status = candidate
+            try:
+                compacted = compact_status(status) if status is not None else None
+            except (TypeError,ValueError,AttributeError) as error:
+                compacted = None
+                status_issue = {'state':'schema-unavailable','detail':type(error).__name__+':'+str(error)}
             tasks = self.proc/str(self.pid)/'task'; candidates = [tasks/str(self.pid)]; scanned = 0; scan_truncated = False
             with os.scandir(tasks) as entries:
                 for entry in entries:
@@ -132,8 +151,9 @@ class Attachment:
                         stack['sha256']=digest
                         if len(self.stack_cache)>=1024:self.stack_cache.pop(next(iter(self.stack_cache)))
                         self.stack_cache[key]=(digest,self.sample_index)
-            return {'name': self.name, 'state': 'observed', 'pid': self.pid, 'start_ticks': self.started,'worker_sample':self.sample_index,
-                'status': compact_status(status), 'threads': rows,
+            return {'name': self.name, 'state': 'status-unavailable' if status_issue else 'observed', 'pid': self.pid, 'start_ticks': self.started,'worker_sample':self.sample_index,
+                **({'status_read':status_issue} if status_issue else {}),
+                'status': compacted, 'threads': rows,
                 'thread_selection': 'all-bounded' if all_threads else 'main-and-native-checkpoint-status',
                 'threads_truncated': truncated, 'thread_scan_truncated': scan_truncated}
         except (FileNotFoundError, ProcessLookupError) as error:
@@ -143,10 +163,11 @@ class Attachment:
                 self.terminal=True;self.identity_failed=True
                 return {'name':self.name,'pid':self.pid,'state':'identity-rejected','detail':str(changed),'threads':None}
             else:
-                self.terminal=True;self.identity_failed=True
-                return {'name':self.name,'pid':self.pid,'state':'binding-evidence-unavailable','detail':str(error),'threads':None}
+                return {'name':self.name,'pid':self.pid,'state':'proc-batch-unavailable','detail':str(error),'threads':None,
+                        **({'status_read':status_issue} if status_issue else {})}
             self.terminal = True
             return {'name': self.name, 'pid': self.pid, 'state': 'exited', 'detail': type(error).__name__+':'+str(error),
+                    **({'status_read':status_issue} if status_issue else {}),
                     'threads': None, 'scope': 'worker/thread batch discarded after process exit; not zero activity'}
         except ValueError as error:
             self.terminal = True; self.identity_failed = True
@@ -363,6 +384,10 @@ def run(args, proc=Path('/proc'), inspect=None, sleep=time.sleep):
             for target in targets:
                 row = {'name':target.name,'state':'already-terminal','pid':target.pid} if target.terminal else target.sample(args.all_threads,args.max_threads,args.stack_bytes)
                 rows.append(row)
+                if row.get('status_read'):
+                    gaps['status-unavailable:'+target.name]=gaps.get('status-unavailable:'+target.name,0)+1
+                if row.get('state')=='proc-batch-unavailable':
+                    gaps['proc-batch-unavailable:'+target.name]=gaps.get('proc-batch-unavailable:'+target.name,0)+1
                 if row.get('state')=='permission-denied':gaps['target-permission-denied']=gaps.get('target-permission-denied',0)+1
                 if row.get('threads_truncated') or row.get('thread_scan_truncated'):gaps['thread-selection-truncated']=gaps.get('thread-selection-truncated',0)+1
                 for thread in row.get('threads') or []:
@@ -411,11 +436,14 @@ def run(args, proc=Path('/proc'), inspect=None, sleep=time.sleep):
     if final_tool_hash!=tool_hash:errors.append('TOOL_SOURCE_CHANGED')
     if perf_result.get('requested') and perf_result.get('state')!='recorded-not-validated':gaps['perf:'+perf_result['state']]=1
     requested_disks_complete=not any(key.startswith('disk:') for key in gaps)
+    status_evidence_complete=not any(key.startswith('status-unavailable:') for key in gaps)
+    process_batches_complete=not any(key.startswith('proc-batch-unavailable:') for key in gaps)
     full = bool(targets) and all(t.terminal for t in targets) and not any(t.identity_failed for t in targets)
     summary = {'version':1,'observation_only':True,'hardware_acceptance_verified':False,
-        'ok':not errors and full and requested_disks_complete,'workflow_completed':not errors and full,
+        'ok':not errors and full and requested_disks_complete and status_evidence_complete and process_batches_complete,'workflow_completed':not errors and full,
         'diagnostic_data_complete':not errors and full and not unavailable and not gaps,
-        'diagnostic_gaps':gaps,'requested_disks_complete':requested_disks_complete,'stop_reason':stop_reason,'full_selected_worker_lifecycle_end_observed':full,
+        'diagnostic_gaps':gaps,'requested_disks_complete':requested_disks_complete,
+        'status_evidence_complete':status_evidence_complete,'process_batches_complete':process_batches_complete,'stop_reason':stop_reason,'full_selected_worker_lifecycle_end_observed':full,
         'started_monotonic_ns':started,'finished_monotonic_ns':time.monotonic_ns(),'samples':samples,'bytes':out.used,
         'maximum_sample_gap_ns':max_gap,'sampling_overruns':overruns,'sampling_gap_count':gap_count,'sampling_gap_threshold_ns':round(args.interval*1.5e9),'unavailable_thread_fields':unavailable,
         'observer_cpu_ns':time.process_time_ns()-cpu0,'observer_peak_rss_kib':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,

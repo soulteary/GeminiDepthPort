@@ -56,6 +56,8 @@ sudo python3 experiments/sdk-2.10.6-diagnostics/observe_writer_tails.py \
 
 输出包括 `samples.jsonl`、`summary.json` 和 `SHA256SUMS`。位于组目录内的 JSON/JSONL 会随 `pack_results.py` 收集；perf.data 仍被排除，若显式启用应单独保留与回传。先等待控制器和观察器均结束再打包。
 
+worker 仍存活而状态 JSON 缺失、损坏或字段不全时，记录 `status-unavailable` 并继续读取已 pin 线程，等待实际进程退出；proc 批次缺测单列为 `proc-batch-unavailable`。这些缺口分别使 `status_evidence_complete`/`process_batches_complete` 和最终 `ok` 为 false，不能借 worker 之后正常退出抹去。真实身份变化仍拒绝跟随，原 pin 不变。
+
 ## 合成故障验证与观察器开销
 
 Linux SDK/ROS C ABI 故障回归在真实 fsync 屏障期间验证发布推进和 durable 确认。正常两路各 200 Hz、原容量 128：draining 关键等待 910.524 ms，期间发布推进 299、pump 88 次、最大 drain 间隔 35.059 ms、队列峰 14；raw overflow 后关键等待 848.755 ms，期间发布推进 297、pump 81 次、最大 drain 间隔 34.451 ms、峰 14。屏障释放前不提前确认，正常结束核对两轮实际读取字节数和 IMU 数量；永久阻塞仍按原期限失败并恢复两遍前缀。逐次数据见 [故障屏障结果](reports/imu-critical-fence-20261104.json)。这些是合成后端的正确性验证，不是实机吞吐或 CPU 优化结论。
@@ -77,6 +79,8 @@ Linux SDK/ROS C ABI 故障回归在真实 fsync 屏障期间验证发布推进�
 ## 本地验证记录（2026-11-04）
 
 最终 Linux 完整 Python 回归 464 项通过、1 项条件跳过；macOS 首轮完整回归 459 项通过、4 项条件跳过，后续新增项已在最终 Linux 全套覆盖。SDK 终态/身份与阶段错误专项、writer 观察器 13 项回归、证据打包中的 writer JSON/JSONL 保留及 perf 排除均通过。
+
+提交后的终审另补观察器缺状态/坏 JSON 与真实进程退出的两项边界回归，Linux 观察器专项共 15 项通过。上述 464 项为 bcbceb7 软件修复全套结果；新增异常分支单独验证，覆盖率及开销报告保留当次测量的源码 SHA256，不改写历史实验结果。
 
 完整 Linux Rust workspace、Rust 二进制支持的外部验收测试及 combined 覆盖率脚本通过；生产行覆盖为 19239/19428（99.0272%），没有修改覆盖率过滤或 99% 门槛。最终额外的 Recording 800 ms fence 容量回归通过，达到 pending IMU 128 时保留 RAW_IMU_QUEUE_OVERFLOW 首因、无 COMPLETE，实际恢复两遍检查点前缀；未扩大队列来避免真实错误。capture-probe all-targets Clippy、Rust 1.85 格式检查、Python 编译及差异检查通过。
 

@@ -229,3 +229,42 @@ class WriterTailTests(unittest.TestCase):
             self.assertFalse(result['ok']);self.assertTrue(perf.result['stopped_for_identity_rejection'])
             self.assertGreaterEqual(perf.calls,2)  # Immediate detach and idempotent final cleanup.
             self.assertIn('a',result['identity_rejected_targets'])
+
+    def test_alive_worker_with_missing_or_corrupt_status_keeps_bound_thread_observation(self):
+        for fault in ('missing','json','schema'):
+            with self.subTest(fault=fault),tempfile.TemporaryDirectory() as d:
+                root,proc,info=fixture(Path(d));_,targets,_=observer.load_attachments(root,[],proc,lambda *_:info)
+                path=root/'a/state/status.json';original=path.read_bytes();pin=(root/'a/runtime-identity.json').read_bytes()
+                if fault=='missing':path.unlink()
+                elif fault=='json':path.write_text('{broken-json')
+                else:write(path,{'raw_recording':{'state':'recording'}})
+                row=targets[0].sample()
+                self.assertEqual(row['state'],'status-unavailable');self.assertIsNone(row['status'])
+                self.assertTrue(row['threads']);self.assertFalse(targets[0].terminal);self.assertFalse(targets[0].identity_failed)
+                path.write_bytes(original)
+                self.assertEqual(targets[0].sample()['state'],'observed')
+                self.assertEqual((root/'a/runtime-identity.json').read_bytes(),pin)
+
+    def test_status_gap_is_not_worker_exit_and_never_reports_ok_after_real_exit(self):
+        for fault in ('missing','json'):
+            with self.subTest(fault=fault),tempfile.TemporaryDirectory() as d:
+                base=Path(d);root,proc,info=fixture(base);a=args(root,base/'trace');pin=(root/'a/runtime-identity.json').read_bytes()
+                original_sample=observer.Attachment.sample;calls=[0]
+                def sample(target,*args,**kwargs):
+                    calls[0]+=1
+                    if calls[0]==1:
+                        path=root/'a/state/status.json'
+                        if fault=='missing':path.unlink()
+                        else:path.write_text('{broken-json')
+                    return original_sample(target,*args,**kwargs)
+                def exit_worker(_):shutil.rmtree(proc/'117',ignore_errors=True)
+                with patch.object(observer.Attachment,'sample',sample):result=observer.run(a,proc,lambda *_:info,sleep=exit_worker)
+                self.assertTrue(result['workflow_completed']);self.assertFalse(result['ok'])
+                self.assertTrue(result['full_selected_worker_lifecycle_end_observed'])
+                self.assertFalse(result['status_evidence_complete']);self.assertFalse(result['diagnostic_data_complete'])
+                self.assertIn('status-unavailable:a',result['diagnostic_gaps'])
+                rows=[json.loads(line) for line in (a.output/'samples.jsonl').read_text().splitlines()]
+                self.assertEqual(rows[0]['targets'][0]['state'],'status-unavailable')
+                self.assertTrue(rows[0]['targets'][0]['threads'])
+                self.assertEqual(rows[-1]['targets'][0]['state'],'exited')
+                self.assertEqual((root/'a/runtime-identity.json').read_bytes(),pin)
