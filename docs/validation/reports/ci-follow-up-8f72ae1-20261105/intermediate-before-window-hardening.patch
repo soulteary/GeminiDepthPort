@@ -1,0 +1,560 @@
+diff --git a/crates/capture-probe/tests/service_supervision.rs b/crates/capture-probe/tests/service_supervision.rs
+index 2b049c2..bac186b 100644
+--- a/crates/capture-probe/tests/service_supervision.rs
++++ b/crates/capture-probe/tests/service_supervision.rs
+@@ -3750,9 +3750,38 @@ fn normal_200hz_imu_keeps_draining_and_publishing_during_critical_draining_fsync
+ fn raw_overflow_critical_fsync_does_not_create_a_secondary_imu_overflow() {
+     let f = normal_rate_wait_fixture(1000);
+     let library = io_faults::compile(&f.root);
++    // Scope the deliberate readback stall to an already healthy recording.
++    // GDP_IO_ARMED governs fail(), not the independent read() hold hook.
++    let hook_source =
++        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/support/io_faults.c");
++    let mut hook = fs::read_to_string(hook_source).unwrap();
++    assert_eq!(hook.matches("if(hold) {").count(), 1);
++    replace(
++        &mut hook,
++        "if(hold) {",
++        "const char *hold_armed=getenv(\"GDP_IO_HOLD_ARMED\");if(hold && hold_armed && access(hold_armed,F_OK)==0) {",
++    );
++    let local_hook = f.root.join("armed-checkpoint-hook.c");
++    fs::write(&local_hook, hook).unwrap();
++    let compiled = Command::new("cc")
++        .args([
++            "-shared", "-fPIC", "-std=c11", "-Wall", "-Wextra", "-Werror",
++        ])
++        .arg(&local_hook)
++        .args(["-ldl", "-o"])
++        .arg(&library)
++        .output()
++        .unwrap();
++    assert!(
++        compiled.status.success(),
++        "{}",
++        String::from_utf8_lossy(&compiled.stderr)
++    );
+     let marker = f.root.join("raw-failed-critical");
+     let release = f.root.join("release-critical");
+     let release_reader = f.root.join("release-checkpoint");
++    let arm_reader = f.root.join("arm-checkpoint");
++    let checkpoint_held = f.root.join("checkpoint-held");
+     let mut command = cleanup_fault_command(&f);
+     io_faults::inject(&mut command, &library, "fsync", ".tmp", &marker);
+     command
+@@ -3763,9 +3792,75 @@ fn raw_overflow_critical_fsync_does_not_create_a_secondary_imu_overflow() {
+         .env("GDP_IO_RELEASE", &release)
+         .env("GDP_IO_DELAY_MS", "0")
+         .env("GDP_IO_HOLD_READ_SUFFIX", ".bin")
+-        .env("GDP_IO_HOLD_MARKER", f.root.join("checkpoint-held"))
+-        .env("GDP_IO_HOLD_RELEASE", &release_reader);
++        .env("GDP_IO_HOLD_MARKER", &checkpoint_held)
++        .env("GDP_IO_HOLD_RELEASE", &release_reader)
++        .env("GDP_IO_HOLD_ARMED", &arm_reader);
+     let mut child = command.spawn().unwrap();
++    let wait_phase = |child: &mut Child, phase: &str, done: &dyn Fn(&Option<Value>) -> bool| {
++        let started = Instant::now();
++        loop {
++            let latest = status(&f);
++            if done(&latest) {
++                return latest;
++            }
++            let exit = child.try_wait().unwrap();
++            if exit.is_some() || started.elapsed() >= Duration::from_secs(8) {
++                let failures: Vec<_> = fs::read_dir(&f.root)
++                    .unwrap()
++                    .filter_map(|entry| {
++                        let path = entry.unwrap().path();
++                        if path.file_name().unwrap().to_str().unwrap().starts_with("failure-") {
++                            Some(json!({"path":path,"private_failure":fs::read_to_string(&path).ok()}))
++                        } else {
++                            None
++                        }
++                    })
++                    .collect();
++                // Release only this test's barriers before terminating a still
++                // live child; never leave a gated worker after a failed assert.
++                fs::write(&release, b"1").unwrap();
++                fs::write(&release_reader, b"1").unwrap();
++                if exit.is_none() {
++                    let _ = child.kill();
++                    let _ = child.wait();
++                }
++                panic!(
++                    "{phase}: exit={exit:?}; evidence={}",
++                    json!({"status":latest,"private_failures":failures})
++                );
++            }
++            thread::sleep(Duration::from_millis(5));
++        }
++    };
++    let healthy = wait_phase(
++        &mut child,
++        "healthy recording before checkpoint fault",
++        &|value| {
++            value.as_ref().is_some_and(|v| {
++                v["ready"] == true
++                    && v["raw_recording"]["state"] == "recording"
++                    && v["imu"]["ready"] == true
++                    && v["imu"]["error"].is_null()
++                    && v["raw_recording"]["disk_stages"]["checkpoints"]
++                        .as_u64()
++                        .unwrap_or(0)
++                        > 0
++            })
++        },
++    )
++    .unwrap();
++    assert_eq!(healthy["raw_recording"]["whole_pair_queue_overflows"], 0);
++    assert!(
++        !checkpoint_held.exists(),
++        "readback hook ran before its arm gate"
++    );
++    fs::write(&arm_reader, b"1").unwrap();
++    let _ = wait_phase(&mut child, "armed checkpoint readback", &|_| {
++        checkpoint_held.exists()
++    });
++    let _ = wait_phase(&mut child, "RAW_QUEUE_OVERFLOW critical fsync", &|_| {
++        marker.exists()
++    });
+     let progress = assert_pump_progress_while_fenced(&f, &mut child, &marker);
+     assert_ne!(
+         status(&f).unwrap()["raw_recording"]["reason"],
+@@ -3799,6 +3894,26 @@ fn raw_overflow_critical_fsync_does_not_create_a_secondary_imu_overflow() {
+         json!({"publish_progress_while_fenced":progress,"critical":event,"max_drain_ns":observed["imu"]["drain_interval"]["maximum_ns"],"imu_queue_peak":observed["imu"]["queue_high_water"]})
+     );
+     fs::write(&release_reader, b"1").unwrap();
++    // Do not race the test's own blocked readback/Drop work against the
++    // unchanged 300ms SDK shutdown deadline. The worker queue guard abandons
++    // its credits only after recorder Drop and checkpoint joins have returned.
++    let _ = wait_phase(
++        &mut child,
++        "released checkpoint writer quiescent",
++        &|value| {
++            value.as_ref().is_some_and(|v| {
++                v["raw_recording"]["reason"] == "RAW_QUEUE_OVERFLOW"
++                    && v["imu"]["ready"] == true
++                    && v["imu"]["error"].is_null()
++                    && v["raw_recording"]["writer_queue"]["closed"] == true
++                    && v["raw_recording"]["writer_queue"]["queued_pairs"] == 0
++                    && v["raw_recording"]["writer_queue"]["inflight_pairs"] == 0
++                    && v["raw_recording"]["disk_stages"]["checkpoint_observation"]["active"]
++                        .as_array()
++                        .is_some_and(|active| active.is_empty())
++            })
++        },
++    );
+     stop(&mut child);
+     let end = status(&f).unwrap();
+     assert_eq!(end["raw_recording"]["reason"], "RAW_QUEUE_OVERFLOW");
+diff --git a/scripts/validation/writer_contention_ab.py b/scripts/validation/writer_contention_ab.py
+index b1c860f..09a04f0 100755
+--- a/scripts/validation/writer_contention_ab.py
++++ b/scripts/validation/writer_contention_ab.py
+@@ -29,6 +29,8 @@ import time
+ PAIR_BYTES = 640 * 480 * 2 + 640 * 400 * 2
+ TEST_NAME = "writer_contention_child"
+ MAX_PAIRS = 108000
++OWNED_EXIT_CONFIRM_SECONDS = .05
++READY_MARKER_MAX_BYTES = 4096
+ LIMITS = (
+     "Synthetic owned-buffer FIFO, no SDK/USB/ROS or status-persistence background load. "
+     "Single/three writer groups share the output filesystem; observer-selected camera count is irrelevant. "
+@@ -109,6 +111,43 @@ def process_sample(pid, proc=Path("/proc")):
+         return {"pid": pid, "error": type(e).__name__}
+ 
+ 
++def owned_process_sample(process, proc=Path("/proc")):
++    """Confirm only an owned child's narrowly bounded exit-adjacent proc gap.
++
++    This is not a retry or replacement for missing IO evidence. A live process's
++    gap remains a diagnostic failure; identity/schema failures are never waived.
++    No numeric PID is read after Popen reaped that child.
++    """
++    if process.poll() is not None:
++        return {"pid": process.pid, "error": "EXITED", "terminal": True, "reaped": True}
++    sample = process_sample(process.pid, proc)
++    if sample.get("terminal") is True:
++        return sample
++    exit_errors = {"EXITED", "FileNotFoundError", "ProcessLookupError", "PermissionError"}
++    error = sample.get("error")
++    if error is not None and error not in exit_errors:
++        return sample
++    if error not in exit_errors and sample.get("io_error") not in exit_errors:
++        return sample
++    started = time.monotonic_ns()
++    confirmation = {"start_monotonic_ns": started,
++                    "limit_ns": round(OWNED_EXIT_CONFIRM_SECONDS * 1e9),
++                    "scope": "owned child exit boundary only; unavailable proc/IO data are not filled in"}
++    try:
++        returncode = process.wait(timeout=OWNED_EXIT_CONFIRM_SECONDS)
++    except subprocess.TimeoutExpired:
++        confirmation.update(state="still-live-at-bound", returncode=None)
++    else:
++        confirmation.update(state="owned-child-exit-confirmed", returncode=returncode)
++        if error is not None:
++            sample["proc_error_before_exit_confirmation"] = error
++        sample.update(error="EXITED", terminal=True, reaped=True)
++    ended = time.monotonic_ns()
++    confirmation.update(end_monotonic_ns=ended, elapsed_ns=ended - started)
++    sample["exit_confirmation"] = confirmation
++    return sample
++
++
+ def disk_sample(proc=Path("/proc")):
+     try:
+         # All devices retained to avoid guessing which dm/partition is physical.
+@@ -198,6 +237,21 @@ def guard_budget(root, max_bytes, deadline):
+         raise RuntimeError(f"OUTPUT_BYTE_LIMIT:observed={observed}:limit={max_bytes}")
+ 
+ 
++def ready_marker(path):
++    """Only handshake callers may wait for a live child's create/write window."""
++    try:
++        with path.open("rb") as f:
++            raw = f.read(READY_MARKER_MAX_BYTES + 1)
++    except FileNotFoundError:
++        return False, None
++    if len(raw) > READY_MARKER_MAX_BYTES:
++        raise ValueError("READY_MARKER_BYTE_LIMIT")
++    try:
++        return True, json.loads(raw)
++    except json.JSONDecodeError:
++        return False, None
++
++
+ def run_batch(binary, root, count, pairs, output, max_bytes, deadline, sample_interval=.2, proc_root=Path("/proc")):
+     root.mkdir()
+     children = []
+@@ -215,16 +269,25 @@ def run_batch(binary, root, count, pairs, output, max_bytes, deadline, sample_in
+             child_roots.append(child_root)
+             children.append(launch(binary, child_root, pairs, "run", root / "start.json"))
+         ready_deadline = min(deadline, time.monotonic() + 30)
+-        while not all((p / "ready.json").exists() for p in child_roots):
+-            if any(p.poll() is not None for p in children):
+-                raise RuntimeError("CHILD_EXITED_BEFORE_BARRIER")
++        ready = set()
++        while len(ready) != count:
++            for process, path in zip(children, child_roots):
++                if process.poll() is not None:
++                    raise RuntimeError("CHILD_EXITED_BEFORE_BARRIER")
++                if process.pid in ready:
++                    continue
++                available, value = ready_marker(path / "ready.json")
++                if not available:
++                    continue
++                if type(value) is not dict or type(value.get("pid")) is not int:
++                    raise ValueError("BARRIER_READY_SCHEMA")
++                if value["pid"] != process.pid:
++                    raise RuntimeError("BARRIER_PID_MISMATCH")
++                ready.add(process.pid)
++            if len(ready) == count:
++                break
+             guard_budget(output, max_bytes, ready_deadline)
+             time.sleep(.01)
+-        for process, path in zip(children, child_roots):
+-            if json.loads((path / "ready.json").read_text())["pid"] != process.pid:
+-                # Rust test harness executes the ignored test in its own thread,
+-                # not another process; a mismatched process may not be signalled.
+-                raise RuntimeError("BARRIER_PID_MISMATCH")
+         target = time.monotonic_ns() + 200_000_000
+         write_json(root / "start.tmp", {"start_monotonic_ns": target,
+                                        "start_unix_ns": time.time_ns() + 200_000_000})
+@@ -238,9 +301,7 @@ def run_batch(binary, root, count, pairs, output, max_bytes, deadline, sample_in
+                 now = time.monotonic_ns()
+                 # Do not follow a numeric PID after its owned child has been
+                 # reaped; it may already identify a different process.
+-                processes = [process_sample(p.pid, proc_root) if p.poll() is None else
+-                             {"pid": p.pid, "error": "EXITED", "terminal": True, "reaped": True}
+-                             for p in children]
++                processes = [owned_process_sample(p, proc_root) for p in children]
+                 valid = [p for p in processes if "error" not in p]
+                 row = {"monotonic_ns": now, "unix_ns": time.time_ns(), "processes": processes,
+                        "simultaneous_rss_bytes": sum(p["rss_bytes"] for p in valid),
+@@ -263,9 +324,12 @@ def run_batch(binary, root, count, pairs, output, max_bytes, deadline, sample_in
+                     gap_max_ns = max(gap_max_ns, now - previous_ns)
+                 previous_ns = now
+                 sample_errors.update(p["error"] for p in processes if p.get("error") not in (None, "EXITED"))
+-                for process, sample in zip(children, processes):
++                for sample in processes:
+                     error = sample.get("error")
+-                    finished = process.poll() is not None or sample.get("terminal") is True
++                    # Only the bounded owned-child check (or verified Z/X)
++                    # exempts this sample. A later unrelated poll must not erase
++                    # a gap observed while the child was still live at the bound.
++                    finished = sample.get("terminal") is True
+                     if error is not None and (error != "EXITED" or not finished):
+                         key = "process:" + error
+                         resource_gaps[key] = resource_gaps.get(key, 0) + 1
+@@ -334,14 +398,18 @@ def run_recovery(binary, root, output, max_bytes, deadline):
+     root.mkdir()
+     child = launch(binary, root, 32, "crash")
+     try:
+-        while not (root / "recovery-ready.json").exists():
++        while True:
+             if child.poll() is not None:
+                 raise RuntimeError("CRASH_CHILD_EXITED_BEFORE_CHECKPOINT")
++            available, ready = ready_marker(root / "recovery-ready.json")
++            if available:
++                if (type(ready) is not dict or type(ready.get("pairs")) is not int
++                        or type(ready.get("pid")) is not int
++                        or ready != {"pairs": 32, "pid": child.pid}):
++                    raise RuntimeError("RECOVERY_PID_OR_PREFIX_MISMATCH")
++                break
+             guard_budget(output, max_bytes, deadline)
+             time.sleep(.02)
+-        ready = json.loads((root / "recovery-ready.json").read_text())
+-        if ready != {"pairs": 32, "pid": child.pid}:
+-            raise RuntimeError("RECOVERY_PID_OR_PREFIX_MISMATCH")
+         if not signal_group(child, signal.SIGKILL):
+             raise RuntimeError("CRASH_CHILD_EXITED_BEFORE_SIGKILL")
+         child.wait(timeout=5)
+@@ -401,6 +469,12 @@ def summarize_groups(rows, variants):
+                 "median_group_peak_rss_bytes": statistics.median(rss) if rss else None,
+                 "group_rss_observed_runs": len(rss),
+                 "resource_diagnostic_complete": len(rss) == len(selected) and all(r.get("resource_diagnostic_complete", False) for r in selected),
++                "resource_diagnostics_by_run": [{
++                    "directory": row.get("directory"),
++                    "resource_gaps": dict(sorted(row.get("resource_gaps", {}).items())[:16]),
++                    "resource_gap_reasons_omitted": max(0, len(row.get("resource_gaps", {})) - 16),
++                    "resource_sample_errors": row.get("resource_sample_errors", [])[:16],
++                } for row in selected],
+                 "per_process_rows": processes})
+     return groups
+ 
+diff --git a/tests/test_writer_contention_ab.py b/tests/test_writer_contention_ab.py
+index 3d1f987..74fb288 100644
+--- a/tests/test_writer_contention_ab.py
++++ b/tests/test_writer_contention_ab.py
+@@ -11,6 +11,7 @@ import tempfile
+ import threading
+ import time
+ import unittest
++from unittest.mock import patch
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+ spec = importlib.util.spec_from_file_location("writer_contention_ab", ROOT / "scripts/validation/writer_contention_ab.py")
+@@ -51,7 +52,14 @@ elif mode=='recover':
+     if behavior=='mutate': (root/'capture.partial/checkpoint.json').write_text('changed')
+     write('recovery-result.json',{'passes':2,'pairs_per_pass':[32,32],'ordinary_reader_rejected':behavior!='ordinary-accepted'})
+ else:
+-    write('ready.json',{'pid':os.getpid()})
++    if behavior=='delayed-ready':
++        (root/'ready.json').write_text('')
++        (root/'empty-ready-created').write_text('1')
++        while not (root/'ready-release').exists(): time.sleep(.001)
++    if behavior=='invalid-ready': (root/'ready.json').write_text('{')
++    elif behavior=='large-ready': (root/'ready.json').write_text(' '*4097)
++    elif behavior=='schema-ready': write('ready.json',{'pid':str(os.getpid())})
++    else: write('ready.json',{'pid':os.getpid()+(1 if behavior=='wrong-ready-pid' else 0)})
+     barrier=pathlib.Path(os.environ['GDP_CONTENTION_BARRIER'])
+     while not barrier.exists(): time.sleep(.002)
+     target=json.loads(barrier.read_text())['start_monotonic_ns']
+@@ -82,6 +90,66 @@ def args(root, binary):
+ 
+ 
+ class WriterABTests(unittest.TestCase):
++    def test_ready_marker_reads_are_small_and_only_incomplete_json_is_pending(self):
++        with tempfile.TemporaryDirectory() as d:
++            path = Path(d) / "ready.json"
++            self.assertEqual(ab.ready_marker(path), (False, None))
++            for raw in (b"", b"{", b'{"pid":'):
++                path.write_bytes(raw)
++                self.assertEqual(ab.ready_marker(path), (False, None))
++            path.write_text("null")
++            self.assertEqual(ab.ready_marker(path), (True, None))
++            path.write_bytes(b" " * 4097)
++            with self.assertRaisesRegex(ValueError, "READY_MARKER_BYTE_LIMIT"):
++                ab.ready_marker(path)
++
++    @unittest.skipUnless(sys.platform == "linux", "Linux owned subprocess orchestration")
++    def test_real_three_children_empty_ready_gate_precedes_common_barrier(self):
++        with tempfile.TemporaryDirectory() as d:
++            root = Path(d); output = root / "output"; output.mkdir(); batch = output / "batch"
++            binary = fake_binary(root / "driver", "delayed-ready")
++            results = []; errors = []
++            def run():
++                try:
++                    results.append(ab.run_batch(binary, batch, 3, 30, output, 100000000,
++                                                time.monotonic() + 10, .01))
++                except BaseException as e:
++                    errors.append(e)
++            worker = threading.Thread(target=run, daemon=True); worker.start()
++            until = time.monotonic() + 5
++            children = [batch / f"writer-{i}" for i in range(3)]
++            while not all((p / "empty-ready-created").exists() for p in children):
++                self.assertFalse(errors, errors)
++                self.assertLess(time.monotonic(), until)
++                time.sleep(.001)
++            self.assertFalse((batch / "start.json").exists())
++            for p in children[:2]: (p / "ready-release").write_text("1")
++            while not all((p / "ready.json").stat().st_size > 0 for p in children[:2]):
++                self.assertLess(time.monotonic(), until)
++                time.sleep(.001)
++            self.assertEqual((children[2] / "ready.json").read_bytes(), b"")
++            self.assertFalse((batch / "start.json").exists())
++            (children[2] / "ready-release").write_text("1")
++            worker.join(timeout=10)
++            self.assertFalse(worker.is_alive())
++            self.assertFalse(errors, errors)
++            self.assertEqual(len(results[0]["writers"]), 3)
++            self.assertGreaterEqual((batch / "start.json").stat().st_mtime_ns,
++                                    max((p / "ready.json").stat().st_mtime_ns for p in children))
++
++    @unittest.skipUnless(sys.platform == "linux", "Linux owned subprocess orchestration")
++    def test_ready_valid_wrong_pid_schema_oversize_and_persistent_invalid_are_rejected(self):
++        for behavior, error in (("wrong-ready-pid", "BARRIER_PID_MISMATCH"),
++                                ("schema-ready", "BARRIER_READY_SCHEMA"),
++                                ("large-ready", "READY_MARKER_BYTE_LIMIT"),
++                                ("invalid-ready", "WALL_TIME_LIMIT")):
++            with self.subTest(behavior=behavior), tempfile.TemporaryDirectory() as d:
++                root = Path(d); output = root / "output"; output.mkdir()
++                with self.assertRaisesRegex((RuntimeError, ValueError), error):
++                    ab.run_batch(fake_binary(root / "driver", behavior), output / "batch", 1, 30,
++                                 output, 100000000, time.monotonic() + (.3 if behavior == "invalid-ready" else 5), .01)
++                self.assertFalse((output / "batch/start.json").exists())
++
+     def test_budget_scan_tolerates_entries_that_no_longer_resolve(self):
+         with tempfile.TemporaryDirectory() as d:
+             root = Path(d)
+@@ -92,13 +160,16 @@ class WriterABTests(unittest.TestCase):
+     def test_missing_all_rss_yields_null_without_mutating_failed_reports(self):
+         failed = {"ok": False, "reason": "RAW_QUEUE_OVERFLOW", "overflow": 1}
+         row = {"variant": "after", "writer_count": 1, "writers": [failed],
+-               "simultaneous_rss_peak_bytes": None, "resource_diagnostic_complete": False}
++               "simultaneous_rss_peak_bytes": None, "resource_diagnostic_complete": False,
++               "directory": "failed-group", "resource_gaps": {"process_io:PermissionError": 1}}
+         before = json.dumps(row, sort_keys=True)
+         summary = ab.summarize_groups([row], ["after"])
+         self.assertIsNone(summary[0]["median_group_peak_rss_bytes"])
+         self.assertEqual(summary[0]["group_rss_observed_runs"], 0)
+         self.assertFalse(summary[0]["resource_diagnostic_complete"])
+         self.assertEqual(summary[0]["per_process_rows"][0]["overflow"], 1)
++        self.assertEqual(summary[0]["resource_diagnostics_by_run"][0]["resource_gaps"],
++                         {"process_io:PermissionError": 1})
+         self.assertEqual(json.dumps(row, sort_keys=True), before)
+ 
+     def test_durability_workload_credit_and_overflow_guards(self):
+@@ -189,6 +260,123 @@ class WriterABTests(unittest.TestCase):
+         finally:
+             child.wait(timeout=5)
+ 
++    @unittest.skipUnless(hasattr(os, "mkfifo"), "controlled proc FIFO requires POSIX")
++    def test_owned_exit_after_missing_proc_read_is_bounded_and_live_gap_is_retained(self):
++        # A real child remains alive at the initial poll. The proc server removes
++        # stat between its first and final reads, then releases the child to exit
++        # after a short delay. No Popen methods or summarizers are mocked.
++        for exits in (True, False):
++            with self.subTest(exits=exits), tempfile.TemporaryDirectory() as d:
++                root = Path(d); ready = root / "child-ready"; release = root / "child-release"
++                body = ("import os,pathlib,sys,time; ready=pathlib.Path(sys.argv[1]); release=pathlib.Path(sys.argv[2]); "
++                        "ready.write_text('1');\nwhile not release.exists(): time.sleep(.001)\ntime.sleep(.001)\nos._exit(0)\n")
++                child = subprocess.Popen([sys.executable, "-c", body, str(ready), str(release)])
++                server = None
++                try:
++                    until = time.monotonic() + 5
++                    while not ready.exists():
++                        self.assertIsNone(child.poll())
++                        self.assertLess(time.monotonic(), until)
++                        time.sleep(.001)
++                    proc = root / "proc"; base = proc / str(child.pid); base.mkdir(parents=True)
++                    os.mkfifo(base / "stat"); os.mkfifo(base / "io")
++                    fields = ["0"] * 22; fields[0] = "S"; fields[19] = "101"; fields[21] = "5"
++                    raw = f"{child.pid} (writer) " + " ".join(fields)
++                    def serve():
++                        with (base / "stat").open("w") as f: f.write(raw)
++                        (base / "stat").unlink()
++                        if exits: release.write_text("1")
++                        # Opening IO follows the first stat close; the final stat
++                        # is guaranteed missing before its reader can proceed.
++                        with (base / "io").open("w") as f: f.write("write_bytes: 10\n")
++                    server = threading.Thread(target=serve, daemon=True); server.start()
++                    row = ab.owned_process_sample(child, proc)
++                    server.join(timeout=2); self.assertFalse(server.is_alive())
++                    confirmation = row["exit_confirmation"]
++                    self.assertEqual(confirmation["limit_ns"], 50_000_000)
++                    self.assertEqual(confirmation["elapsed_ns"], confirmation["end_monotonic_ns"] - confirmation["start_monotonic_ns"])
++                    self.assertEqual(row["error"], "EXITED")
++                    if exits:
++                        self.assertTrue(row["terminal"])
++                        self.assertTrue(row["reaped"])
++                        self.assertEqual(row["proc_error_before_exit_confirmation"], "EXITED")
++                        self.assertEqual(confirmation["state"], "owned-child-exit-confirmed")
++                        self.assertEqual(confirmation["returncode"], 0)
++                    else:
++                        self.assertNotIn("terminal", row)
++                        self.assertIsNone(child.poll())
++                        self.assertEqual(confirmation["state"], "still-live-at-bound")
++                        self.assertIsNone(confirmation["returncode"])
++                finally:
++                    if child.poll() is None: child.kill()
++                    child.wait(timeout=5)
++                    if server is not None: server.join(timeout=2)
++
++    def test_owned_process_does_not_waive_io_parse_errors_or_read_a_reaped_pid(self):
++        with tempfile.TemporaryDirectory() as d:
++            proc = Path(d)
++            child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
++            try:
++                base = proc / str(child.pid); base.mkdir()
++                fields = ["0"] * 22; fields[0] = "S"; fields[19] = "101"; fields[21] = "5"
++                (base / "stat").write_text(f"{child.pid} (writer) " + " ".join(fields))
++                (base / "io").write_text("write_bytes: invalid\n")
++                row = ab.owned_process_sample(child, proc)
++                self.assertEqual(row["io_error"], "ValueError")
++                self.assertNotIn("terminal", row)
++                self.assertNotIn("exit_confirmation", row)
++            finally:
++                if child.poll() is None: child.kill()
++                child.wait(timeout=5)
++            # This fake numeric PID now contains apparently valid resources.
++            # The owned Popen is reaped, so those files must never be consulted.
++            (base / "io").write_text("write_bytes: 10\n")
++            row = ab.owned_process_sample(child, proc)
++            self.assertTrue(row["reaped"])
++            self.assertNotIn("start_ticks", row)
++
++    @unittest.skipUnless(sys.platform == "linux", "Linux dumpability controls proc IO permissions")
++    def test_real_proc_io_permission_denied_is_live_gap_or_confirmed_owned_exit(self):
++        with tempfile.TemporaryDirectory() as d:
++            root = Path(d); ready = root / "ready"; release = root / "release"
++            body = ("import ctypes,os,pathlib,sys,time; "
++                    "assert ctypes.CDLL(None).prctl(4,0,0,0,0)==0; "
++                    "ready=pathlib.Path(sys.argv[1]); release=pathlib.Path(sys.argv[2]); ready.write_text('1');\n"
++                    "while not release.exists(): time.sleep(.001)\ntime.sleep(.001)\nos._exit(0)\n")
++            child = subprocess.Popen([sys.executable, "-c", body, str(ready), str(release)])
++            try:
++                until = time.monotonic() + 5
++                while not ready.exists():
++                    self.assertIsNone(child.poll())
++                    self.assertLess(time.monotonic(), until)
++                    time.sleep(.001)
++                probe = ab.process_sample(child.pid)
++                if probe.get("io_error") != "PermissionError":
++                    self.skipTest("proc IO is not denied after PR_SET_DUMPABLE=0; environment may grant CAP_SYS_PTRACE")
++                live = ab.owned_process_sample(child)
++                self.assertEqual(live["io_error"], "PermissionError")
++                self.assertNotIn("terminal", live)
++                self.assertEqual(live["exit_confirmation"]["state"], "still-live-at-bound")
++                self.assertIsNone(child.poll())
++                real_sample = ab.process_sample
++                def release_after_real_io_read(pid, proc):
++                    row = real_sample(pid, proc)
++                    self.assertEqual(row["io_error"], "PermissionError")
++                    release.write_text("1")
++                    return row
++                # Only add a release notification after the actual proc read;
++                # Popen.poll/wait, process ownership and all IO remain real.
++                with patch.object(ab, "process_sample", side_effect=release_after_real_io_read):
++                    ended = ab.owned_process_sample(child)
++                self.assertEqual(ended["io_error"], "PermissionError")
++                self.assertTrue(ended["terminal"])
++                self.assertEqual(ended["exit_confirmation"]["state"], "owned-child-exit-confirmed")
++                self.assertEqual(ended["exit_confirmation"]["returncode"], 0)
++                self.assertEqual(ended["exit_confirmation"]["limit_ns"], 50_000_000)
++            finally:
++                if child.poll() is None: child.kill()
++                child.wait(timeout=5)
++
+     @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO fixture requires POSIX")
+     def test_pid_reuse_between_real_proc_fixture_reads_is_rejected(self):
+         with tempfile.TemporaryDirectory() as d:

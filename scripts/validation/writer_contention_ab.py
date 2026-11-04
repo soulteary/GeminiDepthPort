@@ -29,6 +29,8 @@ import time
 PAIR_BYTES = 640 * 480 * 2 + 640 * 400 * 2
 TEST_NAME = "writer_contention_child"
 MAX_PAIRS = 108000
+OWNED_EXIT_CONFIRM_SECONDS = .05
+READY_MARKER_MAX_BYTES = 4096
 LIMITS = (
     "Synthetic owned-buffer FIFO, no SDK/USB/ROS or status-persistence background load. "
     "Single/three writer groups share the output filesystem; observer-selected camera count is irrelevant. "
@@ -107,6 +109,54 @@ def process_sample(pid, proc=Path("/proc")):
         return {"pid": pid, "error": "EXITED"}
     except (OSError, ValueError, IndexError) as e:
         return {"pid": pid, "error": type(e).__name__}
+
+
+def owned_process_sample(process, proc=Path("/proc")):
+    """Confirm only an owned child's narrowly bounded exit-adjacent proc gap.
+
+    This is not a retry or replacement for missing IO evidence. A live process's
+    gap remains a diagnostic failure; identity/schema failures are never waived.
+    No numeric PID is read after Popen reaped that child.
+    """
+    if process.poll() is not None:
+        return {"pid": process.pid, "error": "EXITED", "terminal": True, "reaped": True}
+    sample = process_sample(process.pid, proc)
+    if sample.get("terminal") is True:
+        return sample
+    exit_errors = {"EXITED", "FileNotFoundError", "ProcessLookupError", "PermissionError"}
+    error = sample.get("error")
+    if error is not None and error not in exit_errors:
+        return sample
+    if error not in exit_errors and sample.get("io_error") not in exit_errors:
+        return sample
+    started = time.monotonic_ns()
+    confirmation = {"start_monotonic_ns": started,
+                    "limit_ns": round(OWNED_EXIT_CONFIRM_SECONDS * 1e9),
+                    "scope": "owned child exit boundary only; unavailable proc/IO data are not filled in"}
+    try:
+        returncode = process.wait(timeout=OWNED_EXIT_CONFIRM_SECONDS)
+    except subprocess.TimeoutExpired:
+        exited = False
+        returncode = None
+    else:
+        exited = True
+    ended = time.monotonic_ns()
+    elapsed = ended - started
+    confirmation.update(end_monotonic_ns=ended, elapsed_ns=elapsed, returncode=returncode)
+    if not exited:
+        confirmation["state"] = "still-live-at-bound"
+    elif elapsed > confirmation["limit_ns"]:
+        # A scheduling pause may make a nominally bounded wait return much later.
+        # Reaping proves exit, but cannot exempt the earlier proc gap in that case.
+        confirmation["state"] = "exit-confirmation-overrun"
+        sample["reaped"] = True
+    else:
+        confirmation["state"] = "owned-child-exit-confirmed"
+        if error is not None:
+            sample["proc_error_before_exit_confirmation"] = error
+        sample.update(error="EXITED", terminal=True, reaped=True)
+    sample["exit_confirmation"] = confirmation
+    return sample
 
 
 def disk_sample(proc=Path("/proc")):
@@ -198,6 +248,21 @@ def guard_budget(root, max_bytes, deadline):
         raise RuntimeError(f"OUTPUT_BYTE_LIMIT:observed={observed}:limit={max_bytes}")
 
 
+def ready_marker(path):
+    """Only handshake callers may wait for a live child's create/write window."""
+    try:
+        with path.open("rb") as f:
+            raw = f.read(READY_MARKER_MAX_BYTES + 1)
+    except FileNotFoundError:
+        return False, None
+    if len(raw) > READY_MARKER_MAX_BYTES:
+        raise ValueError("READY_MARKER_BYTE_LIMIT")
+    try:
+        return True, json.loads(raw)
+    except json.JSONDecodeError:
+        return False, None
+
+
 def run_batch(binary, root, count, pairs, output, max_bytes, deadline, sample_interval=.2, proc_root=Path("/proc")):
     root.mkdir()
     children = []
@@ -215,16 +280,25 @@ def run_batch(binary, root, count, pairs, output, max_bytes, deadline, sample_in
             child_roots.append(child_root)
             children.append(launch(binary, child_root, pairs, "run", root / "start.json"))
         ready_deadline = min(deadline, time.monotonic() + 30)
-        while not all((p / "ready.json").exists() for p in child_roots):
-            if any(p.poll() is not None for p in children):
-                raise RuntimeError("CHILD_EXITED_BEFORE_BARRIER")
+        ready = set()
+        while len(ready) != count:
+            for process, path in zip(children, child_roots):
+                if process.poll() is not None:
+                    raise RuntimeError("CHILD_EXITED_BEFORE_BARRIER")
+                if process.pid in ready:
+                    continue
+                available, value = ready_marker(path / "ready.json")
+                if not available:
+                    continue
+                if type(value) is not dict or type(value.get("pid")) is not int:
+                    raise ValueError("BARRIER_READY_SCHEMA")
+                if value["pid"] != process.pid:
+                    raise RuntimeError("BARRIER_PID_MISMATCH")
+                ready.add(process.pid)
+            if len(ready) == count:
+                break
             guard_budget(output, max_bytes, ready_deadline)
             time.sleep(.01)
-        for process, path in zip(children, child_roots):
-            if json.loads((path / "ready.json").read_text())["pid"] != process.pid:
-                # Rust test harness executes the ignored test in its own thread,
-                # not another process; a mismatched process may not be signalled.
-                raise RuntimeError("BARRIER_PID_MISMATCH")
         target = time.monotonic_ns() + 200_000_000
         write_json(root / "start.tmp", {"start_monotonic_ns": target,
                                        "start_unix_ns": time.time_ns() + 200_000_000})
@@ -238,9 +312,7 @@ def run_batch(binary, root, count, pairs, output, max_bytes, deadline, sample_in
                 now = time.monotonic_ns()
                 # Do not follow a numeric PID after its owned child has been
                 # reaped; it may already identify a different process.
-                processes = [process_sample(p.pid, proc_root) if p.poll() is None else
-                             {"pid": p.pid, "error": "EXITED", "terminal": True, "reaped": True}
-                             for p in children]
+                processes = [owned_process_sample(p, proc_root) for p in children]
                 valid = [p for p in processes if "error" not in p]
                 row = {"monotonic_ns": now, "unix_ns": time.time_ns(), "processes": processes,
                        "simultaneous_rss_bytes": sum(p["rss_bytes"] for p in valid),
@@ -263,9 +335,12 @@ def run_batch(binary, root, count, pairs, output, max_bytes, deadline, sample_in
                     gap_max_ns = max(gap_max_ns, now - previous_ns)
                 previous_ns = now
                 sample_errors.update(p["error"] for p in processes if p.get("error") not in (None, "EXITED"))
-                for process, sample in zip(children, processes):
+                for sample in processes:
                     error = sample.get("error")
-                    finished = process.poll() is not None or sample.get("terminal") is True
+                    # Only the bounded owned-child check (or verified Z/X)
+                    # exempts this sample. A later unrelated poll must not erase
+                    # a gap observed while the child was still live at the bound.
+                    finished = sample.get("terminal") is True
                     if error is not None and (error != "EXITED" or not finished):
                         key = "process:" + error
                         resource_gaps[key] = resource_gaps.get(key, 0) + 1
@@ -334,14 +409,18 @@ def run_recovery(binary, root, output, max_bytes, deadline):
     root.mkdir()
     child = launch(binary, root, 32, "crash")
     try:
-        while not (root / "recovery-ready.json").exists():
+        while True:
             if child.poll() is not None:
                 raise RuntimeError("CRASH_CHILD_EXITED_BEFORE_CHECKPOINT")
+            available, ready = ready_marker(root / "recovery-ready.json")
+            if available:
+                if (type(ready) is not dict or type(ready.get("pairs")) is not int
+                        or type(ready.get("pid")) is not int
+                        or ready != {"pairs": 32, "pid": child.pid}):
+                    raise RuntimeError("RECOVERY_PID_OR_PREFIX_MISMATCH")
+                break
             guard_budget(output, max_bytes, deadline)
             time.sleep(.02)
-        ready = json.loads((root / "recovery-ready.json").read_text())
-        if ready != {"pairs": 32, "pid": child.pid}:
-            raise RuntimeError("RECOVERY_PID_OR_PREFIX_MISMATCH")
         if not signal_group(child, signal.SIGKILL):
             raise RuntimeError("CRASH_CHILD_EXITED_BEFORE_SIGKILL")
         child.wait(timeout=5)
@@ -401,6 +480,12 @@ def summarize_groups(rows, variants):
                 "median_group_peak_rss_bytes": statistics.median(rss) if rss else None,
                 "group_rss_observed_runs": len(rss),
                 "resource_diagnostic_complete": len(rss) == len(selected) and all(r.get("resource_diagnostic_complete", False) for r in selected),
+                "resource_diagnostics_by_run": [{
+                    "directory": row.get("directory"),
+                    "resource_gaps": dict(sorted(row.get("resource_gaps", {}).items())[:16]),
+                    "resource_gap_reasons_omitted": max(0, len(row.get("resource_gaps", {})) - 16),
+                    "resource_sample_errors": row.get("resource_sample_errors", [])[:16],
+                } for row in selected],
                 "per_process_rows": processes})
     return groups
 

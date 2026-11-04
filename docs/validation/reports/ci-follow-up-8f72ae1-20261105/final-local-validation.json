@@ -1,0 +1,68 @@
+{
+  "base_commit": "8f72ae1c9992a961e47d5f45eab9ce2d48185a96",
+  "source_sha256": {
+    "crates/capture-probe/tests/service_supervision.rs": "6b54130c3a14ed7d1f9dc269b2611f3c78608a3e02404ff52ebb4b12db7cbbde",
+    "scripts/validation/writer_contention_ab.py": "4b4b89fd664508b45752ebe118a00b54fc30cb2f7ac3c2061920e9c0e66b808f",
+    "tests/test_writer_contention_ab.py": "bf49d1400489d5df2669a42475d9be7eec90330ea2278e6c460b530640343ee0"
+  },
+  "production_capture_writer_reader_sdk_ros_unchanged": true,
+  "original_archived_performance_results_unchanged": true,
+  "python_full_linux": {
+    "tests": 496,
+    "skipped": 1,
+    "seconds": 135.479,
+    "passed": true,
+    "init": true
+  },
+  "python_special": {
+    "tests_per_run": 22,
+    "python_versions": [
+      "3.11",
+      "3.13"
+    ],
+    "passed": true,
+    "sigterm_ignored_parent_passed": true,
+    "actual_exit_confirmation_overrun_rejected": true
+  },
+  "rust_service_supervision": {
+    "tests": 75,
+    "passed": 70,
+    "ignored": 5,
+    "failed": 0,
+    "seconds": 137.83,
+    "init": true,
+    "tmpfs": true
+  },
+  "rust_changed_test_on_real_filesystem": {
+    "passed": true,
+    "raw_failed_fence_ns": 1139333854,
+    "limits": "no-tmpfs quiet synthetic SDK test; not camera or power-loss acceptance",
+    "pump_calls": 102,
+    "imu_queue_peak": 17
+  },
+  "lint": {
+    "rust": "1.90.0",
+    "all_workspace": true,
+    "all_targets": true,
+    "deny_warnings": true,
+    "passed": true
+  },
+  "local_rust_1_85_available": false,
+  "fmt": true,
+  "real_writer_control_groups": {
+    "passed": true,
+    "groups": 6,
+    "independent_sigkill_recovery": true,
+    "performance_comparison": false
+  },
+  "original_ci_unique_root_cause_known": false,
+  "physical_hardware_acceptance_verified": false,
+  "intermediate_before_elapsed_bound_python_full_linux": {
+    "tests": 495,
+    "skipped": 1,
+    "seconds": 113.313,
+    "passed": true,
+    "init": true
+  },
+  "intermediate_control_results_preserved": "writer-control-flow-regression-before-window-hardening.json plus intermediate-before-window-hardening.patch"
+}

@@ -1,0 +1,33 @@
+{
+  "commit": "8f72ae1c9992a961e47d5f45eab9ce2d48185a96",
+  "preserved_attempt": 1,
+  "jobs": [
+    {
+      "id": 126730352519,
+      "name": "checks (3.10)",
+      "conclusion": "failure",
+      "evidence": "RESOURCE_DIAGNOSTIC_INCOMPLETE after 12 synthetic groups; original resource rows were removed by unittest TemporaryDirectory, so no unique gap field/root cause can be asserted"
+    },
+    {
+      "id": 126730352625,
+      "name": "checks (3.13)",
+      "conclusion": "cancelled",
+      "evidence": "489 tests passed (8 conditional skips); subsequent syntax/Compose steps passed; matrix cancellation, not a test failure"
+    },
+    {
+      "id": 126730352964,
+      "name": "data-plane",
+      "conclusion": "failure",
+      "evidence": "raw_overflow_critical_fsync_does_not_create_a_secondary_imu_overflow: worker exited before injection; original generic assertion did not retain final status, so unique startup/session cause is unknown"
+    }
+  ],
+  "production_queues_heartbeats_sync_readback_hash_recovery_unchanged": true,
+  "physical_failure_evidence_unchanged": true,
+  "coverage_job": {
+    "id": 126730353172,
+    "conclusion": "success",
+    "source_log_excerpt": [
+      "2026-11-04T17:14:23.5665136Z Production line coverage: 19373/19561 (99.0389%) >= 99%"
+    ]
+  }
+}

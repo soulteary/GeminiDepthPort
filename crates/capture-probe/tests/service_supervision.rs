@@ -3750,9 +3750,38 @@ fn normal_200hz_imu_keeps_draining_and_publishing_during_critical_draining_fsync
 fn raw_overflow_critical_fsync_does_not_create_a_secondary_imu_overflow() {
     let f = normal_rate_wait_fixture(1000);
     let library = io_faults::compile(&f.root);
+    // Scope the deliberate readback stall to an already healthy recording.
+    // GDP_IO_ARMED governs fail(), not the independent read() hold hook.
+    let hook_source =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/support/io_faults.c");
+    let mut hook = fs::read_to_string(hook_source).unwrap();
+    assert_eq!(hook.matches("if(hold) {").count(), 1);
+    replace(
+        &mut hook,
+        "if(hold) {",
+        "const char *hold_armed=getenv(\"GDP_IO_HOLD_ARMED\");if(hold && hold_armed && access(hold_armed,F_OK)==0) {",
+    );
+    let local_hook = f.root.join("armed-checkpoint-hook.c");
+    fs::write(&local_hook, hook).unwrap();
+    let compiled = Command::new("cc")
+        .args([
+            "-shared", "-fPIC", "-std=c11", "-Wall", "-Wextra", "-Werror",
+        ])
+        .arg(&local_hook)
+        .args(["-ldl", "-o"])
+        .arg(&library)
+        .output()
+        .unwrap();
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
     let marker = f.root.join("raw-failed-critical");
     let release = f.root.join("release-critical");
     let release_reader = f.root.join("release-checkpoint");
+    let arm_reader = f.root.join("arm-checkpoint");
+    let checkpoint_held = f.root.join("checkpoint-held");
     let mut command = cleanup_fault_command(&f);
     io_faults::inject(&mut command, &library, "fsync", ".tmp", &marker);
     command
@@ -3763,9 +3792,75 @@ fn raw_overflow_critical_fsync_does_not_create_a_secondary_imu_overflow() {
         .env("GDP_IO_RELEASE", &release)
         .env("GDP_IO_DELAY_MS", "0")
         .env("GDP_IO_HOLD_READ_SUFFIX", ".bin")
-        .env("GDP_IO_HOLD_MARKER", f.root.join("checkpoint-held"))
-        .env("GDP_IO_HOLD_RELEASE", &release_reader);
+        .env("GDP_IO_HOLD_MARKER", &checkpoint_held)
+        .env("GDP_IO_HOLD_RELEASE", &release_reader)
+        .env("GDP_IO_HOLD_ARMED", &arm_reader);
     let mut child = command.spawn().unwrap();
+    let wait_phase = |child: &mut Child, phase: &str, done: &dyn Fn(&Option<Value>) -> bool| {
+        let started = Instant::now();
+        loop {
+            let latest = status(&f);
+            if done(&latest) {
+                return latest;
+            }
+            let exit = child.try_wait().unwrap();
+            if exit.is_some() || started.elapsed() >= Duration::from_secs(8) {
+                let failures: Vec<_> = fs::read_dir(&f.root)
+                    .unwrap()
+                    .filter_map(|entry| {
+                        let path = entry.unwrap().path();
+                        if path.file_name().unwrap().to_str().unwrap().starts_with("failure-") {
+                            Some(json!({"path":path,"private_failure":fs::read_to_string(&path).ok()}))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                // Release only this test's barriers before terminating a still
+                // live child; never leave a gated worker after a failed assert.
+                fs::write(&release, b"1").unwrap();
+                fs::write(&release_reader, b"1").unwrap();
+                if exit.is_none() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                panic!(
+                    "{phase}: exit={exit:?}; evidence={}",
+                    json!({"status":latest,"private_failures":failures})
+                );
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let healthy = wait_phase(
+        &mut child,
+        "healthy recording before checkpoint fault",
+        &|value| {
+            value.as_ref().is_some_and(|v| {
+                v["ready"] == true
+                    && v["raw_recording"]["state"] == "recording"
+                    && v["imu"]["ready"] == true
+                    && v["imu"]["error"].is_null()
+                    && v["raw_recording"]["disk_stages"]["checkpoints"]
+                        .as_u64()
+                        .unwrap_or(0)
+                        > 0
+            })
+        },
+    )
+    .unwrap();
+    assert_eq!(healthy["raw_recording"]["whole_pair_queue_overflows"], 0);
+    assert!(
+        !checkpoint_held.exists(),
+        "readback hook ran before its arm gate"
+    );
+    fs::write(&arm_reader, b"1").unwrap();
+    let _ = wait_phase(&mut child, "armed checkpoint readback", &|_| {
+        checkpoint_held.exists()
+    });
+    let _ = wait_phase(&mut child, "RAW_QUEUE_OVERFLOW critical fsync", &|_| {
+        marker.exists()
+    });
     let progress = assert_pump_progress_while_fenced(&f, &mut child, &marker);
     assert_ne!(
         status(&f).unwrap()["raw_recording"]["reason"],
@@ -3799,6 +3894,26 @@ fn raw_overflow_critical_fsync_does_not_create_a_secondary_imu_overflow() {
         json!({"publish_progress_while_fenced":progress,"critical":event,"max_drain_ns":observed["imu"]["drain_interval"]["maximum_ns"],"imu_queue_peak":observed["imu"]["queue_high_water"]})
     );
     fs::write(&release_reader, b"1").unwrap();
+    // Do not race the test's own blocked readback/Drop work against the
+    // unchanged 300ms SDK shutdown deadline. The worker queue guard abandons
+    // its credits only after recorder Drop and checkpoint joins have returned.
+    let _ = wait_phase(
+        &mut child,
+        "released checkpoint writer quiescent",
+        &|value| {
+            value.as_ref().is_some_and(|v| {
+                v["raw_recording"]["reason"] == "RAW_QUEUE_OVERFLOW"
+                    && v["imu"]["ready"] == true
+                    && v["imu"]["error"].is_null()
+                    && v["raw_recording"]["writer_queue"]["closed"] == true
+                    && v["raw_recording"]["writer_queue"]["queued_pairs"] == 0
+                    && v["raw_recording"]["writer_queue"]["inflight_pairs"] == 0
+                    && v["raw_recording"]["disk_stages"]["checkpoint_observation"]["active"]
+                        .as_array()
+                        .is_some_and(|active| active.is_empty())
+            })
+        },
+    );
     stop(&mut child);
     let end = status(&f).unwrap();
     assert_eq!(end["raw_recording"]["reason"], "RAW_QUEUE_OVERFLOW");

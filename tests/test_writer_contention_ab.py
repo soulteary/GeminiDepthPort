@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("writer_contention_ab", ROOT / "scripts/validation/writer_contention_ab.py")
@@ -51,7 +52,14 @@ elif mode=='recover':
     if behavior=='mutate': (root/'capture.partial/checkpoint.json').write_text('changed')
     write('recovery-result.json',{'passes':2,'pairs_per_pass':[32,32],'ordinary_reader_rejected':behavior!='ordinary-accepted'})
 else:
-    write('ready.json',{'pid':os.getpid()})
+    if behavior=='delayed-ready':
+        (root/'ready.json').write_text('')
+        (root/'empty-ready-created').write_text('1')
+        while not (root/'ready-release').exists(): time.sleep(.001)
+    if behavior=='invalid-ready': (root/'ready.json').write_text('{')
+    elif behavior=='large-ready': (root/'ready.json').write_text(' '*4097)
+    elif behavior=='schema-ready': write('ready.json',{'pid':str(os.getpid())})
+    else: write('ready.json',{'pid':os.getpid()+(1 if behavior=='wrong-ready-pid' else 0)})
     barrier=pathlib.Path(os.environ['GDP_CONTENTION_BARRIER'])
     while not barrier.exists(): time.sleep(.002)
     target=json.loads(barrier.read_text())['start_monotonic_ns']
@@ -82,6 +90,66 @@ def args(root, binary):
 
 
 class WriterABTests(unittest.TestCase):
+    def test_ready_marker_reads_are_small_and_only_incomplete_json_is_pending(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "ready.json"
+            self.assertEqual(ab.ready_marker(path), (False, None))
+            for raw in (b"", b"{", b'{"pid":'):
+                path.write_bytes(raw)
+                self.assertEqual(ab.ready_marker(path), (False, None))
+            path.write_text("null")
+            self.assertEqual(ab.ready_marker(path), (True, None))
+            path.write_bytes(b" " * 4097)
+            with self.assertRaisesRegex(ValueError, "READY_MARKER_BYTE_LIMIT"):
+                ab.ready_marker(path)
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux owned subprocess orchestration")
+    def test_real_three_children_empty_ready_gate_precedes_common_barrier(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); output = root / "output"; output.mkdir(); batch = output / "batch"
+            binary = fake_binary(root / "driver", "delayed-ready")
+            results = []; errors = []
+            def run():
+                try:
+                    results.append(ab.run_batch(binary, batch, 3, 30, output, 100000000,
+                                                time.monotonic() + 10, .01))
+                except BaseException as e:
+                    errors.append(e)
+            worker = threading.Thread(target=run, daemon=True); worker.start()
+            until = time.monotonic() + 5
+            children = [batch / f"writer-{i}" for i in range(3)]
+            while not all((p / "empty-ready-created").exists() for p in children):
+                self.assertFalse(errors, errors)
+                self.assertLess(time.monotonic(), until)
+                time.sleep(.001)
+            self.assertFalse((batch / "start.json").exists())
+            for p in children[:2]: (p / "ready-release").write_text("1")
+            while not all((p / "ready.json").stat().st_size > 0 for p in children[:2]):
+                self.assertLess(time.monotonic(), until)
+                time.sleep(.001)
+            self.assertEqual((children[2] / "ready.json").read_bytes(), b"")
+            self.assertFalse((batch / "start.json").exists())
+            (children[2] / "ready-release").write_text("1")
+            worker.join(timeout=10)
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(errors, errors)
+            self.assertEqual(len(results[0]["writers"]), 3)
+            self.assertGreaterEqual((batch / "start.json").stat().st_mtime_ns,
+                                    max((p / "ready.json").stat().st_mtime_ns for p in children))
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux owned subprocess orchestration")
+    def test_ready_valid_wrong_pid_schema_oversize_and_persistent_invalid_are_rejected(self):
+        for behavior, error in (("wrong-ready-pid", "BARRIER_PID_MISMATCH"),
+                                ("schema-ready", "BARRIER_READY_SCHEMA"),
+                                ("large-ready", "READY_MARKER_BYTE_LIMIT"),
+                                ("invalid-ready", "WALL_TIME_LIMIT")):
+            with self.subTest(behavior=behavior), tempfile.TemporaryDirectory() as d:
+                root = Path(d); output = root / "output"; output.mkdir()
+                with self.assertRaisesRegex((RuntimeError, ValueError), error):
+                    ab.run_batch(fake_binary(root / "driver", behavior), output / "batch", 1, 30,
+                                 output, 100000000, time.monotonic() + (.3 if behavior == "invalid-ready" else 5), .01)
+                self.assertFalse((output / "batch/start.json").exists())
+
     def test_budget_scan_tolerates_entries_that_no_longer_resolve(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -92,13 +160,16 @@ class WriterABTests(unittest.TestCase):
     def test_missing_all_rss_yields_null_without_mutating_failed_reports(self):
         failed = {"ok": False, "reason": "RAW_QUEUE_OVERFLOW", "overflow": 1}
         row = {"variant": "after", "writer_count": 1, "writers": [failed],
-               "simultaneous_rss_peak_bytes": None, "resource_diagnostic_complete": False}
+               "simultaneous_rss_peak_bytes": None, "resource_diagnostic_complete": False,
+               "directory": "failed-group", "resource_gaps": {"process_io:PermissionError": 1}}
         before = json.dumps(row, sort_keys=True)
         summary = ab.summarize_groups([row], ["after"])
         self.assertIsNone(summary[0]["median_group_peak_rss_bytes"])
         self.assertEqual(summary[0]["group_rss_observed_runs"], 0)
         self.assertFalse(summary[0]["resource_diagnostic_complete"])
         self.assertEqual(summary[0]["per_process_rows"][0]["overflow"], 1)
+        self.assertEqual(summary[0]["resource_diagnostics_by_run"][0]["resource_gaps"],
+                         {"process_io:PermissionError": 1})
         self.assertEqual(json.dumps(row, sort_keys=True), before)
 
     def test_durability_workload_credit_and_overflow_guards(self):
@@ -188,6 +259,167 @@ class WriterABTests(unittest.TestCase):
             self.assertIn("Z", (row["state_before"], row["state_after"]))
         finally:
             child.wait(timeout=5)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "controlled proc FIFO requires POSIX")
+    def test_owned_exit_after_missing_proc_read_is_bounded_and_live_gap_is_retained(self):
+        # A real child remains alive at the initial poll. The proc server removes
+        # stat between its first and final reads, then releases the child to exit
+        # after a short delay. No Popen methods or summarizers are mocked.
+        for exits in (True, False):
+            with self.subTest(exits=exits), tempfile.TemporaryDirectory() as d:
+                root = Path(d); ready = root / "child-ready"; release = root / "child-release"
+                body = ("import os,pathlib,sys,time; ready=pathlib.Path(sys.argv[1]); release=pathlib.Path(sys.argv[2]); "
+                        "ready.write_text('1');\nwhile not release.exists(): time.sleep(.001)\ntime.sleep(.001)\nos._exit(0)\n")
+                child = subprocess.Popen([sys.executable, "-c", body, str(ready), str(release)])
+                server = None
+                try:
+                    until = time.monotonic() + 5
+                    while not ready.exists():
+                        self.assertIsNone(child.poll())
+                        self.assertLess(time.monotonic(), until)
+                        time.sleep(.001)
+                    proc = root / "proc"; base = proc / str(child.pid); base.mkdir(parents=True)
+                    os.mkfifo(base / "stat"); os.mkfifo(base / "io")
+                    fields = ["0"] * 22; fields[0] = "S"; fields[19] = "101"; fields[21] = "5"
+                    raw = f"{child.pid} (writer) " + " ".join(fields)
+                    def serve():
+                        with (base / "stat").open("w") as f: f.write(raw)
+                        (base / "stat").unlink()
+                        if exits: release.write_text("1")
+                        # Opening IO follows the first stat close; the final stat
+                        # is guaranteed missing before its reader can proceed.
+                        with (base / "io").open("w") as f: f.write("write_bytes: 10\n")
+                    server = threading.Thread(target=serve, daemon=True); server.start()
+                    row = ab.owned_process_sample(child, proc)
+                    server.join(timeout=2); self.assertFalse(server.is_alive())
+                    confirmation = row["exit_confirmation"]
+                    self.assertEqual(confirmation["limit_ns"], 50_000_000)
+                    self.assertEqual(confirmation["elapsed_ns"], confirmation["end_monotonic_ns"] - confirmation["start_monotonic_ns"])
+                    self.assertEqual(row["error"], "EXITED")
+                    if exits:
+                        self.assertTrue(row["terminal"])
+                        self.assertTrue(row["reaped"])
+                        self.assertEqual(row["proc_error_before_exit_confirmation"], "EXITED")
+                        self.assertEqual(confirmation["state"], "owned-child-exit-confirmed")
+                        self.assertEqual(confirmation["returncode"], 0)
+                    else:
+                        self.assertNotIn("terminal", row)
+                        self.assertIsNone(child.poll())
+                        self.assertEqual(confirmation["state"], "still-live-at-bound")
+                        self.assertIsNone(confirmation["returncode"])
+                finally:
+                    if child.poll() is None: child.kill()
+                    child.wait(timeout=5)
+                    if server is not None: server.join(timeout=2)
+
+    def test_owned_process_does_not_waive_io_parse_errors_or_read_a_reaped_pid(self):
+        with tempfile.TemporaryDirectory() as d:
+            proc = Path(d)
+            child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
+            try:
+                base = proc / str(child.pid); base.mkdir()
+                fields = ["0"] * 22; fields[0] = "S"; fields[19] = "101"; fields[21] = "5"
+                (base / "stat").write_text(f"{child.pid} (writer) " + " ".join(fields))
+                (base / "io").write_text("write_bytes: invalid\n")
+                row = ab.owned_process_sample(child, proc)
+                self.assertEqual(row["io_error"], "ValueError")
+                self.assertNotIn("terminal", row)
+                self.assertNotIn("exit_confirmation", row)
+            finally:
+                if child.poll() is None: child.kill()
+                child.wait(timeout=5)
+            # This fake numeric PID now contains apparently valid resources.
+            # The owned Popen is reaped, so those files must never be consulted.
+            (base / "io").write_text("write_bytes: 10\n")
+            row = ab.owned_process_sample(child, proc)
+            self.assertTrue(row["reaped"])
+            self.assertNotIn("start_ticks", row)
+
+    def test_parent_wait_pause_past_exit_bound_never_waives_real_proc_gap(self):
+        for gap in ("stat", "io"):
+            with self.subTest(gap=gap), tempfile.TemporaryDirectory() as d:
+                root = Path(d); ready = root / "ready"; release = root / "release"
+                body = ("import os,pathlib,sys,time; ready=pathlib.Path(sys.argv[1]); release=pathlib.Path(sys.argv[2]); "
+                        "ready.write_text('1');\nwhile not release.exists(): time.sleep(.001)\nos._exit(0)\n")
+                child = subprocess.Popen([sys.executable, "-c", body, str(ready), str(release)])
+                try:
+                    until = time.monotonic() + 5
+                    while not ready.exists():
+                        self.assertIsNone(child.poll())
+                        self.assertLess(time.monotonic(), until)
+                        time.sleep(.001)
+                    proc = root / "proc"; base = proc / str(child.pid); base.mkdir(parents=True)
+                    if gap == "io":
+                        fields = ["0"] * 22; fields[0] = "S"; fields[19] = "101"; fields[21] = "5"
+                        (base / "stat").write_text(f"{child.pid} (writer) " + " ".join(fields))
+                    real_wait = child.wait
+                    def paused_wait(*args, **kwargs):
+                        release.write_text("1")
+                        time.sleep(.06)  # Actual parent pause; the child really exits.
+                        return real_wait(*args, **kwargs)
+                    with patch.object(child, "wait", new=paused_wait):
+                        row = ab.owned_process_sample(child, proc)
+                    confirmation = row["exit_confirmation"]
+                    self.assertEqual(confirmation["state"], "exit-confirmation-overrun")
+                    self.assertGreater(confirmation["elapsed_ns"], confirmation["limit_ns"])
+                    self.assertEqual(confirmation["returncode"], 0)
+                    self.assertTrue(row["reaped"])
+                    self.assertNotIn("terminal", row)
+                    if gap == "stat":
+                        self.assertEqual(row["error"], "EXITED")
+                    else:
+                        self.assertEqual(row["io_error"], "FileNotFoundError")
+                    # Even though the overrun remains a gap, this owned child is
+                    # reaped and its numeric PID must never be followed again.
+                    again = ab.owned_process_sample(child, proc)
+                    self.assertTrue(again["reaped"])
+                    self.assertTrue(again["terminal"])
+                    self.assertNotIn("start_ticks", again)
+                finally:
+                    if child.poll() is None: child.kill()
+                    child.wait(timeout=5)
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux dumpability controls proc IO permissions")
+    def test_real_proc_io_permission_denied_is_live_gap_or_confirmed_owned_exit(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); ready = root / "ready"; release = root / "release"
+            body = ("import ctypes,os,pathlib,sys,time; "
+                    "assert ctypes.CDLL(None).prctl(4,0,0,0,0)==0; "
+                    "ready=pathlib.Path(sys.argv[1]); release=pathlib.Path(sys.argv[2]); ready.write_text('1');\n"
+                    "while not release.exists(): time.sleep(.001)\ntime.sleep(.001)\nos._exit(0)\n")
+            child = subprocess.Popen([sys.executable, "-c", body, str(ready), str(release)])
+            try:
+                until = time.monotonic() + 5
+                while not ready.exists():
+                    self.assertIsNone(child.poll())
+                    self.assertLess(time.monotonic(), until)
+                    time.sleep(.001)
+                probe = ab.process_sample(child.pid)
+                if probe.get("io_error") != "PermissionError":
+                    self.skipTest("proc IO is not denied after PR_SET_DUMPABLE=0; environment may grant CAP_SYS_PTRACE")
+                live = ab.owned_process_sample(child)
+                self.assertEqual(live["io_error"], "PermissionError")
+                self.assertNotIn("terminal", live)
+                self.assertEqual(live["exit_confirmation"]["state"], "still-live-at-bound")
+                self.assertIsNone(child.poll())
+                real_sample = ab.process_sample
+                def release_after_real_io_read(pid, proc):
+                    row = real_sample(pid, proc)
+                    self.assertEqual(row["io_error"], "PermissionError")
+                    release.write_text("1")
+                    return row
+                # Only add a release notification after the actual proc read;
+                # Popen.poll/wait, process ownership and all IO remain real.
+                with patch.object(ab, "process_sample", side_effect=release_after_real_io_read):
+                    ended = ab.owned_process_sample(child)
+                self.assertEqual(ended["io_error"], "PermissionError")
+                self.assertTrue(ended["terminal"])
+                self.assertEqual(ended["exit_confirmation"]["state"], "owned-child-exit-confirmed")
+                self.assertEqual(ended["exit_confirmation"]["returncode"], 0)
+                self.assertEqual(ended["exit_confirmation"]["limit_ns"], 50_000_000)
+            finally:
+                if child.poll() is None: child.kill()
+                child.wait(timeout=5)
 
     @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO fixture requires POSIX")
     def test_pid_reuse_between_real_proc_fixture_reads_is_rejected(self):

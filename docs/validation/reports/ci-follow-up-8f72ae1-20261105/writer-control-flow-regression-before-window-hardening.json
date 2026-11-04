@@ -1,0 +1,315 @@
+{
+  "purpose": "correctness regression only, not a performance comparison; local service tests ran concurrently; 1.5 CPU quota",
+  "manifest": {
+    "barrier_clock": "CLOCK_MONOTONIC across children in the same Linux time namespace; Unix time is display only",
+    "binaries": {
+      "after": {
+        "path": "/work/target/release/deps/writer_contention_benchmark-63ebedb1db5c063b",
+        "sha256": "fa710e158658e32ba206e5b459bdb3ae8ca15d5739ea5a8c6d5ef5d093507dd2"
+      }
+    },
+    "boot_id": "c182d362-1c9a-4b7a-8eeb-f9f85dc77e5c",
+    "capacity_guard": "planned writer byte credits include payload/records/checkpoint/failed partials/recovery; hard per-file RLIMIT_FSIZE; before-write resource-log cap; whole-tree watchdog at <=1s. No filesystem project quota: unexpected output may exceed the observed aggregate threshold before termination, and actual excess is reported",
+    "checkpoint_credit_bytes": 16777216,
+    "checkpoint_credit_pairs": 32,
+    "common_driver_sha256": "6c731452c0e45d0d843b903b51234ca959d4228544e31a979ab217727743c5bc",
+    "counts": [
+      1,
+      3
+    ],
+    "filesystem": {
+      "filesystem": "xfs",
+      "limits": "mountinfo identifies this namespace only; ext4 name alone does not verify physical device or MiniPC",
+      "major_minor": "253:4",
+      "mount_options": "rw,nosuid,nodev,relatime",
+      "mountpoint": "/work/target",
+      "physical_ext4_verified": false,
+      "source": "/dev/vda4",
+      "st_dev": 64772,
+      "super_options": [
+        "rw,seclabel,inode64,logbufs=8,logbsize=32k,prjquota"
+      ]
+    },
+    "fps": 30,
+    "imu_hz_per_stream": 200,
+    "kind": "writer-contention-ab-v1",
+    "limits": "Synthetic owned-buffer FIFO, no SDK/USB/ROS or status-persistence background load. Single/three writer groups share the output filesystem; observer-selected camera count is irrelevant. Process CPU includes synthetic generation/hash and extra readers; VmHWM includes the whole child. Simultaneous group RSS is sampled, not a sum of individual peaks. /proc PID IO includes that process and its threads but page-cache/writeback attribution is incomplete; diskstats are whole-device. No cache dropping, filesystem tuning, queue increase or durability weakening. SIGKILL after a durable checkpoint tests process-crash recovery, not physical power loss. Alternation/repeats improve reproducibility, not statistical significance or proof of unique cause. Overlay/tmpfs/container results do not establish MiniPC/ext4 behavior. Before/after writer-only differences cannot establish capture-service status-path performance.",
+    "max_output_bytes": 2147483648,
+    "max_wall_seconds": 300,
+    "output": "/work/target/storage-contention-ci-follow-up-20261105",
+    "pairs_per_writer": 30,
+    "planned_upper_bound_bytes": 789938176,
+    "queue_capacity": 16,
+    "repeats": 3,
+    "seconds_per_recording": 1,
+    "status_background_load": false,
+    "tool_sha256": "b32d0b828d71b0c656721827a322344d6331467cc46d351eeec170fac70eabf5",
+    "uname": [
+      "Linux",
+      "67c03e6a9178",
+      "7.0.9-205.fc44.aarch64",
+      "#1 SMP PREEMPT_DYNAMIC Thu May 21 16:34:10 UTC 2026",
+      "aarch64",
+      ""
+    ]
+  },
+  "summary": {
+    "completed_groups": 6,
+    "error": null,
+    "groups": [
+      {
+        "group_rss_observed_runs": 3,
+        "median_group_peak_rss_bytes": 5849088,
+        "per_process_rows": [
+          {
+            "append_max_ns": 15347020,
+            "append_p99_ns": 15347020,
+            "cpu_cores": 0.3246456352628853,
+            "cpu_seconds": 0.416560149,
+            "extra_two_readers_ns": 229327493,
+            "overflow": 0,
+            "peak_rss_kib": 5996,
+            "producer_late_max_ns": 4983821,
+            "queue_peak": 1,
+            "queue_wait_p99_ns": 10353958,
+            "verification_ns": "100064273"
+          },
+          {
+            "append_max_ns": 9179495,
+            "append_p99_ns": 9179495,
+            "cpu_cores": 0.33586124603216105,
+            "cpu_seconds": 0.432286332,
+            "extra_two_readers_ns": 215803856,
+            "overflow": 0,
+            "peak_rss_kib": 5992,
+            "producer_late_max_ns": 5557003,
+            "queue_peak": 1,
+            "queue_wait_p99_ns": 3603681,
+            "verification_ns": "104050330"
+          },
+          {
+            "append_max_ns": 53609337,
+            "append_p99_ns": 53609337,
+            "cpu_cores": 0.30625843091126637,
+            "cpu_seconds": 0.365704286,
+            "extra_two_readers_ns": 162807813,
+            "overflow": 0,
+            "peak_rss_kib": 5996,
+            "producer_late_max_ns": 4251334,
+            "queue_peak": 1,
+            "queue_wait_p99_ns": 18416156,
+            "verification_ns": "130848811"
+          }
+        ],
+        "resource_diagnostic_complete": true,
+        "resource_diagnostics_by_run": [
+          {
+            "directory": "round-00-writers-1-after",
+            "resource_gap_reasons_omitted": 0,
+            "resource_gaps": {},
+            "resource_sample_errors": []
+          },
+          {
+            "directory": "round-01-writers-1-after",
+            "resource_gap_reasons_omitted": 0,
+            "resource_gaps": {},
+            "resource_sample_errors": []
+          },
+          {
+            "directory": "round-02-writers-1-after",
+            "resource_gap_reasons_omitted": 0,
+            "resource_gaps": {},
+            "resource_sample_errors": []
+          }
+        ],
+        "runs": 3,
+        "variant": "after",
+        "writer_count": 1
+      },
+      {
+        "group_rss_observed_runs": 3,
+        "median_group_peak_rss_bytes": 15282176,
+        "per_process_rows": [
+          {
+            "append_max_ns": 13939472,
+            "append_p99_ns": 13939472,
+            "cpu_cores": 0.3009907665328394,
+            "cpu_seconds": 0.431793009,
+            "extra_two_readers_ns": 329455307,
+            "overflow": 0,
+            "peak_rss_kib": 5996,
+            "producer_late_max_ns": 14260469,
+            "queue_peak": 1,
+            "queue_wait_p99_ns": 2439968,
+            "verification_ns": "193484476"
+          },
+          {
+            "append_max_ns": 26209687,
+            "append_p99_ns": 26209687,
+            "cpu_cores": 0.3011704679221121,
+            "cpu_seconds": 0.406493163,
+            "extra_two_readers_ns": 303369495,
+            "overflow": 0,
+            "peak_rss_kib": 5972,
+            "producer_late_max_ns": 6720769,
+            "queue_peak": 1,
+            "queue_wait_p99_ns": 9404120,
+            "verification_ns": "132715235"
+          },
+          {
+            "append_max_ns": 13345303,
+            "append_p99_ns": 13345303,
+            "cpu_cores": 0.3158551380522197,
+            "cpu_seconds": 0.425301131,
+            "extra_two_readers_ns": 256622435,
+            "overflow": 0,
+            "peak_rss_kib": 5996,
+            "producer_late_max_ns": 7263967,
+            "queue_peak": 1,
+            "queue_wait_p99_ns": 11541796,
+            "verification_ns": "175730281"
+          },
+          {
+            "append_max_ns": 47812189,
+            "append_p99_ns": 47812189,
+            "cpu_cores": 0.26232749003310063,
+            "cpu_seconds": 0.472075942,
+            "extra_two_readers_ns": 601507678,
+            "overflow": 0,
+            "peak_rss_kib": 5772,
+            "producer_late_max_ns": 12833814,
+            "queue_peak": 1,
+            "queue_wait_p99_ns": 23557761,
+            "verification_ns": "216693902"
+          },
+          {
+            "append_max_ns": 33482133,
+            "append_p99_ns": 33482133,
+            "cpu_cores": 0.2874904303191143,
+            "cpu_seconds": 0.434704457,
+            "extra_two_readers_ns": 302253200,
+            "overflow": 0,
+            "peak_rss_kib": 5976,
+            "producer_late_max_ns": 13435081,
+            "queue_peak": 1,
+            "queue_wait_p99_ns": 10286582,
+            "verification_ns": "237128774"
+          },
+          {
+            "append_max_ns": 80159318,
+            "append_p99_ns": 80159318,
+            "cpu_cores": 0.25699660112232475,
+            "cpu_seconds": 0.4372347,
+            "extra_two_readers_ns": 579859634,
+            "overflow": 0,
+            "peak_rss_kib": 5644,
+            "producer_late_max_ns": 15632583,
+            "queue_peak": 1,
+            "queue_wait_p99_ns": 3050762,
+            "verification_ns": "115819754"
+          },
+          {
+            "append_max_ns": 35116347,
+            "append_p99_ns": 35116347,
+            "cpu_cores": 0.25290036680052547,
+            "cpu_seconds": 0.408403584,
+            "extra_two_readers_ns": 246620145,
+            "overflow": 0,
+            "peak_rss_kib": 6756,
+            "producer_late_max_ns": 30225456,
+            "queue_peak": 2,
+            "queue_wait_p99_ns": 72621580,
+            "verification_ns": "370341303"
+          },
+          {
+            "append_max_ns": 37556441,
+            "append_p99_ns": 37556441,
+            "cpu_cores": 0.28594573663144085,
+            "cpu_seconds": 0.420192696,
+            "extra_two_readers_ns": 300747276,
+            "overflow": 0,
+            "peak_rss_kib": 5564,
+            "producer_late_max_ns": 62070345,
+            "queue_peak": 2,
+            "queue_wait_p99_ns": 13189011,
+            "verification_ns": "184349148"
+          },
+          {
+            "append_max_ns": 102233364,
+            "append_p99_ns": 102233364,
+            "cpu_cores": 0.24651731027012247,
+            "cpu_seconds": 0.395660795,
+            "extra_two_readers_ns": 230930167,
+            "overflow": 0,
+            "peak_rss_kib": 7892,
+            "producer_late_max_ns": 266965673,
+            "queue_peak": 2,
+            "queue_wait_p99_ns": 12669300,
+            "verification_ns": "173836399"
+          }
+        ],
+        "resource_diagnostic_complete": true,
+        "resource_diagnostics_by_run": [
+          {
+            "directory": "round-00-writers-3-after",
+            "resource_gap_reasons_omitted": 0,
+            "resource_gaps": {},
+            "resource_sample_errors": []
+          },
+          {
+            "directory": "round-01-writers-3-after",
+            "resource_gap_reasons_omitted": 0,
+            "resource_gaps": {},
+            "resource_sample_errors": []
+          },
+          {
+            "directory": "round-02-writers-3-after",
+            "resource_gap_reasons_omitted": 0,
+            "resource_gaps": {},
+            "resource_sample_errors": []
+          }
+        ],
+        "runs": 3,
+        "variant": "after",
+        "writer_count": 3
+      }
+    ],
+    "hardware_acceptance_verified": false,
+    "limits": "Synthetic owned-buffer FIFO, no SDK/USB/ROS or status-persistence background load. Single/three writer groups share the output filesystem; observer-selected camera count is irrelevant. Process CPU includes synthetic generation/hash and extra readers; VmHWM includes the whole child. Simultaneous group RSS is sampled, not a sum of individual peaks. /proc PID IO includes that process and its threads but page-cache/writeback attribution is incomplete; diskstats are whole-device. No cache dropping, filesystem tuning, queue increase or durability weakening. SIGKILL after a durable checkpoint tests process-crash recovery, not physical power loss. Alternation/repeats improve reproducibility, not statistical significance or proof of unique cause. Overlay/tmpfs/container results do not establish MiniPC/ext4 behavior. Before/after writer-only differences cannot establish capture-service status-path performance.",
+    "observed_aggregate_overrun_bytes": 0,
+    "ok": true,
+    "output_bytes_before_summary_and_sha256": 443813034,
+    "planned_groups": 6,
+    "recovery": {
+      "after": {
+        "after_explicit_durable_checkpoint": true,
+        "limits": "independent process-crash test; not an arbitrary kill point or physical power cut",
+        "ok": true,
+        "readback": {
+          "expected_imu_samples": 426,
+          "ordinary_reader_rejected": true,
+          "pairs_per_pass": [
+            32,
+            32
+          ],
+          "passes": 2,
+          "per_frame_color_depth_evidence_hashes": true,
+          "wall_ns": 171048970
+        },
+        "signal": "SIGKILL",
+        "source_unchanged_sha256": {
+          "checkpoint.json": "35e7645242bb74ceccbed0a81080af993c0cba6b77266770a21365689cab507b",
+          "payload-00000000000000000001.bin": "702c3c2d166c42c485b1e198edfacc45ef3fe535d6a380d0302f80524d2fe1f0",
+          "payload-00000000000000000002.bin": "98e3b295195f73a2db410fde31b69bf483a589caad2f45b81cbd241d5b072dfb",
+          "payload-00000000000000000003.bin": "fe67215e701e687779ba236da1088e2e50102bc433980b961372674388a3bbd8",
+          "payload-00000000000000000004.bin": "1cf2096bf4c20c6e0f6fd3f019e4b560350ccb9f6865dc91246ae5688ae9a0b3",
+          "payload-00000000000000000005.bin": "8fe5e270362b1001d0509c4b260021407a01640cfb81427a7732038bc4402d51",
+          "records.jsonl": "fb913431a94b4acde61af518a50ef2995df78e727329e4af5d3b1fec2817269c",
+          "snapshot.json": "c84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610"
+        }
+      }
+    }
+  },
+  "full_run_sha256sums": "25b91a395ba0089e329969520483d7096819b176f15c9c16c1915ae6bc8b86ec  manifest.json\n35e7645242bb74ceccbed0a81080af993c0cba6b77266770a21365689cab507b  recovery-after/capture.partial/checkpoint.json\n702c3c2d166c42c485b1e198edfacc45ef3fe535d6a380d0302f80524d2fe1f0  recovery-after/capture.partial/payload-00000000000000000001.bin\n98e3b295195f73a2db410fde31b69bf483a589caad2f45b81cbd241d5b072dfb  recovery-after/capture.partial/payload-00000000000000000002.bin\nfe67215e701e687779ba236da1088e2e50102bc433980b961372674388a3bbd8  recovery-after/capture.partial/payload-00000000000000000003.bin\n1cf2096bf4c20c6e0f6fd3f019e4b560350ccb9f6865dc91246ae5688ae9a0b3  recovery-after/capture.partial/payload-00000000000000000004.bin\n8fe5e270362b1001d0509c4b260021407a01640cfb81427a7732038bc4402d51  recovery-after/capture.partial/payload-00000000000000000005.bin\nfb913431a94b4acde61af518a50ef2995df78e727329e4af5d3b1fec2817269c  recovery-after/capture.partial/records.jsonl\nc84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610  recovery-after/capture.partial/snapshot.json\ne4b2e8c95a2eb17a544bc1ba6ae1bfae73a449160e8f9cd2bda66600889204c0  recovery-after/crash.log\nad318758d8c51a57c9bc6144826bcb76eb6b1768509010bb57d4a1f565ea494c  recovery-after/recover.log\ncd6660482030c0a44739558168589479f58152a3e6a88376191461a69ed156ca  recovery-after/recovery-ready.json\nbf828a22caaeb859fbc94ef224107b00145b06af93fe2e265022e2d828364739  recovery-after/recovery-result.json\nb61b9e3f0e87169f1c6f0bfb7a72b4b3934dad65b47fedaa0d630fabb87398aa  round-00-writers-1-after/resources.jsonl\n8dfaad05a34e566dfadce233b3927d0f3b078412427cd8c4cdad97c928c9cb81  round-00-writers-1-after/start.json\na91a2c8d80cf1e85e36ceea5c042e4d3eb5f49fb45201e4336e324f8a957cd4f  round-00-writers-1-after/writer-0/capture/COMPLETE\n0b0d9e3a356f262508311e721d4fe940c376b4f6a9eedcb5149590296d1adb12  round-00-writers-1-after/writer-0/capture/checkpoint.json\n7e07f996468b3f4a19b2ec0002f3eb71fc64eef1842226747cb4781b6f420419  round-00-writers-1-after/writer-0/capture/manifest.json\n702c3c2d166c42c485b1e198edfacc45ef3fe535d6a380d0302f80524d2fe1f0  round-00-writers-1-after/writer-0/capture/payload-00000000000000000001.bin\n98e3b295195f73a2db410fde31b69bf483a589caad2f45b81cbd241d5b072dfb  round-00-writers-1-after/writer-0/capture/payload-00000000000000000002.bin\nfe67215e701e687779ba236da1088e2e50102bc433980b961372674388a3bbd8  round-00-writers-1-after/writer-0/capture/payload-00000000000000000003.bin\n1cf2096bf4c20c6e0f6fd3f019e4b560350ccb9f6865dc91246ae5688ae9a0b3  round-00-writers-1-after/writer-0/capture/payload-00000000000000000004.bin\n83a809720c11c814ebca1eb47c4ca99ec041c593081e411c7c0eec03bd0e62f8  round-00-writers-1-after/writer-0/capture/payload-00000000000000000005.bin\naa65d1cdaa42ab2fa8f4ef65512bfe72d16e9e2c3085e827c4acec943fbb19c1  round-00-writers-1-after/writer-0/capture/records.jsonl\nc84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610  round-00-writers-1-after/writer-0/capture/snapshot.json\n6db82e8c9e108c4b4a62ae3e0831f18163ad622f9d51388b01e1742f62510a87  round-00-writers-1-after/writer-0/ready.json\nd9b4dc105d1f5b9ccdc74a374d8888be4bf2177d0ade14d29d21fce4ed47dae0  round-00-writers-1-after/writer-0/result.json\n6c99311866d599ce88217ea2c86beef88d7e20d5cbd05f0ddb8b7969865300e4  round-00-writers-1-after/writer-0/run.log\n9bb44be34d589329f522ff52a7b0e452aaa6d071c1225cd79e77298a3965c09d  round-00-writers-1-after.json\na664b9b4b7b23ec2591195442b4f4daaa3b17af357ee22764ffa8de4c7a4b33b  round-00-writers-3-after/resources.jsonl\n15fb454b4d91a30690c4ecb0fb78c369f7a95469e04c12c07f90ec546f5990cb  round-00-writers-3-after/start.json\na91a2c8d80cf1e85e36ceea5c042e4d3eb5f49fb45201e4336e324f8a957cd4f  round-00-writers-3-after/writer-0/capture/COMPLETE\n0b0d9e3a356f262508311e721d4fe940c376b4f6a9eedcb5149590296d1adb12  round-00-writers-3-after/writer-0/capture/checkpoint.json\n7e07f996468b3f4a19b2ec0002f3eb71fc64eef1842226747cb4781b6f420419  round-00-writers-3-after/writer-0/capture/manifest.json\n702c3c2d166c42c485b1e198edfacc45ef3fe535d6a380d0302f80524d2fe1f0  round-00-writers-3-after/writer-0/capture/payload-00000000000000000001.bin\n98e3b295195f73a2db410fde31b69bf483a589caad2f45b81cbd241d5b072dfb  round-00-writers-3-after/writer-0/capture/payload-00000000000000000002.bin\nfe67215e701e687779ba236da1088e2e50102bc433980b961372674388a3bbd8  round-00-writers-3-after/writer-0/capture/payload-00000000000000000003.bin\n1cf2096bf4c20c6e0f6fd3f019e4b560350ccb9f6865dc91246ae5688ae9a0b3  round-00-writers-3-after/writer-0/capture/payload-00000000000000000004.bin\n83a809720c11c814ebca1eb47c4ca99ec041c593081e411c7c0eec03bd0e62f8  round-00-writers-3-after/writer-0/capture/payload-00000000000000000005.bin\naa65d1cdaa42ab2fa8f4ef65512bfe72d16e9e2c3085e827c4acec943fbb19c1  round-00-writers-3-after/writer-0/capture/records.jsonl\nc84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610  round-00-writers-3-after/writer-0/capture/snapshot.json\n3881048148e5640241fa424c736320a06f5ed60841dd92276f16d14abc368121  round-00-writers-3-after/writer-0/ready.json\nc52e9abc9ad74aaaac94c404e3f0963d9c3cdfd2a2246b58eec80edae924111f  round-00-writers-3-after/writer-0/result.json\n71d765b860822824b2d5b56903b0352c7fc113135278ea644f78e4e6838eff88  round-00-writers-3-after/writer-0/run.log\na91a2c8d80cf1e85e36ceea5c042e4d3eb5f49fb45201e4336e324f8a957cd4f  round-00-writers-3-after/writer-1/capture/COMPLETE\n0b0d9e3a356f262508311e721d4fe940c376b4f6a9eedcb5149590296d1adb12  round-00-writers-3-after/writer-1/capture/checkpoint.json\n7e07f996468b3f4a19b2ec0002f3eb71fc64eef1842226747cb4781b6f420419  round-00-writers-3-after/writer-1/capture/manifest.json\n702c3c2d166c42c485b1e198edfacc45ef3fe535d6a380d0302f80524d2fe1f0  round-00-writers-3-after/writer-1/capture/payload-00000000000000000001.bin\n98e3b295195f73a2db410fde31b69bf483a589caad2f45b81cbd241d5b072dfb  round-00-writers-3-after/writer-1/capture/payload-00000000000000000002.bin\nfe67215e701e687779ba236da1088e2e50102bc433980b961372674388a3bbd8  round-00-writers-3-after/writer-1/capture/payload-00000000000000000003.bin\n1cf2096bf4c20c6e0f6fd3f019e4b560350ccb9f6865dc91246ae5688ae9a0b3  round-00-writers-3-after/writer-1/capture/payload-00000000000000000004.bin\n83a809720c11c814ebca1eb47c4ca99ec041c593081e411c7c0eec03bd0e62f8  round-00-writers-3-after/writer-1/capture/payload-00000000000000000005.bin\naa65d1cdaa42ab2fa8f4ef65512bfe72d16e9e2c3085e827c4acec943fbb19c1  round-00-writers-3-after/writer-1/capture/records.jsonl\nc84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610  round-00-writers-3-after/writer-1/capture/snapshot.json\n274096e5afe07cd97869cb092dc184adb0acc77040080b59bdcde5a9f5ca68bf  round-00-writers-3-after/writer-1/ready.json\n16ceeddaf3ad7257e20e0a8f5e45a3f22c0d607088acefe55149aa56344f8799  round-00-writers-3-after/writer-1/result.json\nbab361a0050ef45f8ca87634e0bc2a54a771ab5a77383fb184974e458750ae4b  round-00-writers-3-after/writer-1/run.log\na91a2c8d80cf1e85e36ceea5c042e4d3eb5f49fb45201e4336e324f8a957cd4f  round-00-writers-3-after/writer-2/capture/COMPLETE\n0b0d9e3a356f262508311e721d4fe940c376b4f6a9eedcb5149590296d1adb12  round-00-writers-3-after/writer-2/capture/checkpoint.json\n7e07f996468b3f4a19b2ec0002f3eb71fc64eef1842226747cb4781b6f420419  round-00-writers-3-after/writer-2/capture/manifest.json\n702c3c2d166c42c485b1e198edfacc45ef3fe535d6a380d0302f80524d2fe1f0  round-00-writers-3-after/writer-2/capture/payload-00000000000000000001.bin\n98e3b295195f73a2db410fde31b69bf483a589caad2f45b81cbd241d5b072dfb  round-00-writers-3-after/writer-2/capture/payload-00000000000000000002.bin\nfe67215e701e687779ba236da1088e2e50102bc433980b961372674388a3bbd8  round-00-writers-3-after/writer-2/capture/payload-00000000000000000003.bin\n1cf2096bf4c20c6e0f6fd3f019e4b560350ccb9f6865dc91246ae5688ae9a0b3  round-00-writers-3-after/writer-2/capture/payload-00000000000000000004.bin\n83a809720c11c814ebca1eb47c4ca99ec041c593081e411c7c0eec03bd0e62f8  round-00-writers-3-after/writer-2/capture/payload-00000000000000000005.bin\naa65d1cdaa42ab2fa8f4ef65512bfe72d16e9e2c3085e827c4acec943fbb19c1  round-00-writers-3-after/writer-2/capture/records.jsonl\nc84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610  round-00-writers-3-after/writer-2/capture/snapshot.json\n6866aba00497b718c3fa59456b4acbe717ff94788cc10c5004e31e75fc5f8b58  round-00-writers-3-after/writer-2/ready.json\n0aa0dd4bb6cfa6cbbbd14dc48a7f67bdd09a8b3dd6f6e27bd687ca4c51fd671d  round-00-writers-3-after/writer-2/result.json\n28bd5bd20011e87df862e189a7adbaa7eee2bec1569a731b687ae7352bc36ec9  round-00-writers-3-after/writer-2/run.log\n3ab6bc61ff74b608fa5472c8a746ed3ce0e1b49807fea0a25690f0a713f00b2e  round-00-writers-3-after.json\na63cda8f3203f7e0f9116d059a65fd3db254fc67ddbf81b02d20e7a814419cd7  round-01-writers-1-after/resources.jsonl\nf40cbebd44a55f7b58bc6320bfc953522604e7ade1e008a39fd4e6f9a5a89f72  round-01-writers-1-after/start.json\na91a2c8d80cf1e85e36ceea5c042e4d3eb5f49fb45201e4336e324f8a957cd4f  round-01-writers-1-after/writer-0/capture/COMPLETE\n0b0d9e3a356f262508311e721d4fe940c376b4f6a9eedcb5149590296d1adb12  round-01-writers-1-after/writer-0/capture/checkpoint.json\n7e07f996468b3f4a19b2ec0002f3eb71fc64eef1842226747cb4781b6f420419  round-01-writers-1-after/writer-0/capture/manifest.json\n702c3c2d166c42c485b1e198edfacc45ef3fe535d6a380d0302f80524d2fe1f0  round-01-writers-1-after/writer-0/capture/payload-00000000000000000001.bin\n98e3b295195f73a2db410fde31b69bf483a589caad2f45b81cbd241d5b072dfb  round-01-writers-1-after/writer-0/capture/payload-00000000000000000002.bin\nfe67215e701e687779ba236da1088e2e50102bc433980b961372674388a3bbd8  round-01-writers-1-after/writer-0/capture/payload-00000000000000000003.bin\n1cf2096bf4c20c6e0f6fd3f019e4b560350ccb9f6865dc91246ae5688ae9a0b3  round-01-writers-1-after/writer-0/capture/payload-00000000000000000004.bin\n83a809720c11c814ebca1eb47c4ca99ec041c593081e411c7c0eec03bd0e62f8  round-01-writers-1-after/writer-0/capture/payload-00000000000000000005.bin\naa65d1cdaa42ab2fa8f4ef65512bfe72d16e9e2c3085e827c4acec943fbb19c1  round-01-writers-1-after/writer-0/capture/records.jsonl\nc84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610  round-01-writers-1-after/writer-0/capture/snapshot.json\n83f1fd9bb50805bcce345accd377f992f7d6ffba68bbeeec173bc287a495d0ee  round-01-writers-1-after/writer-0/ready.json\nc7b4a0a699a0b44f5ecde8ff75a272fe23f66e6694f7a238d35d9d98dd36733a  round-01-writers-1-after/writer-0/result.json\ncb013864b54efcbd1d3363fbf479b1852c67503cfa55f81676682e8d77de05af  round-01-writers-1-after/writer-0/run.log\n494b25b26e445a5b45ce0675a60187c77d8975d30aeaefe8c28ab333461d04c8  round-01-writers-1-after.json\n1e1503c81d0470b89a64696f140d2103debc6fe3f8465fd8da755b2ee3afea52  round-01-writers-3-after/resources.jsonl\n92910ba2a7e2324de492225b0cba7094d43e5d5406f66d67e09fe7494b4ac61f  round-01-writers-3-after/start.json\na91a2c8d80cf1e85e36ceea5c042e4d3eb5f49fb45201e4336e324f8a957cd4f  round-01-writers-3-after/writer-0/capture/COMPLETE\n0b0d9e3a356f262508311e721d4fe940c376b4f6a9eedcb5149590296d1adb12  round-01-writers-3-after/writer-0/capture/checkpoint.json\n7e07f996468b3f4a19b2ec0002f3eb71fc64eef1842226747cb4781b6f420419  round-01-writers-3-after/writer-0/capture/manifest.json\n702c3c2d166c42c485b1e198edfacc45ef3fe535d6a380d0302f80524d2fe1f0  round-01-writers-3-after/writer-0/capture/payload-00000000000000000001.bin\n98e3b295195f73a2db410fde31b69bf483a589caad2f45b81cbd241d5b072dfb  round-01-writers-3-after/writer-0/capture/payload-00000000000000000002.bin\nfe67215e701e687779ba236da1088e2e50102bc433980b961372674388a3bbd8  round-01-writers-3-after/writer-0/capture/payload-00000000000000000003.bin\n1cf2096bf4c20c6e0f6fd3f019e4b560350ccb9f6865dc91246ae5688ae9a0b3  round-01-writers-3-after/writer-0/capture/payload-00000000000000000004.bin\n83a809720c11c814ebca1eb47c4ca99ec041c593081e411c7c0eec03bd0e62f8  round-01-writers-3-after/writer-0/capture/payload-00000000000000000005.bin\naa65d1cdaa42ab2fa8f4ef65512bfe72d16e9e2c3085e827c4acec943fbb19c1  round-01-writers-3-after/writer-0/capture/records.jsonl\nc84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610  round-01-writers-3-after/writer-0/capture/snapshot.json\n325126f432aff495dc3a547aad752dec72ce98da12ba7c454a5d34100b0c3112  round-01-writers-3-after/writer-0/ready.json\n236465feebdd97bb5d4731aef7c84f77de5b39d45fa2951f17e15ebb72172fb7  round-01-writers-3-after/writer-0/result.json\n5f35f61ac6aa0d400c41998c8b15c6fec8f9abc89b2974690bfa7f0c9856b7b7  round-01-writers-3-after/writer-0/run.log\na91a2c8d80cf1e85e36ceea5c042e4d3eb5f49fb45201e4336e324f8a957cd4f  round-01-writers-3-after/writer-1/capture/COMPLETE\n0b0d9e3a356f262508311e721d4fe940c376b4f6a9eedcb5149590296d1adb12  round-01-writers-3-after/writer-1/capture/checkpoint.json\n7e07f996468b3f4a19b2ec0002f3eb71fc64eef1842226747cb4781b6f420419  round-01-writers-3-after/writer-1/capture/manifest.json\n702c3c2d166c42c485b1e198edfacc45ef3fe535d6a380d0302f80524d2fe1f0  round-01-writers-3-after/writer-1/capture/payload-00000000000000000001.bin\n98e3b295195f73a2db410fde31b69bf483a589caad2f45b81cbd241d5b072dfb  round-01-writers-3-after/writer-1/capture/payload-00000000000000000002.bin\nfe67215e701e687779ba236da1088e2e50102bc433980b961372674388a3bbd8  round-01-writers-3-after/writer-1/capture/payload-00000000000000000003.bin\n1cf2096bf4c20c6e0f6fd3f019e4b560350ccb9f6865dc91246ae5688ae9a0b3  round-01-writers-3-after/writer-1/capture/payload-00000000000000000004.bin\n83a809720c11c814ebca1eb47c4ca99ec041c593081e411c7c0eec03bd0e62f8  round-01-writers-3-after/writer-1/capture/payload-00000000000000000005.bin\naa65d1cdaa42ab2fa8f4ef65512bfe72d16e9e2c3085e827c4acec943fbb19c1  round-01-writers-3-after/writer-1/capture/records.jsonl\nc84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610  round-01-writers-3-after/writer-1/capture/snapshot.json\nda59a2e2dd789e93ddb896df464f4bbb8a3cc81e2c431f4486cfc5148e9c492f  round-01-writers-3-after/writer-1/ready.json\n9269d472116a7293542c3f2da95c5117aa7f2cfb6a06391f0c6d8b31b220600b  round-01-writers-3-after/writer-1/result.json\nfcc6063899afe58b3de5ff7e838cc543750452d2e72b458f8a4726b3fc02265c  round-01-writers-3-after/writer-1/run.log\na91a2c8d80cf1e85e36ceea5c042e4d3eb5f49fb45201e4336e324f8a957cd4f  round-01-writers-3-after/writer-2/capture/COMPLETE\n0b0d9e3a356f262508311e721d4fe940c376b4f6a9eedcb5149590296d1adb12  round-01-writers-3-after/writer-2/capture/checkpoint.json\n7e07f996468b3f4a19b2ec0002f3eb71fc64eef1842226747cb4781b6f420419  round-01-writers-3-after/writer-2/capture/manifest.json\n702c3c2d166c42c485b1e198edfacc45ef3fe535d6a380d0302f80524d2fe1f0  round-01-writers-3-after/writer-2/capture/payload-00000000000000000001.bin\n98e3b295195f73a2db410fde31b69bf483a589caad2f45b81cbd241d5b072dfb  round-01-writers-3-after/writer-2/capture/payload-00000000000000000002.bin\nfe67215e701e687779ba236da1088e2e50102bc433980b961372674388a3bbd8  round-01-writers-3-after/writer-2/capture/payload-00000000000000000003.bin\n1cf2096bf4c20c6e0f6fd3f019e4b560350ccb9f6865dc91246ae5688ae9a0b3  round-01-writers-3-after/writer-2/capture/payload-00000000000000000004.bin\n83a809720c11c814ebca1eb47c4ca99ec041c593081e411c7c0eec03bd0e62f8  round-01-writers-3-after/writer-2/capture/payload-00000000000000000005.bin\naa65d1cdaa42ab2fa8f4ef65512bfe72d16e9e2c3085e827c4acec943fbb19c1  round-01-writers-3-after/writer-2/capture/records.jsonl\nc84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610  round-01-writers-3-after/writer-2/capture/snapshot.json\na7a54ab82eff16e582672355352a6047a28b5e5460389c48aac82891840f2129  round-01-writers-3-after/writer-2/ready.json\n7e11220dc08cf67a0279455501b98eb704295aed05b5a6177c8c4fe87ba40f4d  round-01-writers-3-after/writer-2/result.json\n14754f352ae6ec3e3e7851eac6082094aca56b206b64c9b708d0cd9d18a5c5b6  round-01-writers-3-after/writer-2/run.log\n8acefa66336a513974296bab84099640a8752f86c0c28fd7b0ad6297f9881f67  round-01-writers-3-after.json\n12e74d0c0930712e88d1a4cc97ff93a64b1720ff4122543eb506e6aa751bc45b  round-02-writers-1-after/resources.jsonl\n08424a2e0b756cbf766f182ad9f852682f854f59d6adc2cd049670a3b3aedaba  round-02-writers-1-after/start.json\na91a2c8d80cf1e85e36ceea5c042e4d3eb5f49fb45201e4336e324f8a957cd4f  round-02-writers-1-after/writer-0/capture/COMPLETE\n0b0d9e3a356f262508311e721d4fe940c376b4f6a9eedcb5149590296d1adb12  round-02-writers-1-after/writer-0/capture/checkpoint.json\n7e07f996468b3f4a19b2ec0002f3eb71fc64eef1842226747cb4781b6f420419  round-02-writers-1-after/writer-0/capture/manifest.json\n702c3c2d166c42c485b1e198edfacc45ef3fe535d6a380d0302f80524d2fe1f0  round-02-writers-1-after/writer-0/capture/payload-00000000000000000001.bin\n98e3b295195f73a2db410fde31b69bf483a589caad2f45b81cbd241d5b072dfb  round-02-writers-1-after/writer-0/capture/payload-00000000000000000002.bin\nfe67215e701e687779ba236da1088e2e50102bc433980b961372674388a3bbd8  round-02-writers-1-after/writer-0/capture/payload-00000000000000000003.bin\n1cf2096bf4c20c6e0f6fd3f019e4b560350ccb9f6865dc91246ae5688ae9a0b3  round-02-writers-1-after/writer-0/capture/payload-00000000000000000004.bin\n83a809720c11c814ebca1eb47c4ca99ec041c593081e411c7c0eec03bd0e62f8  round-02-writers-1-after/writer-0/capture/payload-00000000000000000005.bin\naa65d1cdaa42ab2fa8f4ef65512bfe72d16e9e2c3085e827c4acec943fbb19c1  round-02-writers-1-after/writer-0/capture/records.jsonl\nc84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610  round-02-writers-1-after/writer-0/capture/snapshot.json\n4ef6d8e387dd3acb8c92dd6fbe213e3b9a3c93270ad9d240a91c105a25df870c  round-02-writers-1-after/writer-0/ready.json\n9d38ffb1e4d9a2b2e97d5e8be0579024e43bdb8813dcddf314808767ce9961d0  round-02-writers-1-after/writer-0/result.json\n639d3b677c24c08c28330f8d7b1edf677cea5c1adff9d4d6c1c2f8e47aaa5959  round-02-writers-1-after/writer-0/run.log\n74cafcf44393f9bcbfefb137df1b9ac7c4cf874d00fbcc51f8982aba020170b5  round-02-writers-1-after.json\n5dde61a3ba4185f91b4275bcd854a4a029bd14cf5f16f311aaed02e6ab42d2c2  round-02-writers-3-after/resources.jsonl\nb7538a0eaccff6aa3179a1eee24a451a3dc5106a3d46236b525c689d1dcf8b76  round-02-writers-3-after/start.json\na91a2c8d80cf1e85e36ceea5c042e4d3eb5f49fb45201e4336e324f8a957cd4f  round-02-writers-3-after/writer-0/capture/COMPLETE\n0b0d9e3a356f262508311e721d4fe940c376b4f6a9eedcb5149590296d1adb12  round-02-writers-3-after/writer-0/capture/checkpoint.json\n7e07f996468b3f4a19b2ec0002f3eb71fc64eef1842226747cb4781b6f420419  round-02-writers-3-after/writer-0/capture/manifest.json\n702c3c2d166c42c485b1e198edfacc45ef3fe535d6a380d0302f80524d2fe1f0  round-02-writers-3-after/writer-0/capture/payload-00000000000000000001.bin\n98e3b295195f73a2db410fde31b69bf483a589caad2f45b81cbd241d5b072dfb  round-02-writers-3-after/writer-0/capture/payload-00000000000000000002.bin\nfe67215e701e687779ba236da1088e2e50102bc433980b961372674388a3bbd8  round-02-writers-3-after/writer-0/capture/payload-00000000000000000003.bin\n1cf2096bf4c20c6e0f6fd3f019e4b560350ccb9f6865dc91246ae5688ae9a0b3  round-02-writers-3-after/writer-0/capture/payload-00000000000000000004.bin\n83a809720c11c814ebca1eb47c4ca99ec041c593081e411c7c0eec03bd0e62f8  round-02-writers-3-after/writer-0/capture/payload-00000000000000000005.bin\naa65d1cdaa42ab2fa8f4ef65512bfe72d16e9e2c3085e827c4acec943fbb19c1  round-02-writers-3-after/writer-0/capture/records.jsonl\nc84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610  round-02-writers-3-after/writer-0/capture/snapshot.json\n1df40b4327ff3e1cce10e6d9e14fc4ef9780a30a4c774550c16408491dc89faf  round-02-writers-3-after/writer-0/ready.json\nb96eed27939873ab9945caf3b66fbef6cbfac634bd54ae877f8f436f30d9efb1  round-02-writers-3-after/writer-0/result.json\nf12111eebd6995352f5374f5d6500d86e80785f723c725242c0e7444a0360935  round-02-writers-3-after/writer-0/run.log\na91a2c8d80cf1e85e36ceea5c042e4d3eb5f49fb45201e4336e324f8a957cd4f  round-02-writers-3-after/writer-1/capture/COMPLETE\n0b0d9e3a356f262508311e721d4fe940c376b4f6a9eedcb5149590296d1adb12  round-02-writers-3-after/writer-1/capture/checkpoint.json\n7e07f996468b3f4a19b2ec0002f3eb71fc64eef1842226747cb4781b6f420419  round-02-writers-3-after/writer-1/capture/manifest.json\n702c3c2d166c42c485b1e198edfacc45ef3fe535d6a380d0302f80524d2fe1f0  round-02-writers-3-after/writer-1/capture/payload-00000000000000000001.bin\n98e3b295195f73a2db410fde31b69bf483a589caad2f45b81cbd241d5b072dfb  round-02-writers-3-after/writer-1/capture/payload-00000000000000000002.bin\nfe67215e701e687779ba236da1088e2e50102bc433980b961372674388a3bbd8  round-02-writers-3-after/writer-1/capture/payload-00000000000000000003.bin\n1cf2096bf4c20c6e0f6fd3f019e4b560350ccb9f6865dc91246ae5688ae9a0b3  round-02-writers-3-after/writer-1/capture/payload-00000000000000000004.bin\n83a809720c11c814ebca1eb47c4ca99ec041c593081e411c7c0eec03bd0e62f8  round-02-writers-3-after/writer-1/capture/payload-00000000000000000005.bin\naa65d1cdaa42ab2fa8f4ef65512bfe72d16e9e2c3085e827c4acec943fbb19c1  round-02-writers-3-after/writer-1/capture/records.jsonl\nc84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610  round-02-writers-3-after/writer-1/capture/snapshot.json\ne16340f11bb2d6d1bb9a80b07bacbdaedd0b6ed0116dc741225e74b8d4102bdc  round-02-writers-3-after/writer-1/ready.json\nb8fe6916ce2aa84d3fef324836ea13b8f6ba5945b4f829207336733adc622f73  round-02-writers-3-after/writer-1/result.json\n71d765b860822824b2d5b56903b0352c7fc113135278ea644f78e4e6838eff88  round-02-writers-3-after/writer-1/run.log\na91a2c8d80cf1e85e36ceea5c042e4d3eb5f49fb45201e4336e324f8a957cd4f  round-02-writers-3-after/writer-2/capture/COMPLETE\n0b0d9e3a356f262508311e721d4fe940c376b4f6a9eedcb5149590296d1adb12  round-02-writers-3-after/writer-2/capture/checkpoint.json\n7e07f996468b3f4a19b2ec0002f3eb71fc64eef1842226747cb4781b6f420419  round-02-writers-3-after/writer-2/capture/manifest.json\n702c3c2d166c42c485b1e198edfacc45ef3fe535d6a380d0302f80524d2fe1f0  round-02-writers-3-after/writer-2/capture/payload-00000000000000000001.bin\n98e3b295195f73a2db410fde31b69bf483a589caad2f45b81cbd241d5b072dfb  round-02-writers-3-after/writer-2/capture/payload-00000000000000000002.bin\nfe67215e701e687779ba236da1088e2e50102bc433980b961372674388a3bbd8  round-02-writers-3-after/writer-2/capture/payload-00000000000000000003.bin\n1cf2096bf4c20c6e0f6fd3f019e4b560350ccb9f6865dc91246ae5688ae9a0b3  round-02-writers-3-after/writer-2/capture/payload-00000000000000000004.bin\n83a809720c11c814ebca1eb47c4ca99ec041c593081e411c7c0eec03bd0e62f8  round-02-writers-3-after/writer-2/capture/payload-00000000000000000005.bin\naa65d1cdaa42ab2fa8f4ef65512bfe72d16e9e2c3085e827c4acec943fbb19c1  round-02-writers-3-after/writer-2/capture/records.jsonl\nc84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610  round-02-writers-3-after/writer-2/capture/snapshot.json\nfc54bb3b54e7c96136e5c7da3d2adc0e740763053f0864ba9db013ed7daab860  round-02-writers-3-after/writer-2/ready.json\ncb7166523433e8cf36e794399cbda288a8813a1322fb6780fc5896dc4e4b5799  round-02-writers-3-after/writer-2/result.json\na48bba2380de82aa64020c1294253a31f25e3816b80915e0ee6acf468826eb83  round-02-writers-3-after/writer-2/run.log\n24b4322b73073529a949a92deb2f1743dbec66db4ed701f130779817ca16169b  round-02-writers-3-after.json\nc5def3a6b3754b42783964d70f0181b8ba82239dea37b3162c43479e73e07862  summary.json\n",
+  "source_stage": "intermediate before enforcing actual exit-confirmation elapsed bound; source recoverable from base 8f72ae1 + intermediate-before-window-hardening.patch"
+}
