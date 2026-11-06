@@ -76,6 +76,7 @@ dependencies = [
  "ring",
  "ros-output",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

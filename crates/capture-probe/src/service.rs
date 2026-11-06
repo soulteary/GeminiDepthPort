@@ -22,6 +22,9 @@ use std::{
 };
 
 mod persistence;
+#[cfg(test)]
+#[path = "../tests/support/writer_contention.rs"]
+mod writer_contention;
 
 static STOP: AtomicBool = AtomicBool::new(false);
 extern "C" fn stop_signal(_: libc::c_int) {

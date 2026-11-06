@@ -1,0 +1,142 @@
+{
+  "acceptance": {
+    "hardware_acceptance_verified": false,
+    "long_comparison_complete": false,
+    "reason": "Both actual 600-second plans failed early in off group. No off/on throughput, CPU or P99 benefit can be inferred. Target recording host must complete all planned groups and independent recoveries with complete bounded tracing.",
+    "repeatability_comparison_complete": false
+  },
+  "actual_runs": [
+    {
+      "accepted": false,
+      "directory": "long-pair-600",
+      "failure": "RAW_QUEUE_OVERFLOW",
+      "filesystem": "host APFS bind across Docker boundary",
+      "formal_recovery_executed": false,
+      "off_writer_elapsed_seconds_approx": [
+        289.927,
+        289.943,
+        289.928
+      ],
+      "on_executed": false,
+      "repeats_requested": 1,
+      "seconds_requested": 600,
+      "trace_available": false,
+      "writers": 3
+    },
+    {
+      "accepted": false,
+      "directory": "native-long-pair-600-02-metadata",
+      "failure": "RAW_QUEUE_OVERFLOW",
+      "filesystem": "new private ext4 loopback image across VM/host APFS",
+      "formal_recovery_executed": false,
+      "off_writer_elapsed_seconds_approx": [
+        13.875,
+        13.656,
+        13.652
+      ],
+      "on_executed": false,
+      "paired_syscalls": 2049,
+      "repeats_requested": 1,
+      "seconds_requested": 600,
+      "trace_events": 36513,
+      "trace_lost_events": 0,
+      "writers": 3
+    },
+    {
+      "accepted": false,
+      "directory": "native-smoke-01-metadata",
+      "failure": "status-on STATUS_HEARTBEAT_STALE with two child cleanup timeouts; environment unmount success does not waive child cleanup failure",
+      "historical_summary_caveat": "original trace_complete=true describes only successful off row; incomplete on means full-plan trace must be false. Original bytes unchanged; final implementation/regression now enforce planned group count.",
+      "off_trace_events": 15219,
+      "off_trace_lost_events": 0,
+      "off_written_pairs_per_writer": 90,
+      "seconds_requested": 3,
+      "writers": 3
+    },
+    {
+      "directory": "recovery-contract-01",
+      "formal_long_plan_recovery": false,
+      "independent_sigkill_recovery_contract_passed": true,
+      "modes": [
+        "off",
+        "on"
+      ],
+      "pairs_per_mode": 32
+    },
+    {
+      "accepted": false,
+      "directory": "smoke-01",
+      "failure": "adapter report queue self-deadlock, controller stopped by SIGTERM; subsequently fixed with real-child regression"
+    },
+    {
+      "accepted": false,
+      "directory": "smoke-02",
+      "failure": "status-on RAW_QUEUE_OVERFLOW; original native cause retained"
+    },
+    {
+      "accepted": false,
+      "directory": "strict-trace-preflight",
+      "failure": "TRACEFS_NOT_MOUNTED rejected before workload release"
+    }
+  ],
+  "archive_scope": "Lossless logs/normalized traces/metadata only; native record indexes and binary payloads excluded explicitly; all full data retained in new local roots. Original failed evidence and archived candidate unchanged.",
+  "baseline": "80585eca829eae58e2c4ceae2932a88253c5271c",
+  "binary": {
+    "final-long-release.elf": "1cbbe7e47c7d5fc1af1457c32e7c46624a27b5500ef3dafafeb60c8d4318ad35",
+    "long-release.elf": "5e440673a9c5b21a8fa4d4c015da1be73f6478f805821f87396571fc3ca5b267",
+    "smoke-01-before-deadlock-fix.elf": "92dc4e93239d9ca19e31001d5a0736648d40cc7fe1e00134e4316abb8a1f1fe3",
+    "smoke-02-queue-fixed.elf": "5e440673a9c5b21a8fa4d4c015da1be73f6478f805821f87396571fc3ca5b267"
+  },
+  "checks": {
+    "msrv_data_plane_lint": "pass; 11 data-plane packages, all targets, warnings denied",
+    "old_evidence": {
+      "all_size_sha256_match": true,
+      "before_manifest_sha256": "6624b00810cce123525e64fd8aa9e5711e548922e7a07ef3e942449efe420e89",
+      "files_checked": 2376,
+      "scope": "previously extracted original round-01 and round-02 context files; original outer WeChat attachments currently unavailable; no claim of new outer archive verification"
+    },
+    "production_line_coverage": {
+      "found": 19782,
+      "hit": 19591,
+      "percent": 99.0345
+    },
+    "python": {
+      "failed": 0,
+      "ran": 538,
+      "skipped": 8
+    },
+    "python_tool_tests_linux": {
+      "failed": 0,
+      "ran": 37,
+      "skipped": 0
+    },
+    "release_real_child_regression": "pass; off/on and injected status rename failure",
+    "rust_workspace_external_coverage": "pass; full log and external report included"
+  },
+  "date": "2026-11-06",
+  "environment": {
+    "data_parent": "/private/tmp/gdp-writer-long-20261106-gxshjhgp",
+    "image": "gdp-coverage-90-env:local",
+    "image_sha256": "3f5741d2c17af33c5873e980d83c3dd1139638c4b6910e71f01dfdb17aaf6209",
+    "native_image_allocated_bytes_at_archive": 2774466560,
+    "native_image_logical_bytes": 171798691840,
+    "native_loop_association_after_cleanup": false,
+    "os": "macOS/APFS host; Linux 7.0.9-205.fc44.aarch64 VM; Docker release Rust 1.90.0; MSRV lint Rust 1.85.0",
+    "shared_host_limitations": "VM/host APFS and concurrent host workloads; no physical SSD isolation or block request attribution; native loopback image is new and preserved; other containers untouched"
+  },
+  "final_source_sha256": {
+    "Cargo.lock": "e14d14016bc1fa8bbadd1c35689f5d6ba0a81dd4cc6e33dd5ec16504db0dc2f4",
+    "crates/capture-probe/Cargo.toml": "d0515dd2868310e02852f013c6a6b5470c4804a9042c565f72ff6b1813871c4a",
+    "crates/capture-probe/src/service.rs": "d4a1d46dd2fd0eb93d8616313070e3a6d57762485729e55fed77438a704c6688",
+    "crates/capture-probe/tests/support/writer_contention.rs": "3371d4cf1a8221a55c6382a10c56da12c0c96b6932a7e79c6d0123a28e463596",
+    "crates/offline-depth/tests/support/fixture.rs": "0cc1fe3995d8483f01b84d7f29ce98fc65693a14b68e4074154fe9fbb0dc2733",
+    "crates/offline-depth/tests/support/mod.rs": "794adb56271b6eeac4c99802ea38c7b075d17f1af5fb700dbf7f0f855299dfc8",
+    "crates/offline-depth/tests/writer_contention_benchmark.rs": "25af9c8633def6b02bf1d9145f1df5a7d7ec01be50704f0a299f1b12ab7cdbfe",
+    "scripts/validation/run_writer_long_test.sh": "72fd34a3976dc34eadede61dc611b28cbee7dae9df4107032d5f8027fe2e497a",
+    "scripts/validation/writer_long_run.py": "ae115237ade8a3c8bac47934f3d110331d1843f43e5652b0d6ee2a7b4a5f3a02",
+    "scripts/validation/writer_syscall_trace.py": "9561e99c1498efc2080df7f205e60da839cfb154ef457091a26dcb2b5535956e",
+    "tests/test_writer_long_run.py": "4f262c62ed319cc7798f70eee43cf5a3277e098b0d80a8b6c43b8341d72b6778",
+    "tests/test_writer_syscall_trace.py": "38f18198f6fab3e6fd9dc436c897cc09762ea984ce412b19217e509c5bac8f6c"
+  },
+  "production_optimization_applied": false
+}

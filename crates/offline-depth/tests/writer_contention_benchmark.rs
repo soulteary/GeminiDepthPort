@@ -1,6 +1,7 @@
 //! Common Linux release driver for a bounded 30 FPS single/three writer experiment.
 //! It uses the real writer, fsyncs, checkpoint credits and readers, but models the
 //! owned whole-pair queue: it does not exercise SDK/ROS or capture-service state.
+#[path = "support/fixture.rs"]
 mod support;
 use capture_contract::{
     ConfigurationId, ContentKind, content_digest,
@@ -16,10 +17,43 @@ use std::{
     fmt::Write,
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Condvar, Mutex},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+pub(crate) struct BackgroundProgress {
+    pub submitted: AtomicU64,
+    pub written: AtomicU64,
+    pub phase: AtomicU8,
+    pub failed: AtomicBool,
+    pub queue: Arc<Queue>,
+}
+impl Default for BackgroundProgress {
+    fn default() -> Self {
+        Self {
+            submitted: AtomicU64::new(0),
+            written: AtomicU64::new(0),
+            phase: AtomicU8::new(0),
+            failed: AtomicBool::new(false),
+            queue: Arc::new(Queue::default()),
+        }
+    }
+}
+pub(crate) trait BackgroundLoad: Send {
+    fn enabled(&self) -> bool;
+    fn checkpoint_ready(&self) -> Value;
+    fn draining(&self) -> Value;
+    fn finish(self: Box<Self>, successful: bool) -> Value;
+}
+pub(crate) type BackgroundFactory = fn(
+    &Path,
+    &SnapshotEnvelope,
+    RawRecordingDiagnostics,
+    Arc<BackgroundProgress>,
+) -> Box<dyn BackgroundLoad>;
 const CAPACITY: usize = 16;
 const COLOR_BYTES: usize = 640 * 480 * 2;
 const DEPTH_BYTES: usize = 640 * 400 * 2;
@@ -30,7 +64,7 @@ fn unix_ns() -> u64 {
         .unwrap()
         .as_nanos() as u64
 }
-fn monotonic_ns() -> u64 {
+pub(crate) fn monotonic_ns() -> u64 {
     let mut t = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
@@ -64,7 +98,7 @@ fn hwm_kib() -> u64 {
         .parse()
         .unwrap()
 }
-fn fixture() -> (SnapshotEnvelope, BoundPairEvidence) {
+pub(crate) fn fixture() -> (SnapshotEnvelope, BoundPairEvidence) {
     let root = tempfile::tempdir().unwrap();
     support::fixture(root.path(), true, 0.);
     let snapshot: SnapshotEnvelope =
@@ -161,9 +195,12 @@ struct QueueState {
     abort: bool,
     peak: usize,
     discarded: u64,
+    inflight: u64,
+    inflight_sequence: Option<u64>,
+    dequeued: u64,
 }
 #[derive(Default)]
-struct Queue {
+pub(crate) struct Queue {
     state: Mutex<QueueState>,
     ready: Condvar,
 }
@@ -193,6 +230,9 @@ impl Queue {
                 return None;
             }
             if let Some(v) = s.items.pop_front() {
+                s.inflight = 1;
+                s.inflight_sequence = Some(v.pair.pair_sequence);
+                s.dequeued += 1;
                 return Some(v);
             }
             if s.closed {
@@ -200,6 +240,30 @@ impl Queue {
             }
             s = self.ready.wait(s).unwrap();
         }
+    }
+    fn written(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.inflight = 0;
+        state.inflight_sequence = None;
+    }
+    pub(crate) fn observation(&self) -> Value {
+        let (depth, oldest, inflight, sequence, dequeued, peak, closed, abort) = {
+            let state = self.state.lock().unwrap();
+            (
+                state.items.len(),
+                state
+                    .items
+                    .front()
+                    .map(|p| p.enqueued.elapsed().as_nanos() as u64),
+                state.inflight,
+                state.inflight_sequence,
+                state.dequeued,
+                state.peak,
+                state.closed,
+                state.abort,
+            )
+        };
+        json!({"capacity_pairs":CAPACITY,"queued_pairs":depth,"oldest_queued_age_ns":oldest,"inflight_pairs":inflight,"inflight_sequence":sequence,"dequeued_pairs":dequeued,"high_water_pairs":peak,"closed":closed,"abort":abort,"scope":"modeled owned FIFO, excludes SDK/ROS queues"})
     }
     fn close(&self) {
         self.state.lock().unwrap().closed = true;
@@ -283,6 +347,12 @@ fn metadata_hashes(path: &Path) -> Value {
 #[test]
 #[ignore = "run only via writer_contention_ab.py with a new output directory"]
 fn writer_contention_child() {
+    run_child_with_background(None, None);
+}
+pub(crate) fn run_child_with_background(
+    factory: Option<BackgroundFactory>,
+    adapter_sha: Option<&str>,
+) {
     assert!(cfg!(target_os = "linux"), "Linux release child required");
     let root = PathBuf::from(std::env::var_os("GDP_CONTENTION_ROOT").unwrap());
     let mode = std::env::var("GDP_CONTENTION_MODE").unwrap_or_else(|_| "run".into());
@@ -297,6 +367,12 @@ fn writer_contention_child() {
         assert!(RecordingDirectorySource::open(&partial).is_err());
         let mut report = verify(&partial, true, pairs);
         report["ordinary_reader_rejected"] = json!(true);
+        report["status_driver_sha256"] = json!(adapter_sha);
+        report["common_driver_sha256"] =
+            json!(sha256(include_bytes!("writer_contention_benchmark.rs")));
+        report["fixture_sha256"] = json!(sha256(include_bytes!("support/fixture.rs")));
+        report["status_background_load"] =
+            json!(std::env::var("GDP_CONTENTION_STATUS_LOAD").is_ok_and(|v| v == "1"));
         assert!(!root.join("capture/COMPLETE").exists());
         fs::write(
             root.join("recovery-result.json"),
@@ -306,11 +382,28 @@ fn writer_contention_child() {
         return;
     }
     let (snapshot, template) = fixture();
+    let background_snapshot = snapshot.clone();
+    let progress = Arc::new(BackgroundProgress::default());
     let max_bytes = pairs * (PAIR_BYTES as u64 + 32768) + 16 * 1024 * 1024;
-    let mut writer =
-        RawRecordingWriter::begin_chunked(&root, "capture", snapshot, max_bytes).unwrap();
+    let raw_diagnostics = RawRecordingDiagnostics::with_checkpoint_observation(factory.is_some());
+    let mut writer = RawRecordingWriter::begin_chunked_with_diagnostics(
+        &root,
+        "capture",
+        snapshot,
+        max_bytes,
+        raw_diagnostics,
+    )
+    .unwrap();
     writer.enable_checkpoint_pipeline().unwrap();
     let diagnostics = writer.diagnostics();
+    let background = factory.map(|start| {
+        start(
+            &root,
+            &background_snapshot,
+            diagnostics.clone(),
+            progress.clone(),
+        )
+    });
     if mode == "crash" {
         for n in 1..=pairs {
             writer
@@ -324,9 +417,22 @@ fn writer_contention_child() {
                 .unwrap();
         }
         writer.checkpoint().unwrap();
+        progress.submitted.store(pairs, Ordering::Release);
+        progress.written.store(pairs, Ordering::Release);
+        let background_proof = background.as_ref().map(|load| load.checkpoint_ready());
+        let mut ready = json!({"pairs":pairs,"pid":std::process::id()});
+        if factory.is_some() {
+            ready["status_background_load"] =
+                json!(background.as_ref().is_some_and(|load| load.enabled()));
+            ready["status_persistence"] = json!(background_proof);
+            ready["common_driver_sha256"] =
+                json!(sha256(include_bytes!("writer_contention_benchmark.rs")));
+            ready["fixture_sha256"] = json!(sha256(include_bytes!("support/fixture.rs")));
+            ready["status_driver_sha256"] = json!(adapter_sha);
+        }
         fs::write(
             root.join("recovery-ready.json"),
-            serde_json::to_vec(&json!({"pairs":pairs,"pid":std::process::id()})).unwrap(),
+            serde_json::to_vec(&ready).unwrap(),
         )
         .unwrap();
         loop {
@@ -334,13 +440,14 @@ fn writer_contention_child() {
         }
     }
     assert_eq!(mode, "run");
-    let queue = Arc::new(Queue::default());
+    let queue = progress.queue.clone();
     let sink_queue = queue.clone();
     let sink_root = root.clone();
     let delay_ms: u64 = std::env::var("GDP_CONTENTION_TEST_SINK_DELAY_MS")
         .ok()
         .map(|s| s.parse().unwrap())
         .unwrap_or(0);
+    let sink_progress = progress.clone();
     let sink = thread::Builder::new()
         .name("native-depth-recording".into())
         .spawn(move || {
@@ -353,7 +460,9 @@ fn writer_contention_child() {
                     if delay_ms > 0 {
                         thread::sleep(Duration::from_millis(delay_ms));
                     }
-                    if sink_queue.state.lock().unwrap().abort {
+                    if sink_queue.state.lock().unwrap().abort
+                        || sink_progress.failed.load(Ordering::Acquire)
+                    {
                         break;
                     }
                     let at = Instant::now();
@@ -367,21 +476,39 @@ fn writer_contention_child() {
                         )
                         .map_err(|e| e.to_string())?;
                     append.push(at.elapsed().as_nanos() as u64);
+                    sink_queue.written();
                     written += 1;
+                    sink_progress.written.store(written, Ordering::Release);
                 }
-                if sink_queue.state.lock().unwrap().abort {
+                if sink_queue.state.lock().unwrap().abort
+                    || sink_progress.failed.load(Ordering::Acquire)
+                {
                     drop(writer);
                     Ok(None)
                 } else {
-                    writer.finish().map(Some).map_err(|e| e.to_string())
+                    sink_progress.phase.store(2, Ordering::Release);
+                    writer
+                        .finish_guarded(|| {
+                            if sink_progress.failed.load(Ordering::Acquire) {
+                                Err(offline_depth::OfflineError::Invalid(
+                                    "STATUS_BACKGROUND_FAILED",
+                                ))
+                            } else {
+                                Ok(())
+                            }
+                        })
+                        .map(Some)
+                        .map_err(|e| e.to_string())
                 }
             })();
+            sink_queue.written();
             if result.is_err() {
                 let mut s = sink_queue.state.lock().unwrap();
                 s.abort = true;
                 s.closed = true;
             }
             let path = result.as_ref().ok().and_then(|p| p.as_ref());
+            sink_progress.phase.store(3, Ordering::Release);
             let verification = path.map(|p| verify(p, false, written));
             let artifacts = path.map(|p| metadata_hashes(p));
             if path.is_none() && sink_root.join("capture/COMPLETE").exists() {
@@ -395,11 +522,19 @@ fn writer_contention_child() {
     let actual_start = unix_ns();
     let started = Instant::now();
     let cpu_start = cpu_seconds();
+    progress.phase.store(1, Ordering::Release);
     let mut input = Context::new(&SHA256);
     let mut reason = None;
     let mut submitted = 0;
     let mut producer_late_max_ns = 0u64;
     for n in 1..=pairs {
+        if progress.failed.load(Ordering::Acquire) {
+            let mut state = queue.state.lock().unwrap();
+            state.abort = true;
+            state.closed = true;
+            reason = Some("STATUS_BACKGROUND_FAILED");
+            break;
+        }
         let due = started + Duration::from_nanos((n - 1) * 1_000_000_000 / 30);
         thread::sleep(due.saturating_duration_since(Instant::now()));
         producer_late_max_ns = producer_late_max_ns
@@ -424,13 +559,44 @@ fn writer_contention_child() {
             break;
         }
         submitted += 1;
+        progress.submitted.store(submitted, Ordering::Release);
+    }
+    if reason.is_none() {
+        // Include the complete requested producer horizon (not N-1 frame periods).
+        thread::sleep(
+            (started + Duration::from_nanos(pairs * 1_000_000_000 / 30))
+                .saturating_duration_since(Instant::now()),
+        );
+    }
+    let capture_elapsed_ns = started.elapsed().as_nanos() as u64;
+    let capture_cpu_seconds = cpu_seconds() - cpu_start;
+    let capture_finished_monotonic_ns = monotonic_ns();
+    progress.phase.store(2, Ordering::Release);
+    if let Some(load) = &background {
+        let _ = load.draining();
     }
     queue.close();
     let (written, mut append, mut wait, error, verification, artifacts) = sink.join().unwrap();
+    progress.phase.store(4, Ordering::Release);
+    let status_background_load = background.as_ref().is_some_and(|load| load.enabled());
+    let background_report =
+        background.map(|load| load.finish(reason.is_none() && error.is_none() && written == pairs));
+    let status_persistence = background_report
+        .as_ref()
+        .filter(|_| status_background_load);
+    let background_sampling = background_report
+        .as_ref()
+        .and_then(|report| report.get("sampling"));
     let elapsed = started.elapsed().as_secs_f64();
     let cpu = cpu_seconds() - cpu_start;
-    let state = queue.state.lock().unwrap();
-    let complete = reason.is_none() && error.is_none() && written == pairs;
+    let (queue_peak, queue_discarded) = {
+        let state = queue.state.lock().unwrap();
+        (state.peak, state.discarded)
+    };
+    let complete = reason.is_none()
+        && error.is_none()
+        && written == pairs
+        && !progress.failed.load(Ordering::Acquire);
     let digest = input.finish();
     let input_sha256 = digest
         .as_ref()
@@ -439,9 +605,9 @@ fn writer_contention_child() {
             write!(&mut hex, "{byte:02x}").unwrap();
             hex
         });
-    let report = json!({"kind":"writer-contention-child-v1","common_driver_sha256":sha256(include_bytes!("writer_contention_benchmark.rs")),"ok":complete,"pairs":pairs,
+    let mut report = json!({"kind":"writer-contention-child-v1","common_driver_sha256":sha256(include_bytes!("writer_contention_benchmark.rs")),"fixture_sha256":sha256(include_bytes!("support/fixture.rs")),"ok":complete,"pairs":pairs,
         "submitted_pairs":submitted,"written_pairs":written,"reason":reason,"writer_error":error,
-        "queue_capacity":CAPACITY,"queue_peak":state.peak,"overflow":u64::from(reason == Some("RAW_QUEUE_OVERFLOW")),"discarded_pairs":state.discarded,
+        "queue_capacity":CAPACITY,"queue_peak":queue_peak,"overflow":u64::from(reason == Some("RAW_QUEUE_OVERFLOW")),"discarded_pairs":queue_discarded,
         "queue_scope":"modeled nonblocking owned-whole-pair FIFO; 16 queued plus one in flight; overflow aborts rather than blocking capture",
         "checkpoint_pipeline":true,"credit_pairs":32,"credit_bytes":16*1024*1024,
         "fps":30,"imu_hz_per_stream":200,"color_bytes":COLOR_BYTES,"depth_bytes":DEPTH_BYTES,
@@ -453,7 +619,19 @@ fn writer_contention_child() {
         "cpu_seconds":cpu,"cpu_cores":cpu/elapsed,"wall_seconds_including_independent_readers":elapsed,
         "peak_rss_kib":hwm_kib(),"peak_rss_scope":"isolated child including producer, writer and two extra materialized readers",
         "independent_readback":verification,"diagnostics":diagnostics.report(),
-        "status_background_load":false,"test_sink_delay_ms":delay_ms});
+        "test_sink_delay_ms":delay_ms});
+    report["status_background_load"] = json!(status_background_load);
+    report["status_persistence"] = json!(status_persistence);
+    report["background_sampling"] = json!(background_sampling);
+    report["status_driver_sha256"] = json!(adapter_sha);
+    report["capture_elapsed_ns"] = json!(capture_elapsed_ns);
+    report["capture_finished_monotonic_ns"] = json!(capture_finished_monotonic_ns);
+    report["capture_cpu_seconds"] = json!(capture_cpu_seconds);
+    report["capture_cpu_cores"] = json!(capture_cpu_seconds / (capture_elapsed_ns as f64 / 1e9));
+    report["cpu_scope"] = json!(
+        "process CPU from capture barrier through writer finish, two independent readers and background final critical cleanup; startup excluded; capture_cpu fields stop at fixed producer horizon"
+    );
+    report["queue_final"] = progress.queue.observation();
     fs::write(
         root.join("result.json"),
         serde_json::to_vec_pretty(&report).unwrap(),
