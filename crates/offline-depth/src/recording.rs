@@ -17,7 +17,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Instant,
 };
-use telemetry::{CheckpointInfo, Phase};
+use telemetry::{CheckpointInfo, Phase, WaitReason};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1084,6 +1084,12 @@ impl RawRecordingDiagnostics {
         let stats = self.snapshot();
         stats.report(observation)
     }
+    /// Bounded active append/checkpoint context for a caller's first failure.
+    /// No IO, payload/history clones, or IO-statistics lock are involved. The
+    /// included clock bracket describes this snapshot, not the caller's queue.
+    pub fn failure_context(&self) -> serde_json::Value {
+        self.1.failure_context()
+    }
     fn snapshot(&self) -> RawIoStats {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
@@ -1264,6 +1270,7 @@ impl RawRecordingWriter {
     ) -> Result<()> {
         require(!self.failed, "RECORDING_ALREADY_FAILED")?;
         let diagnostics = self.diagnostics.clone();
+        let _append = diagnostics.1.begin_append(pair.pair_sequence);
         let result = diagnostics.measure("append", || {
             self.append_inner(pair, color, depth, endian, imu)
         });
@@ -1643,6 +1650,26 @@ mod streaming_hash_tests {
                     .unwrap(),
             9_000_000
         );
+    }
+    #[test]
+    fn failure_context_does_not_acquire_io_stats_or_copy_history() {
+        let diagnostics = RawRecordingDiagnostics::with_checkpoint_observation(true);
+        let _append = diagnostics.1.begin_append(91);
+        let io_stats = diagnostics.0.lock().unwrap();
+        let other = diagnostics.clone();
+        let (send, receive) = std::sync::mpsc::channel();
+        let task = std::thread::spawn(move || {
+            send.send(other.failure_context()).unwrap();
+        });
+        let snapshot = receive.recv_timeout(std::time::Duration::from_secs(2));
+        // Always release and join before asserting, including a future lock
+        // regression; the test must not strand its own blocked thread.
+        drop(io_stats);
+        task.join().unwrap();
+        let snapshot = snapshot.expect("failure context must not wait for IO-statistics lock");
+        assert_eq!(snapshot["active_append"]["pair_sequence"], 91);
+        assert!(snapshot.get("events").is_none());
+        assert!(snapshot.get("stages").is_none());
     }
     #[test]
     fn streaming_hash_matches_whole_extent_hash_at_buffer_boundaries() {

@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "label": "combined",
+  "metric": "production Rust line coverage",
+  "source_scope": [
+    "src/**/*.rs",
+    "crates/*/src/**/*.rs"
+  ],
+  "exclusion_policy": "exact cfg(test) items and built-in test functions; mixed lines and unknown cfg retained",
+  "raw_only_metrics": [
+    "functions",
+    "regions",
+    "branches"
+  ],
+  "parser_versions": {
+    "tree-sitter": "0.25.2",
+    "tree-sitter-rust": "0.24.2"
+  },
+  "lines": {
+    "found": 19782,
+    "hit": 19590,
+    "percent": 99.0294
+  },
+  "packages": {
+    "capture-contract": {
+      "found": 1073,
+      "hit": 1073,
+      "percent": 100.0
+    },
+    "capture-observer": {
+      "found": 985,
+      "hit": 972,
+      "percent": 98.6802
+    },
+    "capture-probe": {
+      "found": 4843,
+      "hit": 4762,
+      "percent": 98.3275
+    },
+    "d2c-core": {
+      "found": 716,
+      "hit": 703,
+      "percent": 98.1844
+    },
+    "depth-output": {
+      "found": 378,
+      "hit": 378,
+      "percent": 100.0
+    },
+    "frame-core": {
+      "found": 611,
+      "hit": 609,
+      "percent": 99.6727
+    },
+    "geminidepthport": {
+      "found": 5536,
+      "hit": 5502,
+      "percent": 99.3858
+    },
+    "offline-depth": {
+      "found": 2943,
+      "hit": 2915,
+      "percent": 99.0486
+    },
+    "orbbec-safe": {
+      "found": 784,
+      "hit": 778,
+      "percent": 99.2347
+    },
+    "orbbec-sys": {
+      "found": 97,
+      "hit": 96,
+      "percent": 98.9691
+    },
+    "quality-core": {
+      "found": 874,
+      "hit": 865,
+      "percent": 98.9703
+    },
+    "ros-output": {
+      "found": 942,
+      "hit": 937,
+      "percent": 99.4692
+    }
+  },
+  "workspace_packages": [
+    "capture-contract",
+    "capture-observer",
+    "capture-probe",
+    "d2c-core",
+    "depth-output",
+    "frame-core",
+    "geminidepthport",
+    "offline-depth",
+    "orbbec-safe",
+    "orbbec-sys",
+    "quality-core",
+    "ros-output"
+  ],
+  "excluded_files": [],
+  "per_file_data": "coverage-full-summary.json.gz"
+}

@@ -51,6 +51,34 @@ class CheckpointProbeTests(unittest.TestCase):
                 with self.assertRaises(ValueError):probe.bounded_json(p)
             finally:os.umask(old)
 
+    def test_failed_queue_observation_survives_event_dedup_and_later_drain(self):
+        trace=probe.Trace(); process={'host_pid':17,'start_ticks':91}
+        value={'session_id':'capture','raw_recording':{'session_id':'raw','state':'recording',
+            'job_path':'PRIVATE','disk_stages':{'checkpoint_observation':{
+                'version':1,'enabled':True,'latest_event_id':1,'events':[{'event_id':1}],
+                'active_append':{'pair_sequence':8}}}}}
+        healthy,_=trace.extract(value,process)
+        self.assertIsNone(healthy['raw']['overflow_observation'])
+        frozen={'version':1,'detected_monotonic_ns':100,'queue_at_detection':{'queued_pairs':16,
+            'oldest_queued_age_ns':500_000_000},'writer_context':{
+                'active_append':{'pair_sequence':8},'active_checkpoint_spans':[{'phase':'verify_wait',
+                    'wait_reason':'chunk_rotation','info':{'checkpoint_id':1}}]}}
+        raw=value['raw_recording'];raw.update(state='failed',reason='RAW_QUEUE_OVERFLOW',
+            overflow_observation=frozen,writer_queue={'queued_pairs':16})
+        before=json.dumps(value,sort_keys=True)
+        failed,events=trace.extract(value,process)
+        self.assertEqual(events,[])
+        self.assertEqual(failed['raw']['overflow_observation'],frozen)
+        self.assertEqual(failed['observation']['active_append'],{'pair_sequence':8})
+        self.assertEqual(json.dumps(value,sort_keys=True),before)
+        raw['writer_queue']['queued_pairs']=0
+        raw['disk_stages']['checkpoint_observation']['active_append']=None
+        drained,_=trace.extract(value,process)
+        self.assertEqual(drained['writer_queue']['queued_pairs'],0)
+        self.assertEqual(drained['raw']['overflow_observation'],frozen)
+        self.assertIsNone(drained['observation']['active_append'])
+        self.assertNotIn('PRIVATE',json.dumps(drained))
+
     @unittest.skipUnless(sys.platform=='linux','actual procfs integration')
     def test_cli_is_read_only_and_profiles_only_owned_child_group(self):
         with tempfile.TemporaryDirectory() as d:

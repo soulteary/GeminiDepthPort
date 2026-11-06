@@ -3746,8 +3746,178 @@ fn normal_200hz_imu_keeps_draining_and_publishing_during_critical_draining_fsync
         io_faults::assert_injected(&marker, "fsync");
     }
 }
+struct RawOverflowFaultChild<'a> {
+    child: &'a mut Child,
+    critical_release: PathBuf,
+    checkpoint_release: PathBuf,
+}
+impl std::ops::Deref for RawOverflowFaultChild<'_> {
+    type Target = Child;
+    fn deref(&self) -> &Self::Target {
+        self.child
+    }
+}
+impl std::ops::DerefMut for RawOverflowFaultChild<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.child
+    }
+}
+impl Drop for RawOverflowFaultChild<'_> {
+    fn drop(&mut self) {
+        // Assertions below can fail while either real IO barrier is held.
+        // Release only this fixture's files before reaping its owned child.
+        let _ = fs::write(&self.critical_release, b"1");
+        let _ = fs::write(&self.checkpoint_release, b"1");
+        // Child caches a reaped exit. Never signal a numeric PID after it has
+        // been reaped, nor after an error leaves child identity unconfirmed.
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+#[test]
+fn raw_overflow_fault_assertion_releases_both_barriers_and_reaps_only_its_child() {
+    let f = fixture();
+    let critical_release = f.root.join("release-critical");
+    let checkpoint_release = f.root.join("release-checkpoint");
+    let mut process = Command::new("sleep").arg("30").spawn().unwrap();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = RawOverflowFaultChild {
+            child: &mut process,
+            critical_release: critical_release.clone(),
+            checkpoint_release: checkpoint_release.clone(),
+        };
+        panic!("controlled assertion while both raw overflow IO barriers are held");
+    }));
+    assert!(result.is_err());
+    assert_eq!(fs::read(&critical_release).unwrap(), b"1");
+    assert_eq!(fs::read(&checkpoint_release).unwrap(), b"1");
+    assert!(process.try_wait().unwrap().is_some());
+    assert!(!process.wait().unwrap().success());
+    // Drop after a normal wait uses Child's cached status and remains harmless.
+    {
+        let _guard = RawOverflowFaultChild {
+            child: &mut process,
+            critical_release,
+            checkpoint_release,
+        };
+    }
+    assert!(process.try_wait().unwrap().is_some());
+}
+
+fn raw_overflow_test_monotonic_ns() -> u64 {
+    let mut value: libc::timespec = unsafe { std::mem::zeroed() };
+    assert_eq!(
+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut value) },
+        0
+    );
+    (value.tv_sec as u64) * 1_000_000_000 + value.tv_nsec as u64
+}
+
+fn assert_raw_overflow_context(value: &Value, held_phase: &str, observed_ns: u64) -> Value {
+    let overflow = &value["raw_recording"]["overflow_observation"];
+    assert_eq!(overflow["version"], 1, "{overflow}");
+    assert_eq!(overflow["reason"], "RAW_QUEUE_OVERFLOW");
+    assert_eq!(overflow["clock"], "CLOCK_MONOTONIC");
+    let queue = &overflow["queue_at_detection"];
+    assert_eq!(queue["capacity_pairs"], 16);
+    assert_eq!(queue["queued_pairs"], 16);
+    assert_eq!(queue["inflight_pairs"], 1);
+    assert_eq!(queue["high_water_pairs"], 16);
+    assert_eq!(queue["closed"], false);
+    assert_eq!(queue["discarded_pairs"], 0);
+    assert!(queue["oldest_queued_age_ns"].as_u64().unwrap() > 0);
+    let rejected = &overflow["rejected_pair"];
+    // The SDK fixture supplies every sequence. The failed seventeenth queued
+    // pair must immediately follow the full queue's last admitted pair.
+    for key in ["pair_sequence", "color_sequence", "depth_sequence"] {
+        assert_eq!(
+            rejected[key].as_u64().unwrap(),
+            queue["back_pair"][key].as_u64().unwrap() + 1,
+            "{key}: {overflow}"
+        );
+        assert_eq!(
+            queue["front_pair"][key].as_u64().unwrap(),
+            queue["inflight_pair"][key].as_u64().unwrap() + 1,
+            "{key}: {overflow}"
+        );
+    }
+    assert_eq!(
+        queue["back_pair"]["pair_sequence"].as_u64().unwrap()
+            - queue["front_pair"]["pair_sequence"].as_u64().unwrap(),
+        15
+    );
+    let detected = overflow["detected_monotonic_ns"].as_u64().unwrap();
+    let started = overflow["writer_context_capture_started_monotonic_ns"]
+        .as_u64()
+        .unwrap();
+    let finished = overflow["writer_context_capture_finished_monotonic_ns"]
+        .as_u64()
+        .unwrap();
+    let context = &overflow["writer_context"];
+    let context_started = context["capture_started_monotonic_ns"].as_u64().unwrap();
+    let context_finished = context["capture_finished_monotonic_ns"].as_u64().unwrap();
+    assert!(detected > 0);
+    assert!(detected <= started && started <= context_started);
+    assert!(context_started <= context_finished && context_finished <= finished);
+    assert!(finished <= observed_ns);
+    assert_eq!(context["observation_enabled"], true);
+    assert_eq!(context["clock"], "CLOCK_MONOTONIC");
+    assert_eq!(context["active_append_capacity"], 1);
+    assert_eq!(context["active_checkpoint_capacity"], 4);
+    assert_eq!(context["active_append_limit_hits"], 0);
+    assert_eq!(context["active_checkpoint_limit_hits"], 0);
+    let append = &context["active_append"];
+    assert!(append["append_id"].as_u64().unwrap() > 0);
+    assert_eq!(append["pid"], value["pid"]);
+    assert!(append["tid"].as_u64().unwrap() > 0);
+    assert_eq!(
+        append["pair_sequence"],
+        queue["inflight_pair"]["pair_sequence"]
+    );
+    assert!(append["start_monotonic_ns"].as_u64().unwrap() <= detected);
+    let spans = context["active_checkpoint_spans"].as_array().unwrap();
+    assert!(spans.len() <= 4);
+    let held = spans
+        .iter()
+        .find(|span| span["phase"] == held_phase)
+        .unwrap();
+    let waiting = spans
+        .iter()
+        .find(|span| {
+            span["phase"] == "verify_wait"
+                && span["info"]["checkpoint_id"] == held["info"]["checkpoint_id"]
+        })
+        .unwrap();
+    assert!(held["start_monotonic_ns"].as_u64().unwrap() <= detected);
+    assert!(waiting["start_monotonic_ns"].as_u64().unwrap() <= detected);
+    assert_eq!(waiting["tid"], append["tid"]);
+    assert_ne!(held["tid"], append["tid"]);
+    assert_eq!(held["pid"], value["pid"]);
+    assert_eq!(held["info"]["asynchronous"], true);
+    assert!(
+        append["pair_sequence"].as_u64().unwrap() > held["info"]["prefix_pairs"].as_u64().unwrap()
+    );
+    // This fixture seals tiny 16-pair chunks: the next seal joins the prior
+    // checkpoint before the unchanged 32-pair/16MiB global credit is exceeded.
+    // Large real-image fixtures may instead reach a global credit wait first.
+    assert_eq!(waiting["wait_reason"], "chunk_rotation");
+    overflow.clone()
+}
+
 #[test]
 fn raw_overflow_critical_fsync_does_not_create_a_secondary_imu_overflow() {
+    assert_raw_overflow_context_frozen_during_critical_fsync("readback");
+}
+
+#[test]
+fn raw_overflow_payload_sync_freezes_queue_and_checkpoint_wait_before_durable_failure() {
+    assert_raw_overflow_context_frozen_during_critical_fsync("payload_sync");
+}
+
+fn assert_raw_overflow_context_frozen_during_critical_fsync(held_phase: &str) {
     let f = normal_rate_wait_fixture(1000);
     let library = io_faults::compile(&f.root);
     // Scope the deliberate readback stall to an already healthy recording.
@@ -3761,6 +3931,24 @@ fn raw_overflow_critical_fsync_does_not_create_a_secondary_imu_overflow() {
         "if(hold) {",
         "const char *hold_armed=getenv(\"GDP_IO_HOLD_ARMED\");if(hold && hold_armed && access(hold_armed,F_OK)==0) {",
     );
+    if held_phase == "payload_sync" {
+        // A second, independent barrier holds the real payload fsync. The
+        // existing fail_fd hook still gates only the raw-failed status fsync.
+        replace(
+            &mut hook,
+            "int fsync(int fd) {",
+            r#"int fsync(int fd) {
+    const char *armed=getenv("GDP_IO_HOLD_ARMED");
+    if(armed && access(armed,F_OK)==0 && payload_fd(fd)) {
+        const char *marker=getenv("GDP_IO_HOLD_MARKER"),*release=getenv("GDP_IO_HOLD_RELEASE");
+        if(marker && release) {
+            int out=open(marker,O_WRONLY|O_CREAT|O_EXCL,0600);
+            if(out>=0){ssize_t (*real_write)(int,const void*,size_t)=dlsym(RTLD_NEXT,"write");(void)real_write(out,"fsync",5);close(out);}
+            unsigned waited=0;while(access(release,F_OK)!=0&&waited++<10000)usleep(1000);
+        }
+    }"#,
+        );
+    }
     let local_hook = f.root.join("armed-checkpoint-hook.c");
     fs::write(&local_hook, hook).unwrap();
     let compiled = Command::new("cc")
@@ -3791,11 +3979,18 @@ fn raw_overflow_critical_fsync_does_not_create_a_secondary_imu_overflow() {
         )
         .env("GDP_IO_RELEASE", &release)
         .env("GDP_IO_DELAY_MS", "0")
-        .env("GDP_IO_HOLD_READ_SUFFIX", ".bin")
         .env("GDP_IO_HOLD_MARKER", &checkpoint_held)
         .env("GDP_IO_HOLD_RELEASE", &release_reader)
         .env("GDP_IO_HOLD_ARMED", &arm_reader);
-    let mut child = command.spawn().unwrap();
+    if held_phase == "readback" {
+        command.env("GDP_IO_HOLD_READ_SUFFIX", ".bin");
+    }
+    let mut process = command.spawn().unwrap();
+    let mut child = RawOverflowFaultChild {
+        child: &mut process,
+        critical_release: release.clone(),
+        checkpoint_release: release_reader.clone(),
+    };
     let wait_phase = |child: &mut Child, phase: &str, done: &dyn Fn(&Option<Value>) -> bool| {
         let started = Instant::now();
         loop {
@@ -3855,7 +4050,7 @@ fn raw_overflow_critical_fsync_does_not_create_a_secondary_imu_overflow() {
         "readback hook ran before its arm gate"
     );
     fs::write(&arm_reader, b"1").unwrap();
-    let _ = wait_phase(&mut child, "armed checkpoint readback", &|_| {
+    let _ = wait_phase(&mut child, "armed checkpoint IO", &|_| {
         checkpoint_held.exists()
     });
     let _ = wait_phase(&mut child, "RAW_QUEUE_OVERFLOW critical fsync", &|_| {
@@ -3866,6 +4061,27 @@ fn raw_overflow_critical_fsync_does_not_create_a_secondary_imu_overflow() {
         status(&f).unwrap()["raw_recording"]["reason"],
         "RAW_QUEUE_OVERFLOW",
         "failed snapshot acknowledged before critical fsync release"
+    );
+    // The atomic queue failure has already frozen its evidence before the
+    // critical snapshot can be acknowledged. Inspect only this fixture's
+    // pending status file while its real fsync is gated.
+    let pending = fs::read_dir(&f.root)
+        .unwrap()
+        .find_map(|entry| {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|value| value.to_str()) != Some("tmp") {
+                return None;
+            }
+            let value: Value = serde_json::from_slice(&fs::read(path).unwrap()).ok()?;
+            (value["raw_recording"]["reason"] == "RAW_QUEUE_OVERFLOW").then_some(value)
+        })
+        .expect("critical status tempfile must retain the first overflow before fsync release");
+    let frozen =
+        assert_raw_overflow_context(&pending, held_phase, raw_overflow_test_monotonic_ns());
+    assert!(
+        !Path::new(pending["raw_recording"]["partial_path"].as_str().unwrap())
+            .join("COMPLETE")
+            .exists()
     );
     fs::write(&release, b"1").unwrap();
     let observed = wait_status(&f, &mut child, |v| {
@@ -3879,6 +4095,11 @@ fn raw_overflow_critical_fsync_does_not_create_a_secondary_imu_overflow() {
             })
     });
     assert_eq!(observed["raw_recording"]["reason"], "RAW_QUEUE_OVERFLOW");
+    assert_eq!(
+        assert_raw_overflow_context(&observed, held_phase, raw_overflow_test_monotonic_ns()),
+        frozen,
+        "durable failure changed the first overflow evidence"
+    );
     assert!(observed["imu"]["error"].is_null());
     assert!(observed["imu"]["queue_high_water"].as_u64().unwrap() <= 128);
     let event = observed["status_persistence"]["critical_events"]
@@ -3891,13 +4112,13 @@ fn raw_overflow_critical_fsync_does_not_create_a_secondary_imu_overflow() {
     assert_eq!(event["pump_failed"], false);
     println!(
         "critical-raw-failed-pump: {}",
-        json!({"publish_progress_while_fenced":progress,"critical":event,"max_drain_ns":observed["imu"]["drain_interval"]["maximum_ns"],"imu_queue_peak":observed["imu"]["queue_high_water"]})
+        json!({"held_phase":held_phase,"overflow":frozen,"publish_progress_while_fenced":progress,"critical":event,"max_drain_ns":observed["imu"]["drain_interval"]["maximum_ns"],"imu_queue_peak":observed["imu"]["queue_high_water"]})
     );
     fs::write(&release_reader, b"1").unwrap();
     // Do not race the test's own blocked readback/Drop work against the
     // unchanged 300ms SDK shutdown deadline. The worker queue guard abandons
     // its credits only after recorder Drop and checkpoint joins have returned.
-    let _ = wait_phase(
+    let drained = wait_phase(
         &mut child,
         "released checkpoint writer quiescent",
         &|value| {
@@ -3913,15 +4134,20 @@ fn raw_overflow_critical_fsync_does_not_create_a_secondary_imu_overflow() {
                         .is_some_and(|active| active.is_empty())
             })
         },
-    );
+    )
+    .unwrap();
+    assert_eq!(drained["raw_recording"]["overflow_observation"], frozen);
     stop(&mut child);
     let end = status(&f).unwrap();
+    assert_eq!(end["raw_recording"]["overflow_observation"], frozen);
     assert_eq!(end["raw_recording"]["reason"], "RAW_QUEUE_OVERFLOW");
     assert!(end["imu"]["error"].is_null());
     let partial = Path::new(end["raw_recording"]["partial_path"].as_str().unwrap());
     assert!(!Path::new(end["raw_recording"]["job_path"].as_str().unwrap()).exists());
-    let checkpoint: Value =
-        serde_json::from_slice(&fs::read(partial.join("checkpoint.json")).unwrap()).unwrap();
+    assert!(!partial.join("COMPLETE").exists());
+    let checkpoint_bytes = fs::read(partial.join("checkpoint.json")).unwrap();
+    let checkpoint: Value = serde_json::from_slice(&checkpoint_bytes).unwrap();
+    assert!(checkpoint["record_count"].as_u64().unwrap() > 0);
     for _ in 0..2 {
         let mut reader =
             offline_depth::recording::RecordingDirectorySource::open_recovered(partial).unwrap();
@@ -3931,6 +4157,15 @@ fn raw_overflow_critical_fsync_does_not_create_a_secondary_imu_overflow() {
         }
         assert_eq!(count, checkpoint["record_count"].as_u64().unwrap());
     }
+    assert_eq!(
+        fs::read(partial.join("checkpoint.json")).unwrap(),
+        checkpoint_bytes
+    );
+    assert!(!partial.join("COMPLETE").exists());
+    assert_eq!(
+        status(&f).unwrap()["raw_recording"]["overflow_observation"],
+        frozen
+    );
     io_faults::assert_injected(&marker, "fsync");
 }
 #[test]

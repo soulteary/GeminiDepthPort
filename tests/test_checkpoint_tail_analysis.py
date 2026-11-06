@@ -10,6 +10,8 @@ import unittest
 ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('checkpoint_tail_analysis',ROOT/'experiments/sdk-2.10.6-diagnostics/analyze_checkpoint_tails.py')
 analysis=importlib.util.module_from_spec(spec);spec.loader.exec_module(analysis)
+probe_spec=importlib.util.spec_from_file_location('tail_checkpoint_probe',ROOT/'scripts/validation/checkpoint_probe.py')
+probe=importlib.util.module_from_spec(probe_spec);probe_spec.loader.exec_module(probe)
 
 
 def write(path,value,lines=False):
@@ -45,6 +47,42 @@ def fixture(root):
 
 
 class TailTests(unittest.TestCase):
+    def test_real_trace_to_analysis_preserves_overflow_append_and_wait_reason(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=fixture(Path(d)/'evidence');wait=event();wait['wait_reason']='chunk_rotation'
+            frozen={'version':1,'detected_monotonic_ns':1_350_000_000,
+                'rejected_pair':{'pair_sequence':67,'color_sequence':71,'depth_sequence':72},
+                'queue_at_detection':{'queued_pairs':16,'oldest_queued_age_ns':500_000_000}}
+            append={'pair_sequence':50,'start_monotonic_ns':1_000_000_000}
+            source={'session_id':'capture','raw_recording':{'session_id':'raw','state':'failed',
+                'reason':'RAW_QUEUE_OVERFLOW','overflow_observation':frozen,
+                'disk_stages':{'checkpoint_observation':{'version':1,'enabled':True,
+                    'latest_event_id':1,'events':[wait],'active_append':append,'active':[]}}}}
+            compact,events=probe.Trace().extract(source,{'host_pid':20,'start_ticks':2})
+            path=root/'lifecycle/samples.jsonl';rows=[json.loads(v) for v in path.read_text().splitlines()]
+            rows[1]['cameras'][0].update(status=compact,checkpoint_events=events);write(path,rows,True)
+            path=root/'capture/checkpoint-samples/samples.jsonl';rows=[json.loads(v) for v in path.read_text().splitlines()]
+            rows[1].update(wait);rows[2]['targets'][0]['status']=compact;write(path,rows,True)
+            before={str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()}
+            out=Path(d)/'derived';analysis.write_analysis(root,out,before_seconds=1,after_seconds=0)
+            groups=json.loads((out/'checkpoints.json').read_text())
+            summary=json.loads((out/'summary.json').read_text())
+            resources=json.loads((out/'resources.json').read_text())
+            self.assertEqual(groups[0]['events'][0]['wait_reason'],'chunk_rotation')
+            self.assertEqual(groups[0]['events'][0]['sources'],['checkpoint','lifecycle'])
+            self.assertEqual(summary['failure_first_observed']['raw']['overflow_observation'],frozen)
+            self.assertTrue(any(row.get('active_append')==append for row in resources))
+            self.assertEqual({str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()},before)
+
+    def test_unknown_or_non_wait_reason_is_rejected_instead_of_silently_dropped(self):
+        for reason,phase in (('unknown','verify_wait'),(False,'verify_wait'),('chunk_rotation','payload_sync')):
+            with self.subTest(reason=reason,phase=phase),tempfile.TemporaryDirectory() as d:
+                root=fixture(Path(d));path=root/'lifecycle/samples.jsonl'
+                rows=[json.loads(v) for v in path.read_text().splitlines()]
+                rows[1]['cameras'][0]['checkpoint_events'][0].update(wait_reason=reason,phase=phase)
+                write(path,rows,True)
+                with self.assertRaisesRegex(ValueError,'CHECKPOINT_WAIT_REASON'):analysis.analyze(root)
+
     def test_dedup_cpu_wall_queue_and_device_association_do_not_rewrite_inputs(self):
         with tempfile.TemporaryDirectory() as d:
             root=fixture(Path(d)/'evidence');before={str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()}
@@ -83,6 +121,17 @@ class TailTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root=fixture(Path(d));path=root/'capture/checkpoint-samples/samples.jsonl'
             rows=[json.loads(v) for v in path.read_text().splitlines()];rows[1]['wall_ns']+=1;write(path,rows,True)
+            with self.assertRaisesRegex(ValueError,'CONFLICTING_DUPLICATE'):analysis.analyze(root)
+
+    def test_conflicting_known_wait_reasons_are_not_deduplicated(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=fixture(Path(d));path=root/'lifecycle/samples.jsonl'
+            rows=[json.loads(v) for v in path.read_text().splitlines()]
+            rows[1]['cameras'][0]['checkpoint_events'][0]['wait_reason']='chunk_rotation'
+            write(path,rows,True)
+            path=root/'capture/checkpoint-samples/samples.jsonl'
+            rows=[json.loads(v) for v in path.read_text().splitlines()]
+            rows[1]['wait_reason']='explicit_checkpoint';write(path,rows,True)
             with self.assertRaisesRegex(ValueError,'CONFLICTING_DUPLICATE'):analysis.analyze(root)
 
     def test_observer_local_epoch_numbers_are_bound_to_worker_identity(self):

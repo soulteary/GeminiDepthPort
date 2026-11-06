@@ -18,6 +18,8 @@ MAX_LINE = 2 * 1024**2
 MAX_ROWS = 200000
 EVENT_FIELDS = ('event_id', 'info', 'ok', 'phase', 'pid', 'span_id',
                 'start_monotonic_ns', 'thread_cpu_ns', 'tid', 'wall_ns')
+WAIT_REASONS = frozenset(('finished_reap', 'global_payload_credit', 'global_pair_credit',
+                          'global_payload_and_pair_credit', 'chunk_rotation', 'explicit_checkpoint'))
 
 
 def require(condition, code):
@@ -72,12 +74,15 @@ def point(row, entry, source, name):
         identity = (integer(process['host_pid'], 'WORKER_PID'), integer(process['start_ticks'], 'WORKER_START'))
     status = entry.get('status') or (entry if 'raw' in entry else {})
     raw = status.get('raw') or status.get('raw_recording') or {}
-    return {'source': source, 'sample_kind': row.get('kind'), 'target': name, 'source_epoch': entry.get('epoch'),
+    result = {'source': source, 'sample_kind': row.get('kind'), 'target': name, 'source_epoch': entry.get('epoch'),
             'monotonic_ns': at, 'unix_ns': row.get('unix_ns'), 'phase': row.get('phase'),
             'identity': identity, 'process': process, 'rates': entry.get('rates'),
             'raw': raw, 'writer_queue': status.get('writer_queue') or raw.get('writer_queue'),
             'active': (status.get('observation') or {}).get('active', []),
             'disks': row.get('disks', {}), 'error': entry.get('error')}
+    observation = status.get('observation') or {}
+    if 'active_append' in observation:result['active_append'] = observation['active_append']
+    return result
 
 
 def phase_stats(events):
@@ -180,6 +185,11 @@ def analyze(run_dir, before_seconds=10., after_seconds=2., failure_camera=None):
     for source, name, epoch, raw in pending_events:
         key = (source, name, integer(epoch, 'SOURCE_EPOCH')); require(key in identities, 'EVENT_WITHOUT_BOUND_WORKER')
         value = {field: raw.get(field) for field in EVENT_FIELDS}
+        if 'wait_reason' in raw:
+            reason = raw['wait_reason']
+            require(value['phase'] == 'verify_wait' and type(reason) is str
+                    and reason in WAIT_REASONS, 'CHECKPOINT_WAIT_REASON')
+            value['wait_reason'] = reason
         integer(value['event_id'], 'EVENT_ID'); integer(value['start_monotonic_ns'], 'EVENT_CLOCK'); integer(value['wall_ns'], 'EVENT_WALL')
         if value['thread_cpu_ns'] is not None:integer(value['thread_cpu_ns'], 'EVENT_CPU')
         require(type(value['phase']) is str and type(value['info']) is dict, 'EVENT_SCHEMA')

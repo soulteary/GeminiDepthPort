@@ -1661,6 +1661,10 @@ fn checkpoint_observation_preserves_artifacts_and_both_readbacks() {
             }
             for n in 1..=33 {
                 append(&mut writer, &pair, &pixels, n);
+                let context = diagnostics.failure_context();
+                assert_eq!(context["observation_enabled"], enabled);
+                assert!(context["active_append"].is_null());
+                assert_eq!(context["active_append_limit_hits"], 0);
             }
             let path = writer.finish().unwrap();
             let report = diagnostics.report();
@@ -1672,6 +1676,14 @@ fn checkpoint_observation_preserves_artifacts_and_both_readbacks() {
             let obs = &report["checkpoint_observation"];
             assert_eq!(obs["enabled"], enabled);
             assert!(obs["active"].as_array().unwrap().is_empty());
+            assert!(obs["active_append"].is_null());
+            assert_eq!(obs["active_append_limit_hits"], 0);
+            assert!(
+                diagnostics.failure_context()["active_checkpoint_spans"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
             if enabled {
                 for phase in [
                     "index_flush",
@@ -1710,6 +1722,21 @@ fn checkpoint_observation_preserves_artifacts_and_both_readbacks() {
                     assert_eq!(event["ok"], true);
                     assert!(event["info"]["prefix_pairs"].as_u64().unwrap() <= 33);
                     assert!(event["wall_ns"].is_u64());
+                    if event["phase"] == "verify_wait" {
+                        assert!(
+                            [
+                                "finished_reap",
+                                "global_payload_credit",
+                                "global_pair_credit",
+                                "global_payload_and_pair_credit",
+                                "chunk_rotation",
+                                "explicit_checkpoint",
+                            ]
+                            .contains(&event["wait_reason"].as_str().unwrap())
+                        );
+                    } else {
+                        assert!(event.get("wait_reason").is_none());
+                    }
                     #[cfg(target_os = "linux")]
                     {
                         assert!(event["tid"].as_u64().unwrap() > 0);

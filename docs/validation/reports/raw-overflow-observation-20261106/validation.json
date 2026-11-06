@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "date": "2026-11-06",
+  "baseline": "11123c340234b19bd964a9b24356ace1765a5c67",
+  "scope": "Bounded first-FIFO-full observation and diagnostic propagation; no hardware acceptance or performance claim.",
+  "linux_workspace": {
+    "passed": 663,
+    "ignored": 32,
+    "suites": 71,
+    "note": "Full coverage build preceded the final test-only panic-cleanup guard. Final three fault tests and all-data-plane lint were rerun with the guard; production code unchanged."
+  },
+  "linux_final_fault_tests": {
+    "passed": 3,
+    "failed": 0,
+    "ignored": 0,
+    "rust": "1.85.0",
+    "seconds": 12.66,
+    "readback_critical_wall_ns": 1199079493,
+    "note": "Synthetic tiny SDK frames, real file IO fault barriers; not a real-camera throughput test. See raw log for exact values.",
+    "payload_sync_critical_wall_ns": 1808693207
+  },
+  "python_final": {
+    "tests": 501,
+    "skipped": 8,
+    "seconds": 108.747,
+    "passed": true,
+    "note": "7 missing Rust-CLI-dependent cases covered by the independent real Rust external suites; OpenCV conditional case is validated by driver-image CI."
+  },
+  "external_rust": {
+    "passed": true,
+    "suites": [
+      {
+        "suite": "management",
+        "tests": 46,
+        "skipped": 0,
+        "errors": 0,
+        "failures": 0,
+        "instrumented_profiles_changed": true,
+        "passed": true
+      },
+      {
+        "suite": "native_gate",
+        "tests": 7,
+        "skipped": 0,
+        "errors": 0,
+        "failures": 0,
+        "instrumented_profiles_changed": true,
+        "passed": true
+      },
+      {
+        "suite": "sdk_grid",
+        "tests": 5,
+        "skipped": 0,
+        "errors": 0,
+        "failures": 0,
+        "instrumented_profiles_changed": true,
+        "passed": true
+      },
+      {
+        "suite": "recording",
+        "tests": 5,
+        "skipped": 0,
+        "errors": 0,
+        "failures": 0,
+        "instrumented_profiles_changed": true,
+        "passed": true
+      }
+    ]
+  },
+  "production_coverage": {
+    "found": 19782,
+    "hit": 19590,
+    "percent": 99.0294
+  },
+  "format_and_lint": {
+    "rust": "1.85.0",
+    "all_data_plane_packages": true,
+    "all_targets": true,
+    "deny_warnings": true,
+    "passed": true
+  },
+  "old_evidence": {
+    "extracted_files_checked_unchanged": 2376,
+    "old_derived_json_byte_identical": 6,
+    "outer_attachments": [
+      {
+        "name": "gdp-11123c3-full-lifecycle-01-context(1).tar.gz",
+        "sha256_previously_verified": "1a2c58eed9df2f4ae6d6681d172a574a38a7ef12afa2fd7657a8a9355d330a6e",
+        "available_at_original_path": false
+      },
+      {
+        "name": "gdp-11123c3-full-lifecycle-02-context(1).tar.gz",
+        "sha256_previously_verified": "2a20b8c9668de0f60737b68bdce31512b7192b7b7653ab874b8fc75377cc193b",
+        "available_at_original_path": false
+      },
+      {
+        "name": "DEVELOPER-FEEDBACK(1).md",
+        "sha256_previously_verified": "2c6d0b8617f8428d3083650f8bcaf6c8dd3bcdb494616196a23a05895cc20dc2",
+        "available_at_original_path": false
+      }
+    ],
+    "note": "Original WeChat temporary paths are no longer present. Existing extracted context files and embedded official packages were checked, not reconstructed or modified."
+  },
+  "source_sha256": {
+    "crates/capture-probe/src/raw_recording.rs": "a4a3e4e4ab80c4c926235ae133194a0e0592c0e61b0a5b6e42827dc3ada90fa1",
+    "crates/capture-probe/tests/service_supervision.rs": "82716e5a1eef5414aa5edbd1d76ac829c1fce7ab1244793328a333af685d916f",
+    "crates/offline-depth/src/recording.rs": "52fe3063679363797a55a938a5f78e512facb9466124ee29ddc4d7015684b7e5",
+    "crates/offline-depth/src/recording/chunked.rs": "5d98f8a2e0d876f059e8d8a44a9027aa0d1ab783000159978b215f564da8b50a",
+    "crates/offline-depth/src/recording/telemetry.rs": "d30001156e750dea9b3dd95e4a73df8ff04dbc2075cebb675e57f393bd25fa99",
+    "crates/offline-depth/tests/chunked_recording.rs": "19eeae2062a17d0d3c77f4fb6e105a45497933a292bc83a9aed9df732bbd3977",
+    "experiments/sdk-2.10.6-diagnostics/analyze_checkpoint_tails.py": "b8b326c6c977e695930b25c6f7dba8b425f75b4243b7529dbb6e111df6d2475a",
+    "experiments/sdk-2.10.6-diagnostics/observe_writer_tails.py": "465c5f06ba136f7134703c2029f3b316ef8759f3d744106f98c4ae48d42561ec",
+    "scripts/validation/checkpoint_probe.py": "7c450ddc275b5b896bedfef292c8076ef294cb16d879ad9e279c650926dbd3b0",
+    "tests/test_checkpoint_probe.py": "c9f0c3713b21759c7123783d7d6ec64b75957acdd5d971896ddebc86a53d70e0",
+    "tests/test_checkpoint_tail_analysis.py": "a02f4c1738cc69045bfbcff2ef7ea621c9192a141822b656f53b416399eef1a8",
+    "tests/test_writer_tail_observer.py": "5d506547a05d0f722107d0440c6b39fb9186684a2aa04a9061fe9383968132cd"
+  },
+  "invalid_attempts": {
+    "invalid-container-entrypoint-attempt.log.gz": "Image default entrypoint is sleep; no tests ran. Corrected with --entrypoint bash.",
+    "invalid-host-filter-environment-attempt.log.gz": "Host Python lacks tree_sitter; no filter tests loaded. Final Linux venv filter run passed."
+  },
+  "ci": "Verify all checks against the final pushed SHA; local results are not a CI result."
+}

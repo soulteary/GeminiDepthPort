@@ -293,7 +293,7 @@ impl RawRecordingWriter {
     }
     pub(super) fn automatic_checkpoint(&mut self) -> Result<()> {
         if self.chunked.as_ref().is_some_and(|s| s.pipeline) {
-            self.complete_pending()?;
+            self.complete_pending(WaitReason::ChunkRotation)?;
             self.seal_checkpoint(true)
         } else {
             self.checkpoint()
@@ -323,16 +323,19 @@ impl RawRecordingWriter {
         require(length <= MAX_CHUNK, "RECORDING_RANGE_LIMIT")?;
         let state = self.chunked.as_ref().unwrap();
         if state.pending.as_ref().is_some_and(|p| p.task.is_finished()) {
-            self.complete_pending()?;
+            self.complete_pending(WaitReason::FinishedReap)?;
         }
         let state = self.chunked.as_ref().unwrap();
         let active_bytes = state.active.as_ref().map_or(0, |c| c.bytes);
         let active_pairs = state.active.as_ref().map_or(0, |c| c.pairs);
-        if state.pending.as_ref().is_some_and(|p| {
-            p.payload_bytes + active_bytes + length > CHUNK_BYTES
-                || p.pairs + active_pairs + 1 > CHUNK_PAIRS
-        }) {
-            self.complete_pending()?;
+        let credit_reason = state.pending.as_ref().and_then(|p| {
+            WaitReason::credits(
+                p.payload_bytes + active_bytes + length > CHUNK_BYTES,
+                p.pairs + active_pairs + 1 > CHUNK_PAIRS,
+            )
+        });
+        if let Some(reason) = credit_reason {
+            self.complete_pending(reason)?;
         }
         if self
             .chunked
@@ -346,15 +349,20 @@ impl RawRecordingWriter {
         }
         // Sealing above may have created a pending prefix; a large next pair
         // cannot bypass the global credit check.
-        if self
+        let credit_reason = self
             .chunked
             .as_ref()
             .unwrap()
             .pending
             .as_ref()
-            .is_some_and(|p| p.payload_bytes + length > CHUNK_BYTES || p.pairs + 1 > CHUNK_PAIRS)
-        {
-            self.complete_pending()?;
+            .and_then(|p| {
+                WaitReason::credits(
+                    p.payload_bytes + length > CHUNK_BYTES,
+                    p.pairs + 1 > CHUNK_PAIRS,
+                )
+            });
+        if let Some(reason) = credit_reason {
+            self.complete_pending(reason)?;
         }
         let state = self.chunked.as_mut().unwrap();
         if state.active.is_none() {
@@ -434,7 +442,7 @@ impl RawRecordingWriter {
         result
     }
     fn checkpoint_inner(&mut self) -> Result<()> {
-        self.complete_pending()?;
+        self.complete_pending(WaitReason::ExplicitCheckpoint)?;
         self.seal_checkpoint(false)
     }
     fn seal_checkpoint(&mut self, asynchronous: bool) -> Result<()> {
@@ -527,13 +535,13 @@ impl RawRecordingWriter {
         }
     }
 
-    fn complete_pending(&mut self) -> Result<()> {
+    fn complete_pending(&mut self, reason: WaitReason) -> Result<()> {
         let pending = self.chunked.as_mut().and_then(|s| s.pending.take());
         if let Some(pending) = pending {
             let verified =
                 self.diagnostics
                     .1
-                    .measure(pending.info, Phase::VerifyWait, || -> Result<_> {
+                    .measure_wait(pending.info, reason, || -> Result<_> {
                         pending
                             .task
                             .join()

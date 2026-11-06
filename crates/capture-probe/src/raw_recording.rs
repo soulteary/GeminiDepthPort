@@ -157,6 +157,7 @@ struct Shared {
     written: u64,
     payload_bytes: u64,
     overflows: u64,
+    overflow_observation: Option<Arc<Value>>,
     excluded_startup: u64,
     waiting_framesets: u64,
     native_snapshot: Option<String>,
@@ -215,6 +216,78 @@ struct OwnedPair {
     depth: Vec<u8>,
     enqueued: Instant,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PairIdentity {
+    pair_sequence: u64,
+    color_sequence: Option<u64>,
+    depth_sequence: Option<u64>,
+}
+impl PairIdentity {
+    fn of(pair: &OwnedPair) -> Self {
+        Self {
+            pair_sequence: pair.evidence.pair_sequence,
+            color_sequence: pair.evidence.color.context.sequence,
+            depth_sequence: pair.evidence.depth.context.sequence,
+        }
+    }
+    fn report(self) -> Value {
+        json!({"pair_sequence":self.pair_sequence,"color_sequence":self.color_sequence,"depth_sequence":self.depth_sequence})
+    }
+}
+/// A fixed-size first-rejection verdict, captured together under the FIFO mutex.
+/// It contains neither frame buffers nor histogram/history/string allocations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct QueueOverflowSnapshot {
+    detected_monotonic_ns: Option<u64>,
+    rejected_pair: PairIdentity,
+    capacity_pairs: usize,
+    queued_pairs: usize,
+    queued_payload_bytes: u64,
+    inflight_pairs: u64,
+    inflight_payload_bytes: u64,
+    inflight_pair: Option<PairIdentity>,
+    front_pair: Option<PairIdentity>,
+    back_pair: Option<PairIdentity>,
+    dequeued_pairs: u64,
+    discarded_pairs: u64,
+    closed: bool,
+    oldest_queued_age_ns: Option<u64>,
+    high_water_pairs: usize,
+    high_water_payload_bytes: u64,
+}
+impl QueueOverflowSnapshot {
+    fn report(self) -> Value {
+        json!({"capacity_pairs":self.capacity_pairs,"queued_pairs":self.queued_pairs,
+            "queued_payload_bytes":self.queued_payload_bytes,"inflight_pairs":self.inflight_pairs,
+            "inflight_payload_bytes":self.inflight_payload_bytes,
+            "inflight_pair":self.inflight_pair.map(PairIdentity::report),
+            "front_pair":self.front_pair.map(PairIdentity::report),
+            "back_pair":self.back_pair.map(PairIdentity::report),
+            "dequeued_pairs":self.dequeued_pairs,"discarded_pairs":self.discarded_pairs,
+            "closed":self.closed,"oldest_queued_age_ns":self.oldest_queued_age_ns,
+            "high_water_pairs":self.high_water_pairs,"high_water_payload_bytes":self.high_water_payload_bytes})
+    }
+}
+fn monotonic_ns() -> Option<u64> {
+    #[cfg(unix)]
+    {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) } != 0 {
+            return None;
+        }
+        u64::try_from(ts.tv_sec)
+            .ok()?
+            .checked_mul(1_000_000_000)?
+            .checked_add(u64::try_from(ts.tv_nsec).ok()?)
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
 struct QueueState {
     pairs: VecDeque<OwnedPair>,
     closed: bool,
@@ -223,9 +296,11 @@ struct QueueState {
     high_water_bytes: u64,
     inflight_pairs: u64,
     inflight_bytes: u64,
+    inflight_pair: Option<PairIdentity>,
     dequeued: u64,
     discarded: u64,
     wait: StageStats,
+    first_overflow: Option<QueueOverflowSnapshot>,
 }
 // Only bounded counters/histogram data; never clone queued frames or IMU arrays.
 struct QueueReport {
@@ -252,7 +327,7 @@ impl QueueReport {
     }
 }
 enum QueueSendError {
-    Full,
+    Full(Box<QueueOverflowSnapshot>),
     Disconnected,
 }
 struct RecordingQueue {
@@ -273,9 +348,11 @@ impl RecordingQueue {
                 high_water_bytes: 0,
                 inflight_pairs: 0,
                 inflight_bytes: 0,
+                inflight_pair: None,
                 dequeued: 0,
                 discarded: 0,
                 wait: StageStats::default(),
+                first_overflow: None,
             }),
             available: Condvar::new(),
             capacity,
@@ -286,10 +363,41 @@ impl RecordingQueue {
     fn send(&self, pair: OwnedPair) -> std::result::Result<(), QueueSendError> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.closed {
+            drop(state); // Dropping the rejected IMU buffer must not nest queue/pool locks.
             return Err(QueueSendError::Disconnected);
         }
         if state.pairs.len() == self.capacity {
-            return Err(QueueSendError::Full);
+            let snapshot = if let Some(snapshot) = state.first_overflow {
+                snapshot
+            } else {
+                let now = Instant::now();
+                let snapshot = QueueOverflowSnapshot {
+                    detected_monotonic_ns: monotonic_ns(),
+                    rejected_pair: PairIdentity::of(&pair),
+                    capacity_pairs: self.capacity,
+                    queued_pairs: state.pairs.len(),
+                    queued_payload_bytes: state.bytes,
+                    inflight_pairs: state.inflight_pairs,
+                    inflight_payload_bytes: state.inflight_bytes,
+                    inflight_pair: state.inflight_pair,
+                    front_pair: state.pairs.front().map(PairIdentity::of),
+                    back_pair: state.pairs.back().map(PairIdentity::of),
+                    dequeued_pairs: state.dequeued,
+                    discarded_pairs: state.discarded,
+                    closed: state.closed,
+                    oldest_queued_age_ns: state.pairs.front().map(|front| {
+                        now.duration_since(front.enqueued)
+                            .as_nanos()
+                            .min(u128::from(u64::MAX)) as u64
+                    }),
+                    high_water_pairs: state.high_water_pairs,
+                    high_water_payload_bytes: state.high_water_bytes,
+                };
+                state.first_overflow = Some(snapshot);
+                snapshot
+            };
+            drop(state);
+            return Err(QueueSendError::Full(Box::new(snapshot)));
         }
         state.bytes += (pair.color.len() + pair.depth.len()) as u64;
         state.pairs.push_back(pair);
@@ -306,6 +414,7 @@ impl RecordingQueue {
                 state.bytes -= bytes;
                 state.inflight_pairs = 1;
                 state.inflight_bytes = bytes;
+                state.inflight_pair = Some(PairIdentity::of(&pair));
                 state.dequeued += 1;
                 state.wait.observe(pair.enqueued.elapsed());
                 return Some(pair);
@@ -323,6 +432,7 @@ impl RecordingQueue {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.inflight_pairs = 0;
         state.inflight_bytes = 0;
+        state.inflight_pair = None;
     }
     fn close(&self) {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).closed = true;
@@ -336,6 +446,7 @@ impl RecordingQueue {
         state.bytes = 0;
         state.inflight_pairs = 0;
         state.inflight_bytes = 0;
+        state.inflight_pair = None;
         drop(state);
         drop(abandoned);
         self.available.notify_all();
@@ -401,6 +512,8 @@ pub(crate) struct RawRecorder {
     #[cfg(test)]
     test_after_send_gate: Option<Arc<TestGate>>,
     #[cfg(test)]
+    test_overflow_context_gate: Option<Arc<TestGate>>,
+    #[cfg(test)]
     test_panic_worker: bool,
 }
 #[cfg(test)]
@@ -427,6 +540,7 @@ impl RawRecorder {
                 written: 0,
                 payload_bytes: 0,
                 overflows: 0,
+                overflow_observation: None,
                 excluded_startup: 0,
                 waiting_framesets: 0,
                 native_snapshot: None,
@@ -445,6 +559,8 @@ impl RawRecorder {
             test_commit_gate: None,
             #[cfg(test)]
             test_after_send_gate: None,
+            #[cfg(test)]
+            test_overflow_context_gate: None,
             #[cfg(test)]
             test_panic_worker: false,
         }
@@ -776,15 +892,69 @@ impl RawRecorder {
                 }
                 Ok(())
             }
-            Err(QueueSendError::Full) => {
-                self.lock().overflows += 1;
-                self.fail("RAW_QUEUE_OVERFLOW");
+            Err(QueueSendError::Full(snapshot)) => {
+                // Preserve the rejection as the first cause before the later
+                // diagnostics snapshot can yield to writer cleanup/completion.
+                let abort = {
+                    let mut state = self.lock();
+                    state.overflows += 1;
+                    if matches!(
+                        state.state,
+                        State::Complete | State::Committing | State::Failed
+                    ) {
+                        false
+                    } else {
+                        state.state = State::Failed;
+                        state.reason = Some("RAW_QUEUE_OVERFLOW");
+                        true
+                    }
+                };
+                if abort {
+                    self.abort.store(true, Ordering::Release);
+                    self.sender.take();
+                }
+                self.record_overflow(*snapshot);
                 anyhow::bail!("raw queue overflow")
             }
             Err(QueueSendError::Disconnected) => {
                 self.fail("RAW_STORAGE_OR_QUEUE_CLOSED");
                 anyhow::bail!("raw queue closed")
             }
+        }
+    }
+    fn record_overflow(&self, snapshot: QueueOverflowSnapshot) {
+        let disk = {
+            let state = self.lock();
+            if state.overflow_observation.is_some() {
+                return;
+            }
+            state.disk.clone()
+        };
+        // send() has released the queue mutex; the Shared guard above is also
+        // gone before taking the independent writer-observation mutexes.
+        #[cfg(test)]
+        if let Some(gate) = &self.test_overflow_context_gate {
+            gate.started.wait();
+            gate.resume.wait();
+        }
+        let started = monotonic_ns();
+        let context = disk.failure_context();
+        let finished = monotonic_ns();
+        let observation = Arc::new(json!({
+            "version":1,"reason":"RAW_QUEUE_OVERFLOW","clock":"CLOCK_MONOTONIC",
+            "detected_monotonic_ns":snapshot.detected_monotonic_ns,
+            "session_id":self.session,"recording_name":self.name,
+            "rejected_pair":snapshot.rejected_pair.report(),
+            "queue_at_detection":snapshot.report(),
+            "writer_context_capture_started_monotonic_ns":started,
+            "writer_context_capture_finished_monotonic_ns":finished,
+            "writer_context":context,
+            "snapshot_scope":"queue fields and rejected identity are one mutex-protected first-full verdict; writer context is captured later after releasing queue and capture-state locks, is non-atomic with that verdict, and may already reflect progress or failure cleanup; unavailable clocks remain null"
+        }));
+        // Preserve the first verdict through later abandon/drain/finalization.
+        let mut state = self.lock();
+        if state.overflow_observation.is_none() {
+            state.overflow_observation = Some(observation);
         }
     }
     pub fn finish_session(&mut self, successful: bool) -> Result<()> {
@@ -825,7 +995,7 @@ impl RawRecorder {
     pub fn status(&self) -> Value {
         // Do not nest queue/IO locks or build JSON while holding capture state.
         let s = self.lock().clone();
-        json!({"version":1,"state":s.state.as_str(),"reason":s.reason,"session_id":self.session,"max_pairs":self.settings.max_pairs,"max_bytes":self.settings.max_bytes,"queue_capacity":self.settings.queue_capacity,"submitted_pairs":s.submitted,"written_pairs":s.written,"imu_samples_submitted":s.imu_submitted,"imu_samples_outside_recording_excluded":s.imu_outside_recording,"imu_samples_pending":self.pending_imu.len(),"imu_buffers":self.imu_pool.as_ref().map(|pool|pool.report()),"payload_bytes_submitted":s.payload_bytes,"whole_pair_queue_overflows":s.overflows,"writer_queue":self.queue.as_ref().map(|q| q.report()),"disk_stages":s.disk.report(),"startup_framesets_excluded":s.excluded_startup,"waiting_framesets_excluded":s.waiting_framesets,"checkpoint_pipeline":self.settings.checkpoint_pipeline,"storage_format":if self.settings.chunked {"recording-directory-v3"}else{"recording-directory-v2"},"native_snapshot_id":s.native_snapshot,"ros_snapshot_id":s.ros_snapshot,"job_path":self.settings.directory.join(&self.name),"partial_path":self.settings.directory.join(format!("{}.partial",self.name)),"business_validity":null,"recording_protection_released":false})
+        json!({"version":1,"state":s.state.as_str(),"reason":s.reason,"session_id":self.session,"max_pairs":self.settings.max_pairs,"max_bytes":self.settings.max_bytes,"queue_capacity":self.settings.queue_capacity,"submitted_pairs":s.submitted,"written_pairs":s.written,"imu_samples_submitted":s.imu_submitted,"imu_samples_outside_recording_excluded":s.imu_outside_recording,"imu_samples_pending":self.pending_imu.len(),"imu_buffers":self.imu_pool.as_ref().map(|pool|pool.report()),"payload_bytes_submitted":s.payload_bytes,"whole_pair_queue_overflows":s.overflows,"overflow_observation":s.overflow_observation.as_deref(),"writer_queue":self.queue.as_ref().map(|q| q.report()),"disk_stages":s.disk.report(),"startup_framesets_excluded":s.excluded_startup,"waiting_framesets_excluded":s.waiting_framesets,"checkpoint_pipeline":self.settings.checkpoint_pipeline,"storage_format":if self.settings.chunked {"recording-directory-v3"}else{"recording-directory-v2"},"native_snapshot_id":s.native_snapshot,"ros_snapshot_id":s.ros_snapshot,"job_path":self.settings.directory.join(&self.name),"partial_path":self.settings.directory.join(format!("{}.partial",self.name)),"business_validity":null,"recording_protection_released":false})
     }
 }
 impl Drop for RawRecorder {
@@ -1043,6 +1213,250 @@ mod tests {
             max_delta_us: 20_000,
         }
     }
+    fn owned_queue_pair(n: u64) -> OwnedPair {
+        let mut native = snapshot().content;
+        native.depth = DepthRepresentation::SdkCounts {
+            scale_mm: f64::from(0.1f32),
+        };
+        let mut guard = BoundPairGuard::new(native.seal().unwrap(), Instant::now()).unwrap();
+        let accepted = guard
+            .accept(
+                n,
+                Some(packet(false, n, Instant::now())),
+                Some(packet(true, n, Instant::now())),
+                (4, 4),
+                policy(),
+                PairProvenance::CallerObservedSdkFrameset,
+            )
+            .unwrap();
+        OwnedPair {
+            imu: PooledImu::default(),
+            evidence: accepted.evidence,
+            color: accepted.pair.color.payload,
+            depth: accepted.pair.depth.payload,
+            enqueued: Instant::now(),
+        }
+    }
+    fn full_verdict(queue: &RecordingQueue, pair: OwnedPair) -> QueueOverflowSnapshot {
+        match queue.send(pair) {
+            Err(QueueSendError::Full(snapshot)) => *snapshot,
+            _ => panic!("expected an actual whole-pair FIFO rejection"),
+        }
+    }
+    #[test]
+    fn overflow_verdict_freezes_exact_rejected_identity_and_fifo_accounting_once() {
+        let queue = RecordingQueue::new(2);
+        let first = owned_queue_pair(1);
+        let color_pointer = first.color.as_ptr();
+        let depth_pointer = first.depth.as_ptr();
+        assert!(queue.send(first).is_ok());
+        let inflight = queue.recv().unwrap();
+        assert_eq!(inflight.color.as_ptr(), color_pointer);
+        assert_eq!(inflight.depth.as_ptr(), depth_pointer);
+        assert!(queue.send(owned_queue_pair(2)).is_ok());
+        assert!(queue.send(owned_queue_pair(3)).is_ok());
+        assert!(queue.state.lock().unwrap().first_overflow.is_none());
+        let before = monotonic_ns();
+        let verdict = full_verdict(&queue, owned_queue_pair(4));
+        let after = monotonic_ns();
+        if let (Some(before), Some(detected), Some(after)) =
+            (before, verdict.detected_monotonic_ns, after)
+        {
+            assert!(before <= detected && detected <= after);
+        } else {
+            assert!(verdict.detected_monotonic_ns.is_none());
+        }
+        assert_eq!(verdict.rejected_pair.pair_sequence, 4);
+        assert_eq!(verdict.rejected_pair.color_sequence, Some(29));
+        assert_eq!(verdict.rejected_pair.depth_sequence, Some(204));
+        assert_eq!(verdict.capacity_pairs, 2);
+        assert_eq!(verdict.queued_pairs, 2);
+        assert_eq!(verdict.queued_payload_bytes, 16);
+        assert_eq!(verdict.inflight_pairs, 1);
+        assert_eq!(verdict.inflight_payload_bytes, 8);
+        assert_eq!(verdict.inflight_pair.unwrap().pair_sequence, 1);
+        assert_eq!(verdict.front_pair.unwrap().pair_sequence, 2);
+        assert_eq!(verdict.back_pair.unwrap().pair_sequence, 3);
+        assert_eq!(verdict.dequeued_pairs, 1);
+        assert_eq!(verdict.discarded_pairs, 0);
+        assert!(!verdict.closed);
+        assert!(verdict.oldest_queued_age_ns.is_some());
+        assert_eq!(verdict.high_water_pairs, 2);
+        assert_eq!(verdict.high_water_payload_bytes, 16);
+        assert_eq!(full_verdict(&queue, owned_queue_pair(5)), verdict);
+        drop(inflight);
+        queue.written();
+        let queued = queue.recv().unwrap();
+        drop(queued);
+        queue.written();
+        queue.abandon();
+        assert_eq!(queue.state.lock().unwrap().first_overflow, Some(verdict));
+        assert!(matches!(
+            queue.send(owned_queue_pair(6)),
+            Err(QueueSendError::Disconnected)
+        ));
+        let now = queue.report();
+        assert_eq!(now["queued_pairs"], 0);
+        assert_eq!(now["inflight_pairs"], 0);
+        assert_eq!(now["discarded_pairs"], 1);
+        assert_eq!(now["dequeued_pairs"], 2);
+        assert_eq!(now["wait"]["samples"], 2);
+        assert_eq!(queue.state.lock().unwrap().first_overflow, Some(verdict));
+    }
+    #[test]
+    fn nonfull_and_closed_queues_do_not_invent_overflow_observations() {
+        let queue = RecordingQueue::new(1);
+        assert!(queue.state.lock().unwrap().first_overflow.is_none());
+        assert!(queue.send(owned_queue_pair(1)).is_ok());
+        let pair = queue.recv().unwrap();
+        drop(pair);
+        queue.written();
+        queue.close();
+        assert!(queue.recv().is_none());
+        assert!(matches!(
+            queue.send(owned_queue_pair(2)),
+            Err(QueueSendError::Disconnected)
+        ));
+        assert!(queue.state.lock().unwrap().first_overflow.is_none());
+    }
+    #[test]
+    fn overflow_writer_context_is_captured_after_unlock_and_first_snapshot_survives_cleanup() {
+        let dir = directory();
+        let mut sink = RawRecorder::new(settings(&dir, 9, 1_000_000), "overflow-context");
+        let queue = RecordingQueue::new(1);
+        sink.queue = Some(queue.clone());
+        assert_eq!(sink.status()["overflow_observation"], Value::Null);
+        assert!(queue.send(owned_queue_pair(1)).is_ok());
+        let verdict = full_verdict(&queue, owned_queue_pair(2));
+        let gate = Arc::new(TestGate {
+            started: std::sync::Barrier::new(2),
+            resume: std::sync::Barrier::new(2),
+        });
+        sink.test_overflow_context_gate = Some(gate.clone());
+        std::thread::scope(|scope| {
+            let recording = scope.spawn(|| sink.record_overflow(verdict));
+            gate.started.wait();
+            let queue_unlocked = queue.state.try_lock().is_ok();
+            let shared_unlocked = sink.shared.try_lock().is_ok();
+            // Simulate writer progress/cleanup before the later diagnostics
+            // snapshot. The failure verdict must retain the earlier full FIFO.
+            if queue_unlocked {
+                queue.abandon();
+            }
+            gate.resume.wait();
+            recording.join().unwrap();
+            assert!(queue_unlocked, "writer context must not hold FIFO mutex");
+            assert!(shared_unlocked, "writer context must not hold Shared mutex");
+        });
+        sink.test_overflow_context_gate = None;
+        let frozen = sink.status()["overflow_observation"].clone();
+        assert_eq!(frozen["rejected_pair"]["pair_sequence"], 2);
+        assert_eq!(frozen["rejected_pair"]["color_sequence"], 23);
+        assert_eq!(frozen["rejected_pair"]["depth_sequence"], 202);
+        assert_eq!(frozen["queue_at_detection"]["queued_pairs"], 1);
+        assert_eq!(frozen["queue_at_detection"]["closed"], false);
+        assert_eq!(frozen["queue_at_detection"]["discarded_pairs"], 0);
+        assert_eq!(sink.status()["writer_queue"]["queued_pairs"], 0);
+        assert_eq!(sink.status()["writer_queue"]["closed"], true);
+        assert_eq!(frozen["writer_context"]["observation_enabled"], true);
+        let detected = frozen["detected_monotonic_ns"].as_u64();
+        let started = frozen["writer_context_capture_started_monotonic_ns"].as_u64();
+        let finished = frozen["writer_context_capture_finished_monotonic_ns"].as_u64();
+        if let (Some(detected), Some(started), Some(finished)) = (detected, started, finished) {
+            assert!(detected <= started && started <= finished);
+        }
+        let mut different_verdict = verdict;
+        different_verdict.rejected_pair.pair_sequence = 99;
+        different_verdict.detected_monotonic_ns = None;
+        sink.record_overflow(different_verdict);
+        sink.fail("RAW_QUEUE_OVERFLOW");
+        assert_eq!(sink.failure_to_report(), Some("RAW_QUEUE_OVERFLOW"));
+        assert_eq!(sink.failure_to_report(), None);
+        sink.finish_session(false).unwrap();
+        assert_eq!(sink.status()["overflow_observation"], frozen);
+        assert_eq!(sink.status()["queue_capacity"], 2);
+        drop(sink);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn overflow_first_cause_survives_worker_abort_while_context_capture_is_paused() {
+        let dir = directory();
+        let ros = snapshot();
+        let mut cfg = settings(&dir, 3, 1_000_000);
+        cfg.queue_capacity = 1;
+        let mut sink = RawRecorder::new(cfg, ros.content.binding.session_id.as_str());
+        let worker_gate = Arc::new(TestGate {
+            started: std::sync::Barrier::new(2),
+            resume: std::sync::Barrier::new(2),
+        });
+        let context_gate = Arc::new(TestGate {
+            started: std::sync::Barrier::new(2),
+            resume: std::sync::Barrier::new(2),
+        });
+        sink.test_gate = Some(worker_gate.clone());
+        sink.test_overflow_context_gate = Some(context_gate.clone());
+        sink.initialize(&ros, Instant::now(), 0.1).unwrap();
+        worker_gate.started.wait();
+        sink.submit_owned(
+            packet(false, 1, Instant::now()),
+            packet(true, 1, Instant::now()),
+            1,
+            policy(),
+        )
+        .unwrap();
+        let shared = sink.shared.clone();
+        let queue = sink.queue.as_ref().unwrap().clone();
+        let abort = sink.abort.clone();
+        let worker = sink.worker.take().unwrap();
+        std::thread::scope(|scope| {
+            let submitting = scope.spawn(|| {
+                sink.submit_owned(
+                    packet(false, 2, Instant::now()),
+                    packet(true, 2, Instant::now()),
+                    2,
+                    policy(),
+                )
+            });
+            context_gate.started.wait();
+            let (state_failed, reason, observations) = {
+                let state = shared.lock().unwrap();
+                (state.state == State::Failed, state.reason, state.overflows)
+            };
+            let abort_requested = abort.load(Ordering::Acquire);
+            worker_gate.resume.wait();
+            // The worker sees abort and performs the real Interrupted/Drop
+            // cleanup while producer diagnostics are still intentionally held.
+            let worker_result = worker.join();
+            let reason_after_cleanup = shared.lock().unwrap().reason;
+            let queue_after_cleanup = queue.report();
+            context_gate.resume.wait();
+            let result = submitting.join().unwrap();
+            assert!(worker_result.is_ok());
+            assert!(result.is_err());
+            assert!(state_failed);
+            assert_eq!(reason, Some("RAW_QUEUE_OVERFLOW"));
+            assert_eq!(observations, 1);
+            assert!(abort_requested);
+            assert_eq!(reason_after_cleanup, Some("RAW_QUEUE_OVERFLOW"));
+            assert_eq!(queue_after_cleanup["closed"], true);
+            assert_eq!(queue_after_cleanup["queued_pairs"], 0);
+            assert_eq!(queue_after_cleanup["inflight_pairs"], 0);
+        });
+        let frozen = sink.status()["overflow_observation"].clone();
+        assert_eq!(frozen["queue_at_detection"]["queued_pairs"], 1);
+        assert_eq!(frozen["queue_at_detection"]["closed"], false);
+        assert_eq!(frozen["rejected_pair"]["pair_sequence"], 2);
+        assert_eq!(sink.failure_to_report(), Some("RAW_QUEUE_OVERFLOW"));
+        sink.finish_session(false).unwrap();
+        assert_eq!(sink.status()["reason"], "RAW_QUEUE_OVERFLOW");
+        assert_eq!(sink.status()["overflow_observation"], frozen);
+        let stage = dir.join(format!("{}.partial", sink.name));
+        assert!(stage.join("INTERRUPTED.json").is_file());
+        assert!(!stage.join("COMPLETE").exists());
+        assert!(!dir.join(&sink.name).exists());
+        drop(sink);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn paused_queue_report_does_not_hold_recording_state_and_queue_snapshot_is_owned() {
         let dir = directory();
@@ -1205,6 +1619,19 @@ mod tests {
             } else {
                 sink.fail("RAW_SDK_OR_SESSION_ERROR");
             }
+            let overflow_observation = sink.status()["overflow_observation"].clone();
+            if overflow {
+                assert_eq!(overflow_observation["rejected_pair"]["pair_sequence"], 2);
+                assert_eq!(overflow_observation["rejected_pair"]["color_sequence"], 23);
+                assert_eq!(overflow_observation["rejected_pair"]["depth_sequence"], 202);
+                assert_eq!(
+                    overflow_observation["queue_at_detection"]["queued_pairs"],
+                    1
+                );
+                assert_eq!(overflow_observation["queue_at_detection"]["closed"], false);
+            } else {
+                assert_eq!(overflow_observation, Value::Null);
+            }
             gate.resume.wait();
             sink.finish_session(false).unwrap();
             assert_eq!(sink.status()["state"], "failed");
@@ -1212,6 +1639,7 @@ mod tests {
             assert_eq!(sink.status()["writer_queue"]["inflight_pairs"], 0);
             assert_eq!(sink.status()["writer_queue"]["high_water_pairs"], 1);
             assert_eq!(sink.status()["writer_queue"]["discarded_pairs"], 1);
+            assert_eq!(sink.status()["overflow_observation"], overflow_observation);
             assert!(!dir.join(&sink.name).exists());
             let stage = dir.join(format!("{}.partial", sink.name));
             assert!(stage.is_dir());
@@ -1725,7 +2153,7 @@ mod tests {
         };
         let queue = RecordingQueue::new(1);
         assert!(queue.send(make()).is_ok());
-        assert!(matches!(queue.send(make()), Err(QueueSendError::Full)));
+        assert!(matches!(queue.send(make()), Err(QueueSendError::Full(_))));
         assert_eq!(pool.free.lock().unwrap().len(), 2);
         queue.close();
         assert!(matches!(

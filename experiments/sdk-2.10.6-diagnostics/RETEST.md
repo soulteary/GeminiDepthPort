@@ -48,6 +48,8 @@ ARM64 改为 `linux/arm64`；磁盘名称按现场替换。镜像构建至多一
 
 ## 结果与失败回滚
 
+包含首次 raw 队列溢出观测的版本会保留 `raw_recording.overflow_observation`，并在 lifecycle/checkpoint/writer 样本和长尾派生结果中关联 append、checkpoint 与等待原因。它的精确 FIFO 判定和后采 writer 上下文有不同时间边界，不能把后者当作原子故障因果链；配置、字段、时钟及复测口径见[首次溢出观测](../../docs/validation/raw-overflow-observation.md)。仍须新镜像、新目录，保留旧失败证据和原有验收标准。
+
 ```bash
 sudo cat /srv/sdk-test/c063450-full-lifecycle-01/summary.md
 sudo python3 -m json.tool /srv/sdk-test/c063450-full-lifecycle-01/summary.json

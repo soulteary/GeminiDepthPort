@@ -197,6 +197,29 @@ class WriterTailTests(unittest.TestCase):
             with patch.object(observer.shutil,'which',return_value=None),patch.object(observer.subprocess,'Popen') as spawn:
                 perf.start([]);self.assertEqual(perf.finish()['state'],'unavailable');spawn.assert_not_called()
 
+    def test_compact_failed_status_retains_frozen_boundary_after_writer_drains(self):
+        frozen={'version':1,'detected_monotonic_ns':100,'queue_at_detection':{'queued_pairs':16,
+            'oldest_queued_age_ns':500_000_000},'writer_context':{
+                'active_append':{'pair_sequence':8},'active_checkpoint_spans':[{'phase':'verify_wait',
+                    'wait_reason':'chunk_rotation','info':{'checkpoint_id':1}}]}}
+        status={'raw_recording':{'state':'failed','reason':'RAW_QUEUE_OVERFLOW',
+            'overflow_observation':frozen,'writer_queue':{'queued_pairs':16},
+            'disk_stages':{'checkpoint_observation':{'enabled':True,
+                'active_append':{'pair_sequence':8},'events':['x'*10000]*64}}}}
+        before=json.dumps(status,sort_keys=True)
+        failed=observer.compact_status(status)
+        self.assertEqual(failed['raw']['overflow_observation'],frozen)
+        self.assertEqual(failed['checkpoint']['active_append'],{'pair_sequence':8})
+        self.assertLess(len(json.dumps(failed)),5000)
+        self.assertEqual(json.dumps(status,sort_keys=True),before)
+        status['raw_recording']['writer_queue']['queued_pairs']=0
+        status['raw_recording']['disk_stages']['checkpoint_observation']['active_append']=None
+        drained=observer.compact_status(status)
+        self.assertEqual(drained['raw']['overflow_observation'],frozen)
+        self.assertEqual(drained['writer_queue']['queued_pairs'],0)
+        self.assertIsNone(drained['checkpoint']['active_append'])
+        self.assertIsNone(observer.compact_status({})['raw']['overflow_observation'])
+
     def test_meminfo_snapshots_preserve_zero_and_mark_missing_or_malformed(self):
         with tempfile.TemporaryDirectory() as d:
             proc=Path(d)

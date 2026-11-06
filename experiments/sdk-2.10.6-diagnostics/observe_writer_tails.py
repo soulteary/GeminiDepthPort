@@ -341,10 +341,10 @@ def compact_status(status):
     updated=status.get('updated_unix_ms')
     return {'capture_state':status.get('state'),'ready':status.get('ready'),'reason':status.get('reason'),
         'status_updated_unix_ms':updated,'status_age_ms':time.time_ns()//1000000-updated if type(updated) is int else None,
-        'raw':{key:raw.get(key) for key in ('state','reason','submitted_pairs','written_pairs','whole_pair_queue_overflows')},
+        'raw':{key:raw.get(key) for key in ('state','reason','submitted_pairs','written_pairs','whole_pair_queue_overflows','overflow_observation')},
         'writer_queue':{key:queue.get(key) for key in ('capacity_pairs','queued_pairs','inflight_pairs','oldest_queued_age_ns','high_water_pairs','discarded_pairs','closed')},
         'writer_wait':maximum(queue.get('wait')),'append':maximum(disk.get('append')),
-        'checkpoint':{key:observation.get(key) for key in ('enabled','latest_event_id','active_limit_hits','active')},
+        'checkpoint':{key:observation.get(key) for key in ('enabled','latest_event_id','active_limit_hits','active','active_append')},
         'persistence':{**{key:persistence.get(key) for key in ('active_write','submitted_sequence','completed_sequence','protected_sequence','pending_snapshots','errors','submission_errors','pump_errors')},
             'recent_critical_events':persistence.get('critical_events',[])[-2:]},
         'imu':{**{key:imu.get(key) for key in ('error','queue_high_water','failure_observation')},'drain_interval':maximum(imu.get('drain_interval'))},
