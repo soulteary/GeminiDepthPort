@@ -72,7 +72,14 @@ unsafe 代码或错误分支，也不会改写源文件。原始 `raw.lcov`、`r
 - `docs/interfaces/`：CLI、HTTP、ROS 和数据字段参考。
 - `docs/contracts/`：版本化语义、不变量、状态转换和失败边界。
 - `docs/development/`：模块职责、实现原因、构建与调试。
-- `docs/validation/`：验收方法、冻结产物与历史结果。
+- `docs/validation/README.md`：当前验收入口和最近结论。
+- `docs/validation/history.md`、历史方法文档及 `reports/`：固定版本的调查、冻结产物与结果。
+
+当前使用入口统一由 `docs/README.md` 导航，能力／未完成项集中到
+`docs/guides/current-status.md`。配置或常量变更时同时核对对应契约、示例与该状态页，
+避免新结果仅出现在按提交命名的报告中。每次新增历史记录都更新历史索引；重要未关闭问题也更新当前状态和故障排查。
+历史失败报告、日志、压缩归档及 SHA256 文件保持原始字节；补充结论写在当前索引或新记录中。
+契约版本与目录格式版本分别命名，原生录制使用“完整帧对录制”，具体格式写 `files-v2`／`chunked-v3`。
 
 crate 和工具 README 保留本地入口，用链接引用共享语义；指南不复制完整契约。
 代码注释解释所有权、锁、单位、时钟和失败后的状态，不复述函数名或开发批次。

@@ -122,3 +122,36 @@ refuse to start. They verify supervision mechanics, not physical camera recovery
 
 Checkpoint phase timing and a bounded Linux host sampler are documented in
 [Recording checkpoint observation](checkpoint-observation.md).
+
+## Background status persistence
+
+Routine heartbeats submit owned JSON snapshots to a dedicated status writer.
+The queue contains at most one in-flight batch and one pending batch; newer
+routine snapshots replace the pending snapshot. SDK handles stay on the capture
+thread. Each batch writes quality query/current/events before service status,
+using the existing private-file, atomic-rename, file-fsync and directory-fsync
+protocol. This ordering is not a cross-file atomic transaction.
+
+The first status, state/quality-health/raw-recorder-state transitions, non-missing-route error/protection updates
+and terminal states wait for durable completion. A critical batch supersedes an
+obsolete queued routine snapshot, never an in-flight write. Missing-route updates
+retain heartbeat coalescing; full counters are carried into the next snapshot.
+On graceful stop, the final quality summary remains synchronous and final status
+waits behind earlier writes. Writer errors/panics are sticky, checked on each
+capture iteration and on submission; they fail the worker instead of silently
+leaving it healthy. Thread creation failure prevents SDK startup. A permanently
+hung native filesystem call is still bounded by supervisor shutdown/heartbeat
+policy, not by an invented thread cancellation guarantee. SIGKILL/power loss can
+lose an unacknowledged routine snapshot; durability guarantees apply to completed
+critical submissions.
+
+`status_persistence.wall` measures completed background batches preceding the
+snapshot. `submission_wall` measures capture-thread snapshot preparation and
+submission, including any critical wait. `pending_capacity=1`,
+`pending_snapshots`, `coalesced_snapshots`, `submitted_sequence` and
+`completed_sequence` expose queue behavior. Sequence numbers also include
+superseded snapshots; they are not a count of completed disk writes. These fields
+are sampled before the containing status batch is submitted.
+
+A repeatable release A/B experiment and its limits are recorded in
+[status persistence comparison](../validation/reports/status-persistence-20261029.md).

@@ -26,6 +26,19 @@ sudo ./deploy.sh install
 ./deploy.sh web
 ```
 
+## CLI 入口
+
+`deploy.sh` 使用管理容器完成日常操作，安装过程不把 `geminidepthport` 安装到宿主机 PATH。
+其他指南中的 `geminidepthport ...` 指宿主 Rust CLI；需要它时按[构建要求](../../CONTRIBUTING.md#开发检查)准备 Rust、C/C++ 编译器等依赖，在仓库根目录执行：
+
+```sh
+cargo build --locked -p geminidepthport
+./target/debug/geminidepthport --root "$PWD" validate --file inventory.v2.example.json --draft
+```
+
+后续示例中的命令名可以替换为该二进制的绝对路径。操作实际部署时用 `--root` 指向该部署目录，
+配置、权限、操作锁和保护规则与 Web 相同。无需 CLI 的操作继续使用 Web 或 `deploy.sh`。
+
 ## 日常操作
 
 ```sh

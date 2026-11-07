@@ -1,37 +1,47 @@
-# 验证记录索引
+# 验证入口与最近结论
 
-本页只概括已记录的范围；具体产物指纹、方法、失败与限制以链接报告为准。
-不同报告的冻结产物不能混称为同一最终版本验收。CI 成功不代表硬件验收。
+部署前先看[当前能力与已知限制](../guides/current-status.md)。本页提供正在使用的验收入口；按提交冻结的流程、失败记录和性能实验统一从[历史索引](history.md)查阅。
 
-## 保留的实测记录
+## 原生持续录制的最近结论
 
-- [305/335L 各 30 分钟消费与短 ROSbag2 读回](reports/rust-service-validation-20261028.md)：
-  含独立资源窗口、真实管理闭环及 SIGSTOP 恢复。资源/状态窗口分别为 29/28 分钟。
-- [四机五分钟并行消费](reports/four-camera-5min-20261029.md)：
-  含缺路 frameset 拒绝、USBFS 条件及真实 D2C 溢出失败；不等于生产三机长期验收。
-- [录制、管理、质量历史和故障功能验收](reports/capture-completion-functional-20261029.md)：
-  含原生 counts 录制、SQLite/MCAP 字节读回、停机摘要与中断观察器回归。
-- [同网格 SDK 对齐差异](reports/sdk-grid-differences-20261029.json)：
-  记录覆盖率和共同有效像素误差，不认证 SDK 等价或物理精度。
+截至包含 `dde3e1a` 的主线，三相机原生持续录制的 `RAW_QUEUE_OVERFLOW` 尚未关闭，新的六组正式长测及独立相机恢复验收仍未完成。
 
-同名 JSON 保留机器可读结果。原始像素、序列号、标定、凭据与部署绑定不在仓库中。
+- [2026-11-07 checkpoint 重叠修正](reports/checkpoint-overlap-20261107/README.md)：两处反压修正及故障回归通过；受控索引争用改善，普通负载未证实整体性能收益，状态开启时 P99 本轮观测变差。连续慢 fsync 仍溢出。
+- [2026-11-07 录制验收与候选评估](reports/recording-readiness-20261107/README.md)：源缺口门禁、容量预检及追踪完整性修正；完整额度批次仍为显式候选，不是默认策略。
+- [2026-11-06 三 writer 对照](reports/writer-long-run-20261106/README.md)：按其固定产物和环境读取，未完成组不计作成功。
 
-- [SDK 异常退出后首次重开修复](reports/sdk-first-reopen-20261029.md)：
-  原 SDK 不变，四台分别通过单次重开；含同镜像失败/成功对照及启用条件。
+新软件测试不重写早期实机失败，也不补记未执行的恢复。完成目录、可恢复前缀、源端缺帧和观察器事件缺口分别验收。
 
-## 自动检查
+## 录制与恢复验收入口
 
-CI 定义在 [.github/workflows](../../.github/workflows)：Rust 测试与 Clippy、
-Python/前端/Shell 检查、Compose schema、Linux 合成管理生命周期、管理容器
-冒烟、固定官方驱动构建、Rust 采集运行清单/ABI 及 ROS 合成跨容器交付。
-这些检查不打开真实设备；执行入口见[贡献指南](../../CONTRIBUTING.md#开发检查)。
+在专用 Linux 主机、固定源码和镜像下执行，每次使用不存在的新输出目录。旧日志、失败文件、partial 和 SHA256 原样保留；容量不足时停止新任务。
 
-## 已知限制与待验收
+1. **三 writer 同盘对照**：入口为 [run_writer_long_test.sh](../../scripts/validation/run_writer_long_test.sh) 和 [writer_long_run.py](../../scripts/validation/writer_long_run.py)，包含真实状态持久化 on/off、有界追踪及恢复。至少每组 600 秒、三轮交替；默认生产策略对照显式选择 `half-credit`。详细参数见[方法说明](writer-long-run.md)。
+2. **三相机六组及独立 SIGKILL**：入口为 [run_retest.py](../../experiments/sdk-2.10.6-diagnostics/run_retest.py)，使用实际已验证的 capture/health 配置及 [plan 模板](../../experiments/sdk-2.10.6-diagnostics/three-camera.plan.example.json)。冻结本次真实镜像 revision 和摘要，先完成六组正常验收，再执行独立恢复；失败停止。脚本仍位于 experiments，是独立验收工具，不是生产启动入口。
+3. **原生与 DDS／IMU 审计**：使用 [imu_long_test.py](../../scripts/validation/imu_long_test.py)、[审计器](../../crates/offline-depth/examples/audit_imu_long_run.rs)及[实际 ROS 观察器](../../ros/imu_long_run_observer.py)，核对 Global／IMU、原生 counts 和归一化 ROS 深度。历史参数说明见[IMU 长测方法](imu-long-run-45992a4.md)，其中固定旧提交的步骤只用于复现旧版本。
 
-- 旧镜像或未配置 `usb_recovery` 的独立配置仍可能在 SIGKILL 后首次重开无帧。
-  新修复需重建 Rust 镜像、重新确认档位并生成新 generation；历史失败记录保留。
-- D2C 尚未证明与官方 SDK 等价；真实溢出按契约失败，不截断或伪造完成。
-- 最终发布产物的生产规模长稳、真实 USB 拔插/掉电、干净安装、systemd 开机、
-  升级回退和业务消费者兼容仍需独立验收。
-- 不认证物理深度精度、手眼标定、硬件曝光同步、跨发行版兼容或无内存泄漏。
-- 未完成有效官方驱动性能对照，不宣称 CPU、内存或延迟收益。
+先查看本次检出的工具参数；以下命令只显示帮助，不执行设备测试：
+
+```sh
+bash scripts/validation/run_writer_long_test.sh --help
+python3 experiments/sdk-2.10.6-diagnostics/run_retest.py --help
+python3 scripts/validation/imu_long_test.py --help
+```
+
+正常组需达到目标并生成有效 COMPLETE；两轮实际读回、逐帧哈希、时钟／样本检查和独立恢复分别保留结果。详细数据语义见[录制指南](../guides/recording.md)，全程采样的历史说明见[方法记录](c063450-hardware-long-run.md)。
+
+## 其他实机记录
+
+- [305/335L 各 30 分钟消费](reports/rust-service-validation-20261028.md)：含短 ROSbag2 读回、管理流程与 SIGSTOP 恢复；资源／状态窗口分别为 29／28 分钟。
+- [四机五分钟并行消费](reports/four-camera-5min-20261029.md)：包含缺路拒绝、USBFS 条件和 D2C 溢出失败，适用其报告中的设备与负载。
+- [录制、管理与质量功能验收](reports/capture-completion-functional-20261029.md)：包含 counts、SQLite／MCAP 读回和中断观察。
+- [SDK 首次重开修复](reports/sdk-first-reopen-20261029.md)：四台分别通过单次重开；启用需新镜像、重新确认及生成配置，旧独立配置不会自动获得恢复能力。
+- [SDK 同网格对齐差异](reports/sdk-grid-differences-20261029.json)：记录覆盖范围与共同有效像素误差。
+
+这些记录均有各自的冻结产物，不构成当前发布版本的整套生产验收。
+
+## 自动检查与其他方法
+
+CI 包含 Rust、Python、前端、Shell、Compose、管理生命周期、固定官方驱动构建和 ROS 合成交付；不打开真实设备。构建和检查见[贡献指南](../../CONTRIBUTING.md#开发检查)。
+
+其他方法：[消费与 ROSbag2 验收](consumer-acceptance.md)、[基础语义](semantics.md)、[性能对照协议](benchmarking.md)、[验证工具](../../tools/validation/README.md)。

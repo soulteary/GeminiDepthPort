@@ -15,7 +15,10 @@
 ```
 
 All five fields are explicit. Optional `storage_format` is `files-v2` (default, unchanged legacy layout)
-or `chunked-v3` (explicit group commit); other values are rejected. The directory must be absolute and cannot be `/`,
+or `chunked-v3` (explicit group commit); other values are rejected. These are
+directory format versions; the v1 in this document names the service contract.
+See the [V3 directory contract](native-recording-v3.md) for buffer limits,
+checkpoint batching, readback and recovery. The directory must be absolute and cannot be `/`,
 `/tmp` or contain parent traversal. Names use 1–64 ASCII alphanumeric, underscore
 or hyphen characters. Queue capacity is 1–16; both limits are positive u64.
 Enabling this feature requires an explicit matching `quality_policy` and
@@ -66,7 +69,8 @@ not a claim about total process RSS or performance.
 
 ## Completion, budget and cancellation
 
-The disk worker uses `RawRecordingWriter::begin_with_limit`; `max_bytes` accounts
+The disk worker selects a byte-limited `RawRecordingWriter` constructor for the
+requested directory format; `max_bytes` accounts
 for actual snapshot, association, pixel, evidence, record-index, manifest and
 completion-file bytes, checked before each write. It is not a raw-payload-only
 budget. `payload_bytes_submitted` is separately named and is not advertised as

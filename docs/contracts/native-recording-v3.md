@@ -46,14 +46,24 @@ concatenating image buffers. Short writes advance across slice boundaries;
 interrupted calls retry and zero-length writes fail. Evidence and index JSON
 serialization reuse separate metadata buffers. V2 retains its per-file writes.
 
-The append-only index stages at most 64 KiB in an explicit buffer. Every
-checkpoint completely flushes this buffer before any payload/index sync or
-validation. Buffered index bytes are charged to the byte budget when staged,
-not again at flush. A failed partial flush poisons the writer; dropping it does
-not retry or promote unacknowledged bytes. Existing checkpoints remain recoverable.
-Diagnostics expose payload/index write attempts and successful index flushes.
-The on-disk format, hashes, two actual readback rounds and durability barriers
-are unchanged. This only affects enabled native recording, not external ROSbag2.
+The append-only index normally flushes at a 64 KiB threshold. While a
+checkpoint task is pending, later index records stay in RAM so the append thread
+does not write the inode being synced/read back. This metadata buffer is capped
+at **2 MiB**: the existing 32 unconfirmed pair credits times the 64 KiB maximum
+index line. It holds no additional image pairs. Capacity grows on demand and is
+retained for reuse, including after a pending task has finished.
+
+Every checkpoint flushes its entire index prefix before payload/index sync or
+validation. Buffered bytes count against the recording byte budget when staged,
+not again at flush. A failed partial flush poisons the writer; Drop does not
+retry that failed flush or promote its tail. Existing confirmed prefixes remain
+recoverable. Diagnostics report `index_buffer_peak_bytes`,
+`index_buffer_capacity_peak_bytes`, `pipelined_index_buffer_limit_bytes`, write
+attempts and successful flushes. The separate validation image scratch buffer
+remains at most 64 KiB. Neither number describes total process RSS.
+
+The layout, hashes, two actual readback rounds and durability barriers are
+unchanged. This staging applies to native recording, not external ROSbag2.
 
 ## Durable checkpoint ordering
 
@@ -76,47 +86,61 @@ index and metadata contents, including the temporary coexistence of old/new
 checkpoint files; obsolete checkpoint bytes are released only after successful
 replacement. It does not claim to measure filesystem metadata/journal space.
 
-Group commit deliberately allows loss of the last unacknowledged active chunk
-on SIGKILL/power loss: at most one chunk (up to 32 pairs), in addition to frames
+Without the checkpoint pipeline, group commit allows loss of the last
+unacknowledged active chunk on SIGKILL/power loss: at most one chunk (up to
+32 pairs), in addition to frames
 still in the acquisition queue/in flight. This is not per-frame synchronous
 durability. Earlier acknowledged prefixes retain ordered fsync protection under
 a filesystem/device that honors fsync. The old V2 path syncs individual payloads
 but does not provide this explicit durable-index-prefix contract.
 
+<a id="optional-bounded-background-checkpoint-transaction"></a>
+
 ## Optional checkpoint pipeline
 
-`raw_recording.checkpoint_pipeline: true` is accepted only with
-`storage_format: "chunked-v3"`. Omitted/false keeps synchronous checkpoints and
-all existing defaults. Library callers opt in with
+`raw_recording.checkpoint_pipeline: true` requires `storage_format: "chunked-v3"`.
+Omitted/false keeps synchronous checkpoints. Library callers use
 `RawRecordingWriter::enable_checkpoint_pipeline()` before the first append.
 
-The optional mode seals at 16 pairs or an 8 MiB target so a single verifier can
-read the previous immutable chunk while the writer appends the next chunk.
-Only one verification task is allowed. Before every append, pending plus active
-payload credits must remain within **32 pairs and 16 MiB combined**. A single
-indivisible larger pair is allowed up to the existing per-image/evidence limits;
-all earlier pending work must finish before it is written, and no following pair
-can overlap it. These are disk-tail credits, independent of the unchanged bounded
-acquisition queue and total recording byte budget. Diagnostics expose
-`uncommitted_pairs_peak` and `uncommitted_payload_bytes_peak`.
+The default pipeline batching policy is `half-credit`, with dispatch targets of
+16 pairs / 8 MiB. If the single preceding checkpoint is unfinished, reaching
+that target does not block or start another task: the current active chunk may
+continue within the remaining global credits. Before **every** pair admission,
+pending plus active payload remains within **32 pairs and 16 MiB combined**.
+The next admission waits when those credits are exhausted. A single indivisible
+larger pair retains the existing per-image/evidence limits, with no earlier or
+following pair overlapping it. These credits are separate from the acquisition
+FIFO and the total recording byte budget.
 
-Sealing still flushes the index and syncs payload, index and staging directory
-before starting readback. The verifier receives a fixed index length/digest and
-cached validated prefix; it never reads the new active chunk or commits anything.
-The writer joins it before installing its checkpoint, and advances durable pairs
-only after checkpoint file sync, rename and directory sync. Completed tasks are
-collected on subsequent appends; credits exhausted, the next seal, explicit
-`checkpoint()`, graceful Drop and finish all wait. Final full verification and the
-publication guard still run after all checkpoint work is joined. Failed append or
-checkpoint operations poison the writer; Drop joins any outstanding verifier
-without committing it. There is no detached verifier after directory publication.
+`raw_recording.checkpoint_batching: "full-credit"` explicitly selects a
+32-pair / 16 MiB dispatch target; specifying either batching value also requires
+the pipeline. Library callers use `enable_checkpoint_batching()` before the first
+append. This candidate reduces transaction frequency at the cost of overlap;
+it does not increase global credits and is not the default. Diagnostics report
+the effective `checkpoint_batching`, `uncommitted_pairs_peak` and
+`uncommitted_payload_bytes_peak`.
 
-This trades smaller chunks, more fsyncs and thread overhead for potential append
-tail-latency improvement. It preserves the global unacknowledged payload window,
-but changes chunk counts and checkpoint cadence. It is deliberately opt-in;
-slow-sync storage can lose throughput. It does not affect capture with native
-recording disabled or external ROSbag2 recording. Recovery and COMPLETE semantics
-are identical for synchronous and pipelined V3 directories.
+The append thread flushes the sealed index prefix and transfers the payload
+handle, digest and fixed index length to one background task. That task executes
+the complete [checkpoint ordering](#durable-checkpoint-ordering), including
+payload/index/directory sync, readback/hash checks, checkpoint write/sync,
+rename and final directory sync. It advances `durable_pairs` only after the final
+sync. Later records remain in the bounded metadata buffer; the task never reads
+the new active payload chunk or acknowledges its tail.
+
+A subsequent append collects a finished task's verified progress and accounting;
+it performs no checkpoint commit I/O. Explicit `checkpoint()`, finish and graceful
+Drop join pending work; checkpoint/finish synchronously seal any final active
+tail. Errors or panics fail the writer. Drop joins even on failure, so no task
+outlives directory publication. A valid submitted prefix may finish committing
+during abort; the overall failed job still has no COMPLETE.
+
+Long sync stalls or insufficient average confirmation throughput can fill the
+unchanged bounded acquisition queue and cause terminal overflow. Current hardware
+acceptance and performance limits are listed in [current status](../guides/current-status.md).
+The pipeline does not affect capture with native recording disabled or external
+ROSbag2. Recovery and COMPLETE semantics are the same for synchronous and
+pipelined V3 directories.
 
 ## Recovery is not completion
 
@@ -146,36 +170,6 @@ visible checkpoint may describe a newer prefix whose data/index were already
 synced and verified. Recovery validates what is actually present; runtime durable
 counters never acknowledge that failed sync.
 
-## Optional bounded background checkpoint transaction
-
-With `raw_recording.checkpoint_pipeline: true`, the append thread flushes the
-bounded index buffer and seals the payload handle, prefix digest and index byte
-limit. A single background task then performs payload/index/directory sync,
-checkpoint readback/hash validation, temporary checkpoint write/sync, rename and
-final directory sync in that order. No append is allowed to the sealed payload.
-The shared index remains append-only; readers are bounded by the sealed byte
-limit. Syncing that inode may also persist later index bytes, but never adds them
-to the checkpoint's acknowledged prefix.
-
-The task advances `durable_pairs` only after the final directory sync. A later
-append collects its verified progress and byte-budget accounting; it performs
-no checkpoint commit I/O. Explicit checkpoint/finish wait for pending work and
-synchronously seal any final active tail. The first checkpoint pass plus the
-final whole-job pass still perform two actual reads and per-frame hashes.
-
-There is at most one pending task and one active chunk. Existing global credits
-remain 32 pairs / 16 MiB (or one indivisible oversized pair); pipeline chunk
-targets remain 16 pairs / 8 MiB. The writer blocks on exhausted credits rather
-than accumulating threads or payload buffers. Persistent stalls can still fill
-the acquisition queue and trigger its existing terminal overflow. Background
-errors/panics are propagated at collection; no failed job gains COMPLETE. Drop
-joins pending work even on failure. A submitted, valid sealed prefix may finish
-committing during abort; this is prefix recovery, not successful job completion.
-
-The flag remains opt-in and defaults to false; an explicitly false configuration
-uses the original synchronous checkpoints. Enable it explicitly for the new
-long-tail experiment and hold it fixed across SDK diagnostic on/off groups.
-See [synchronization comparison](../validation/reports/checkpoint-sync-ab-20261101.md).
 
 ## Complete transaction
 

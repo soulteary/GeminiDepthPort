@@ -1,8 +1,7 @@
 # 公开接入示例
 
-这些示例从未绑定、禁用且未确认的配置意图开始，可供用户和 Agent 参考。
-它们不包含可直接开机的实机配置，不证明档位支持、标定精度或硬件同步。
-所有命令从仓库根目录执行；安装 Rust CLI 的构建方法见[贡献指南](../CONTRIBUTING.md)。
+示例预留未绑定、禁用的相机槽位。先选择与设备匹配的模板，绑定后通过预览检查确认档位。
+所有命令从仓库根目录执行；命令行示例需要先准备[宿主 CLI](../docs/guides/deployment.md#cli-入口)。
 
 - [官方 ROS 三机](official-three-camera/README.md)：正式管理的一至三台设备流程。
 - [Rust 单机](rust-single-camera/README.md)：显式后端策略、不可变运行清单、质量与录制保护。
@@ -32,10 +31,8 @@ geminidepthport validate --file examples/rust-single-camera/inventory.json --dra
 `validate --file` 理解为已导入示例或已经生成服务。所有设备操作须在部署根目录或
 显式正确的 `--root` 下运行。
 
-真实 inventory（即使该路径原本被 Git 跟踪）、序列号、通信绑定、标定、原始图像、
-凭据及 `state/`、`work/` 不得提交。不要从历史测试目录复制后替换几处字符串；
-只从公开模板填写必要输入，并由真实运行生成确认、snapshot、session 和摘要。
-`verification` 保持 `null`，不能手填确认、伪造摘要或把验证标记设为真。
+真实 inventory、序列号、标定、原始图像、凭据及 `state/`、`work/` 保存在部署目录，不提交仓库。
+`verification` 初始保持 `null`，后续确认、snapshot 和 session 由实际运行生成。
 
 ## Agent 使用顺序
 

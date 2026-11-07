@@ -27,12 +27,12 @@ RGB-D 槽位与有界服务策略，显式选择 `complete` 预设和 `global` �
 
 ## 选择采集策略
 
-本例的 `complete` 在开始采集前关闭 SDK 软件彩深同步，使用 `any` 聚合输出，
-让有效的彩色和深度图像分别发布；未形成 RGB-D 对不会使已有图像被整组排除。
-消息 header 使用映射到主机 Unix 时钟的 global 时间，仍保留 device 和 system
-时间供诊断。它不承诺设备、SDK 队列或下游录制器绝不丢帧，需核对各阶段的计数。
+本例使用 `complete`，分别发布有效彩色和深度图像，消息 header 使用映射到主机 Unix 时钟的
+Global 时间。需要原生完整帧对录制时改用 `strict-rgbd`；所有策略变化都需要重新生成并确认。
+SDK 配对时钟、Global 映射及硬件同步的区别见[采集预设](../../docs/guides/configuration.md#rust-采集预设)。
 
-设备不支持 global 时，明确修改策略并将相机 `timestamp_source` 改为 `host`：
+设备不支持 Global 时，将 `rust_capture.acquisition` 替换为下面的策略，并将相机
+`timestamp_source` 改为 `host`：
 
 ```json
 {
@@ -40,14 +40,6 @@ RGB-D 槽位与有界服务策略，显式选择 `complete` 预设和 `global` �
   "advanced": { "message_timestamp": "system" }
 }
 ```
-
-这段替换 `rust_capture.acquisition`，不会因单帧 global 无效而自动回退。
-global 映射不表示曝光同步。硬件同步预设 `hardware-sync` 当前不可用，选择后会被拒绝。
-
-`pairing.clock` 与 `max_delta_us` 仍只检查同一个 SDK frameset，不实现跨 frameset
-或跨设备缓冲配对。必须获得完整 RGB-D 对的消费者可改用 `strict-rgbd`；该预设
-开启 SDK 软件同步并仅发布通过配对检查的图像，配对输出数量可能少于收到的图像。
-任何策略或时间来源变化都需要重新生成配置并确认档位。
 
 ## 快照、质量与录制
 
@@ -67,9 +59,8 @@ geminidepthport recording-context --require-strong
 绑定的 generation、session 和 snapshot，并在结束后释放凭证。
 
 `complete` 的图像保留通过 ROS 单流输出实现，需要下游录制器分别订阅并记录两路。
-内置 native V2 录制只接受完整配对，不能与本例的 `complete` 策略同时启用；
-需要 native V2 时应明确切换 `strict-rgbd` 并重新确认。不能把仅完整配对的录制
-描述成全部原始图像都已保存。
+原生完整帧对录制（`files-v2` 或 `chunked-v3`）不能与本例的 `complete` 策略同时启用；
+需要原生录制时切换 `strict-rgbd` 并重新确认。格式、启用入口和完成校验见[录制指南](../../docs/guides/recording.md)。
 
 元数据应按各自流时间戳与实际会话关联，不把两个时间戳覆盖为相同值，也不将
 SDK frameset 关联标为已认证硬件同步。消费端使用与服务一致的 Humble/Fast DDS、

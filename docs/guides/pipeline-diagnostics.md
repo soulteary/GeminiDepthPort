@@ -2,11 +2,11 @@
 
 本工具用于区分 SDK 等帧、发布前处理、ROS 发布与接收、回调及落盘阻塞。
 它不把源帧连续性当作低延迟，也不把发布成功、write 成功当作下游收到或持久化完成。
-现有实测约 355 ms 的接收长尾仍需用新观测链路重新测量；合成测试不能替代该验收。
+接收长尾应在实际部署负载下按阶段重测，软件回归不代替实机测量。
 
 ## 采集端观测
 
-升级采集服务和 ROS bridge 后，服务状态增加 `pipeline_timing` 与
+服务状态提供 `pipeline_timing` 与
 `status_persistence`。不需要修改消息的 global/system 来源。
 
 - `sdk_wait_call`：SDK wait 调用单调耗时，包含超时和错误；另计两种结果次数。
@@ -67,62 +67,34 @@ Python 对象、DDS reader 缓冲、待同步文件描述符不是该载荷字�
 
 输出为独立 `.raw` 图像及 `frames.jsonl` 索引/metadata 事件。只有载荷、索引和目录
 最终同步完成才报告 `completed=true`；write 完成数不等于 durable 数。
-这是诊断格式，不是 native V2、rosbag 或原 R2 的内部观测，也不证明源数据无丢帧。
+这是诊断格式，不提供原生录制、ROSbag2 或业务录制器的内部观测，也不证明源数据无丢帧。
 默认仅观察模式不会保存图像。
 
 每秒读取一次当前 `/proc` 视图中的 I/O PSI、Dirty/Writeback、回收与 OOM 计数、
 观察器自身 I/O。只保留有界近期窗口及最大 stall 窗口；缺失为 unknown，而不是零。
-PSI/vmstat 可能是系统级数据，`self/io` 只属于诊断进程，不可直接归因到 R2 或某块磁盘。
+PSI/vmstat 可能是系统级数据，`self/io` 只属于诊断进程，不可直接归因到业务录制器或某块磁盘。
 
 ## 对照测试与判读
 
 保持相机模式、时间来源、ROS/DDS 配置和采样窗口一致，分别测量：
 
-1. 原 R2 停止，只运行观察器，确定 SDK/发布/接收的基线。
+1. 停止业务录制器，只运行观察器，确定 SDK/发布/接收的基线。
 2. 诊断记录写入有容量约束的 tmpfs，检查复制、回调与排队开销。
 3. 相同诊断记录参数写入实际磁盘，检查 writer 等待、sync 与 PSI/Dirty 波动。
-4. 原 R2 单独运行，再带仅观察器运行，检查额外订阅者的影响。
+4. 单独运行业务录制器，再带仅观察器运行，检查额外订阅者的影响。
 
-诊断记录器和 R2 的实现不同。tmpfs/磁盘对照只能定位这一诊断路径的差异，不能直接
-证明 R2 的 fsync、缓存回收或线程调度机制。若源时间连续、SDK wait 正常但
+诊断记录器和业务录制器的实现不同。tmpfs/磁盘对照只能定位这一诊断路径的差异，不能直接
+证明业务录制器的 fsync、缓存回收或线程调度机制。若源时间连续、SDK wait 正常但
 between-polls 上升，优先查看采集线程处理和状态写；若 publish wall 上升，检查本地
 bridge 与 DDS 背压；若发布正常而接收间隔/年龄上升，检查订阅者调度及中间件；
 若回调正常、writer queue/同步耗时上升，再结合 I/O 压力定位存储路径。
 
-本次已减少显式完整采集合法 partial frameset 的重复同步状态写：稳定状态按心跳
-合并，首次、状态变化、失败、保护和停止仍走及时写入，逐帧诊断计数保留。
-原生 V2 recorder 提交阶段也不再持状态锁跨 fsync。两项改动都有慢 I/O/状态测试，
-但不能据此宣称实机 355 ms 长尾已经消失。
+## 状态持久化的判读
 
-### Background status persistence
+普通心跳在后台合并写入，关键状态等待可靠落盘。观察 `status_persistence.wall`、
+`submission_wall`、pending／completed 序号及关键状态等待，与 SDK poll 和原生 writer 阶段
+按时间关联。未确认的普通快照可能在异常退出时丢失，不能据旧快照断言随后没有错误。
+队列、提交顺序和错误处理见[服务实现参考](../development/capture-service.md#background-status-persistence)。
 
-Routine heartbeats now submit owned JSON snapshots to a dedicated status writer.
-The queue contains at most one in-flight batch and one pending batch; newer
-routine snapshots replace the pending snapshot. SDK handles stay on the capture
-thread. Each batch writes quality query/current/events before service status,
-using the existing private-file, atomic-rename, file-fsync and directory-fsync
-protocol. This ordering is not a cross-file atomic transaction.
-
-The first status, state/quality-health/raw-recorder-state transitions, non-missing-route error/protection updates
-and terminal states wait for durable completion. A critical batch supersedes an
-obsolete queued routine snapshot, never an in-flight write. Missing-route updates
-retain heartbeat coalescing; full counters are carried into the next snapshot.
-On graceful stop, the final quality summary remains synchronous and final status
-waits behind earlier writes. Writer errors/panics are sticky, checked on each
-capture iteration and on submission; they fail the worker instead of silently
-leaving it healthy. Thread creation failure prevents SDK startup. A permanently
-hung native filesystem call is still bounded by supervisor shutdown/heartbeat
-policy, not by an invented thread cancellation guarantee. SIGKILL/power loss can
-lose an unacknowledged routine snapshot; durability guarantees apply to completed
-critical submissions.
-
-`status_persistence.wall` measures completed background batches preceding the
-snapshot. `submission_wall` measures capture-thread snapshot preparation and
-submission, including any critical wait. `pending_capacity=1`,
-`pending_snapshots`, `coalesced_snapshots`, `submitted_sequence` and
-`completed_sequence` expose queue behavior. Sequence numbers also include
-superseded snapshots; they are not a count of completed disk writes. These fields
-are sampled before the containing status batch is submitted.
-
-A repeatable release A/B experiment and its limits are recorded in
-[status persistence comparison](../validation/reports/status-persistence-20261029.md).
+历史对照见[状态持久化实验](../validation/reports/status-persistence-20261029.md)，当前实机结论见
+[能力与限制](current-status.md)。

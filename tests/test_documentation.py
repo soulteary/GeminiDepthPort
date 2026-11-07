@@ -46,6 +46,26 @@ class Documentation(unittest.TestCase):
                             anchors[resolved] = heading_anchors(resolved)
                         self.assertIn(unquote(fragment), anchors[resolved], "missing heading anchor")
 
+    def test_user_docs_and_history_are_reachable_from_entry_points(self):
+        pending = [ROOT / "README.md", ROOT / "docs/README.md"]
+        visited = set()
+        while pending:
+            path = pending.pop().resolve()
+            if path in visited:
+                continue
+            visited.add(path)
+            for target in re.findall(r"\]\(([^\s)]+)\)", path.read_text()):
+                if re.match(r"[A-Za-z][A-Za-z0-9+.-]*:", target):
+                    continue
+                filename = unquote(target.partition("#")[0])
+                resolved = (path.parent / filename).resolve() if filename else path
+                if resolved.is_relative_to(ROOT) and resolved.suffix == ".md" and resolved.is_file():
+                    pending.append(resolved)
+        expected = {path.resolve() for directory in ("docs", "examples")
+                    for path in (ROOT / directory).rglob("*.md")}
+        missing = sorted(str(path.relative_to(ROOT)) for path in expected - visited)
+        self.assertEqual(missing, [], "documents need an entry in the current or historical index")
+
     def test_shell_examples_parse_without_execution(self):
         for path in documents():
             for block in re.findall(r"```(?:sh|bash)\n(.*?)```", path.read_text(), re.S):
