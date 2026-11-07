@@ -3900,10 +3900,17 @@ fn assert_raw_overflow_context(value: &Value, held_phase: &str, observed_ns: u64
     assert!(
         append["pair_sequence"].as_u64().unwrap() > held["info"]["prefix_pairs"].as_u64().unwrap()
     );
-    // This fixture seals tiny 16-pair chunks: the next seal joins the prior
-    // checkpoint before the unchanged 32-pair/16MiB global credit is exceeded.
-    // Large real-image fixtures may instead reach a global credit wait first.
-    assert_eq!(waiting["wait_reason"], "chunk_rotation");
+    // A busy checkpoint no longer makes the half-credit chunk target block.
+    // Tiny pairs consume the full 32-pair budget before the next admission waits.
+    assert_eq!(waiting["wait_reason"], "global_pair_credit");
+    assert_eq!(
+        value["raw_recording"]["disk_stages"]["uncommitted_pairs_peak"],
+        32
+    );
+    assert!(
+        append["pair_sequence"].as_u64().unwrap() - held["info"]["prefix_pairs"].as_u64().unwrap()
+            <= 32
+    );
     overflow.clone()
 }
 

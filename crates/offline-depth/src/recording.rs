@@ -1030,6 +1030,8 @@ struct RawIoStats {
     payload_write_calls: u64,
     index_write_calls: u64,
     index_flushes: u64,
+    index_buffer_peak_bytes: usize,
+    index_buffer_capacity_peak_bytes: usize,
     validation_image_bytes: u64,
     validation_buffer_peak_bytes: usize,
     durable_pairs: u64,
@@ -1112,7 +1114,10 @@ impl RawIoStats {
             "checkpoint_batching":stats.checkpoint_batching.unwrap_or("synchronous"),
             "validation_imu_samples":stats.validation_imu_samples,
             "payload_write_calls":stats.payload_write_calls,"index_write_calls":stats.index_write_calls,
-            "index_flushes":stats.index_flushes});
+            "index_flushes":stats.index_flushes,
+            "index_buffer_peak_bytes":stats.index_buffer_peak_bytes,
+            "index_buffer_capacity_peak_bytes":stats.index_buffer_capacity_peak_bytes,
+            "pipelined_index_buffer_limit_bytes":chunked::PIPELINED_INDEX_BUFFER_BYTES});
         value["checkpoint_observation"] = observation;
         value
     }
@@ -1382,6 +1387,12 @@ impl RawRecordingWriter {
             active.pairs += 1;
             let pending = chunked.pending_credits();
             let mut stats = self.diagnostics.0.lock().unwrap_or_else(|e| e.into_inner());
+            stats.index_buffer_peak_bytes = stats
+                .index_buffer_peak_bytes
+                .max(chunked.index_buffer.len());
+            stats.index_buffer_capacity_peak_bytes = stats
+                .index_buffer_capacity_peak_bytes
+                .max(chunked.index_buffer.capacity());
             stats.uncommitted_pairs_peak = stats
                 .uncommitted_pairs_peak
                 .max(pending.0 + chunked.active.as_ref().unwrap().pairs);
@@ -1403,15 +1414,26 @@ impl RawRecordingWriter {
                 .measure("write", || self.records.write_all(raw))?;
             return Ok(());
         }
-        if self.chunked.as_ref().unwrap().index_buffer.len() + raw.len()
-            > chunked::INDEX_BUFFER_BYTES
-        {
+        let state = self.chunked.as_ref().unwrap();
+        let limit = state.index_buffer_limit();
+        let required = state.index_buffer.len() + raw.len();
+        if limit == chunked::INDEX_BUFFER_BYTES && required > limit {
             self.flush_index()?;
+        } else {
+            // Never write the append-only index inode while its sealed prefix
+            // is being synced/read back. Metadata for admitted pairs stays in
+            // RAM, bounded by 32 existing credits times the 64 KiB line limit.
+            require(required <= limit, "RECORDING_INDEX_BUFFER_LIMIT")?;
         }
         let buffer = &mut self.chunked.as_mut().unwrap().index_buffer;
-        if buffer.capacity() == 0 {
+        let required = buffer.len() + raw.len();
+        if buffer.capacity() < required {
+            let capacity = required
+                .next_power_of_two()
+                .max(chunked::INDEX_BUFFER_BYTES)
+                .min(limit);
             buffer
-                .try_reserve_exact(chunked::INDEX_BUFFER_BYTES)
+                .try_reserve_exact(capacity - buffer.len())
                 .map_err(|_| OfflineError::Invalid("ALLOCATION_FAILED"))?;
         }
         buffer.extend_from_slice(raw);

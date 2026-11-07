@@ -6,6 +6,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 pub(super) const INDEX_BUFFER_BYTES: usize = 64 * 1024;
 pub(super) const CHUNK_PAIRS: u64 = 32;
 pub(super) const CHUNK_BYTES: u64 = 16 * 1024 * 1024;
+// At most one bounded index line for each admitted, unconfirmed pair.
+pub(super) const PIPELINED_INDEX_BUFFER_BYTES: usize = CHUNK_PAIRS as usize * 65536;
 const MAX_CHUNK: u64 = 128 * 1024 * 1024 + 65536;
 #[derive(Default)]
 pub(super) struct Chunked {
@@ -27,6 +29,13 @@ struct PendingCheckpoint {
     info: CheckpointInfo,
 }
 impl Chunked {
+    pub(super) fn index_buffer_limit(&self) -> usize {
+        if self.pending.is_some() {
+            PIPELINED_INDEX_BUFFER_BYTES
+        } else {
+            INDEX_BUFFER_BYTES
+        }
+    }
     pub(super) fn pending_credits(&self) -> (u64, u64) {
         self.pending
             .as_ref()
@@ -314,6 +323,19 @@ impl RawRecordingWriter {
     }
     pub(super) fn automatic_checkpoint(&mut self) -> Result<()> {
         if self.chunked.as_ref().is_some_and(|s| s.pipeline) {
+            // The half-credit chunk target is a dispatch target, not another
+            // backpressure limit. While the single prior checkpoint is busy,
+            // retain this active chunk and use only the remaining global credits.
+            // prepare_chunk checks those credits before admitting every pair;
+            // explicit checkpoint/finish still joins the pending task.
+            if self
+                .chunked
+                .as_ref()
+                .and_then(|s| s.pending.as_ref())
+                .is_some_and(|p| !p.task.is_finished())
+            {
+                return Ok(());
+            }
             self.complete_pending(WaitReason::ChunkRotation)?;
             self.seal_checkpoint(true)
         } else {

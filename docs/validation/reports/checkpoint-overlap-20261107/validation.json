@@ -1,0 +1,329 @@
+{
+  "baseline_revision": "83c06d878fd74cdb41e65224a607d4bbe7eabccb",
+  "combined_coverage": {
+    "found": 19842,
+    "hit": 19652,
+    "percent": 99.0424
+  },
+  "production_changes": [
+    "defer half-credit rotation only while prior checkpoint is unfinished, within unchanged global credits",
+    "buffer future index records during pending checkpoint, bounded at 2 MiB metadata; no extra frame slots"
+  ],
+  "invariants": {
+    "fifo": 16,
+    "inflight": 1,
+    "global_pairs": 32,
+    "global_payload_bytes": 16777216,
+    "heartbeat_changed": false,
+    "sync_barriers_removed": false,
+    "writer_actual_readback_passes": 2,
+    "hash_checks_retained": true,
+    "old_candidate_patch_applied": false
+  },
+  "targeted_index_contention": {
+    "before": {
+      "median_section_ms": 1507.448158,
+      "median_append_max_ms": 501.470395,
+      "index_write_delay_observed": [
+        true,
+        true,
+        true
+      ]
+    },
+    "after": {
+      "median_section_ms": 2.631303,
+      "median_append_max_ms": 0.368168,
+      "index_write_delay_observed": [
+        false,
+        false,
+        false
+      ]
+    }
+  },
+  "normal_performance": {
+    "baseline_revision": "83c06d878fd74cdb41e65224a607d4bbe7eabccb",
+    "normal_groups": {
+      "completed": 12,
+      "requested": 12,
+      "writers_completed": 36
+    },
+    "fault_groups": [
+      {
+        "variant": "after",
+        "delay_ms_per_payload_sync": 300,
+        "status_background_load": true,
+        "writers": [
+          {
+            "ok": false,
+            "reason": "RAW_QUEUE_OVERFLOW",
+            "written_pairs": 43,
+            "overflow": 1,
+            "queue_peak": 16
+          },
+          {
+            "ok": false,
+            "reason": "RAW_QUEUE_OVERFLOW",
+            "written_pairs": 43,
+            "overflow": 1,
+            "queue_peak": 16
+          },
+          {
+            "ok": false,
+            "reason": "RAW_QUEUE_OVERFLOW",
+            "written_pairs": 43,
+            "overflow": 1,
+            "queue_peak": 16
+          }
+        ]
+      },
+      {
+        "variant": "before",
+        "delay_ms_per_payload_sync": 300,
+        "status_background_load": true,
+        "writers": [
+          {
+            "ok": false,
+            "reason": "RAW_QUEUE_OVERFLOW",
+            "written_pairs": 50,
+            "overflow": 1,
+            "queue_peak": 16
+          },
+          {
+            "ok": false,
+            "reason": "RAW_QUEUE_OVERFLOW",
+            "written_pairs": 50,
+            "overflow": 1,
+            "queue_peak": 16
+          },
+          {
+            "ok": false,
+            "reason": "RAW_QUEUE_OVERFLOW",
+            "written_pairs": 57,
+            "overflow": 1,
+            "queue_peak": 16
+          }
+        ]
+      },
+      {
+        "variant": "after",
+        "delay_ms_per_payload_sync": 900,
+        "status_background_load": true,
+        "writers": [
+          {
+            "ok": false,
+            "reason": "RAW_QUEUE_OVERFLOW",
+            "written_pairs": 15,
+            "overflow": 1,
+            "queue_peak": 16
+          },
+          {
+            "ok": false,
+            "reason": "RAW_QUEUE_OVERFLOW",
+            "written_pairs": 15,
+            "overflow": 1,
+            "queue_peak": 16
+          },
+          {
+            "ok": false,
+            "reason": "RAW_QUEUE_OVERFLOW",
+            "written_pairs": 15,
+            "overflow": 1,
+            "queue_peak": 16
+          }
+        ]
+      },
+      {
+        "variant": "before",
+        "delay_ms_per_payload_sync": 900,
+        "status_background_load": true,
+        "writers": [
+          {
+            "ok": false,
+            "reason": "RAW_QUEUE_OVERFLOW",
+            "written_pairs": 15,
+            "overflow": 1,
+            "queue_peak": 16
+          },
+          {
+            "ok": false,
+            "reason": "RAW_QUEUE_OVERFLOW",
+            "written_pairs": 15,
+            "overflow": 1,
+            "queue_peak": 16
+          },
+          {
+            "ok": false,
+            "reason": "RAW_QUEUE_OVERFLOW",
+            "written_pairs": 15,
+            "overflow": 1,
+            "queue_peak": 16
+          }
+        ]
+      }
+    ],
+    "scope": "3 modeled FIFO writers; 300 pairs / 10 s each, 30 FPS; actual state persistence on/off, no SDK/ROS/camera; shared VM/virtiofs/APFS; 3 alternating rounds; descriptive medians of 9 per-writer measurements per status/policy, not pooled P99; no 600 s acceptance",
+    "all_deployment_issues_fixed": false,
+    "normal": [
+      {
+        "variant": "before",
+        "status_background_load": false,
+        "writers_completed": 9,
+        "cpu_seconds": {
+          "median": 1.9964979950000001,
+          "min": 1.8925798289999998,
+          "max": 2.8573733220000004
+        },
+        "append_p99_ms": {
+          "median": 16.347696,
+          "min": 12.650889,
+          "max": 21.409135
+        },
+        "peak_rss_mib": {
+          "median": 8.140625,
+          "min": 8.0234375,
+          "max": 9.56640625
+        },
+        "writer_verification_ms": {
+          "median": 976.734259,
+          "min": 954.892457,
+          "max": 1592.727114
+        },
+        "extra_two_readers_ms": {
+          "median": 1191.292988,
+          "min": 1014.748967,
+          "max": 1499.970209
+        },
+        "lifecycle_wall_seconds": {
+          "median": 11.607214874,
+          "min": 11.333125971,
+          "max": 12.320808153
+        }
+      },
+      {
+        "variant": "before",
+        "status_background_load": true,
+        "writers_completed": 9,
+        "cpu_seconds": {
+          "median": 3.034098573,
+          "min": 2.635401464,
+          "max": 4.293789683
+        },
+        "append_p99_ms": {
+          "median": 27.93733,
+          "min": 11.770801,
+          "max": 65.201743
+        },
+        "peak_rss_mib": {
+          "median": 10.54296875,
+          "min": 9.05859375,
+          "max": 10.99609375
+        },
+        "writer_verification_ms": {
+          "median": 1231.531079,
+          "min": 1174.796077,
+          "max": 2444.676205
+        },
+        "extra_two_readers_ms": {
+          "median": 1888.680738,
+          "min": 1608.924225,
+          "max": 2829.247256
+        },
+        "lifecycle_wall_seconds": {
+          "median": 18.801406418,
+          "min": 18.696196125,
+          "max": 23.922422295
+        }
+      },
+      {
+        "variant": "after",
+        "status_background_load": false,
+        "writers_completed": 9,
+        "cpu_seconds": {
+          "median": 2.094017331,
+          "min": 1.593151486,
+          "max": 2.134162401
+        },
+        "append_p99_ms": {
+          "median": 15.279525,
+          "min": 5.290856,
+          "max": 17.652577
+        },
+        "peak_rss_mib": {
+          "median": 8.109375,
+          "min": 8.0,
+          "max": 8.6015625
+        },
+        "writer_verification_ms": {
+          "median": 1028.597242,
+          "min": 669.584336,
+          "max": 1211.584827
+        },
+        "extra_two_readers_ms": {
+          "median": 1029.919908,
+          "min": 893.435355,
+          "max": 1165.125998
+        },
+        "lifecycle_wall_seconds": {
+          "median": 11.542188257,
+          "min": 11.214534787,
+          "max": 11.592309934
+        }
+      },
+      {
+        "variant": "after",
+        "status_background_load": true,
+        "writers_completed": 9,
+        "cpu_seconds": {
+          "median": 3.102853236,
+          "min": 2.781278016,
+          "max": 4.4281600249999995
+        },
+        "append_p99_ms": {
+          "median": 37.178537,
+          "min": 13.025848,
+          "max": 53.326274
+        },
+        "peak_rss_mib": {
+          "median": 9.625,
+          "min": 9.28125,
+          "max": 15.671875
+        },
+        "writer_verification_ms": {
+          "median": 1288.480665,
+          "min": 1151.872522,
+          "max": 2776.815032
+        },
+        "extra_two_readers_ms": {
+          "median": 1698.512158,
+          "min": 1372.557278,
+          "max": 2093.659298
+        },
+        "lifecycle_wall_seconds": {
+          "median": 21.170076748,
+          "min": 19.892948262,
+          "max": 23.621003897
+        }
+      }
+    ],
+    "common_sources": {
+      "common_driver_sha256": "8c3c22187e81a4b608ebd963802dd78154f324a67ece69181498f5a19f477356",
+      "fixture_sha256": "0cc1fe3995d8483f01b84d7f29ce98fc65693a14b68e4074154fe9fbb0dc2733",
+      "status_driver_sha256": "2eff7752957a4996f4cfe8e8f26dfaf5a3fc0c519a0c31779429b5e12fcf76ee"
+    }
+  },
+  "old_archive_sha256_verified": [
+    {
+      "name": "gdp-8697b4f-full-lifecycle-01.tar.gz",
+      "sha256": "889ecbf2aa16933998ca1b9cf628d37785b73ca158042800e7160cecaabd4f93",
+      "unchanged": true
+    },
+    {
+      "name": "gdp-8697b4f-full-lifecycle-01-context.tar.gz",
+      "sha256": "733341168c593927891d47a23da8fe17b77d4b2a068636f3a11dd4c01200aa28",
+      "unchanged": true
+    }
+  ],
+  "formal_camera_acceptance_performed": false,
+  "sustained_raw_overflow_closed": false,
+  "all_deployment_issues_fixed": false
+}

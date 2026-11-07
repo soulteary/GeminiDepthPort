@@ -997,17 +997,62 @@ fn pipeline_round_trip_explicit_checkpoint_drop_and_start_constraints() {
 fn pipeline_readback_child() {
     let root = std::path::PathBuf::from(std::env::var_os("GDP_PIPELINE_ROOT").unwrap());
     let mode = std::env::var("GDP_PIPELINE_MODE").unwrap();
-    let (snapshot, pair, pixels) = fixture();
+    let imu_heavy = std::env::var("GDP_PIPELINE_CREDITS").as_deref() == Ok("imu");
+    let (mut snapshot, mut pair, mut pixels) = if imu_heavy {
+        let (snapshot, pair, pixels, _) = imu_fixture();
+        (snapshot, pair, pixels)
+    } else {
+        fixture()
+    };
+    let append = |writer: &mut RawRecordingWriter, pair: &BoundPairEvidence, pixels: &[u8], n| {
+        if imu_heavy {
+            // A bounded metadata stress batch, not a real-time rate benchmark.
+            let samples: Vec<_> = (0..40)
+                .flat_map(|k| imu_samples((n - 1) * 40 + k + 1))
+                .collect();
+            writer
+                .append_with_imu(
+                    &pair_at(pair, n),
+                    &[1, 2, 3, 4],
+                    pixels,
+                    StorageEndian::Little,
+                    &samples,
+                )
+                .unwrap();
+        } else {
+            append(writer, pair, pixels, n);
+        }
+    };
+    let byte_limited = std::env::var("GDP_PIPELINE_CREDITS").as_deref() == Ok("bytes");
+    let (durable, sealed, accepted, peak) = if byte_limited {
+        let mut content = snapshot.content;
+        let model = content.calibration.models.get_mut("depth").unwrap();
+        model.width = 1024;
+        model.height = 512;
+        content.binding.calibration_id = content.calibration.id().unwrap();
+        snapshot = content.seal().unwrap();
+        for f in [&mut pair.color, &mut pair.depth] {
+            f.context.snapshot_id = snapshot.snapshot_id.clone();
+            f.context.calibration_id = snapshot.content.binding.calibration_id.clone();
+        }
+        pair.depth.width = 1024;
+        pair.depth.height = 512;
+        pair.depth.stride = 2048;
+        pixels = vec![0; 1024 * 512 * 2];
+        (7, 15, 22, 15)
+    } else {
+        (16, 32, 48, 32)
+    };
     let mut writer =
-        RawRecordingWriter::begin_chunked(&root, "capture", snapshot, 1_000_000).unwrap();
+        RawRecordingWriter::begin_chunked(&root, "capture", snapshot, 100_000_000).unwrap();
     writer.enable_checkpoint_pipeline().unwrap();
-    for n in 1..=16 {
+    for n in 1..=durable {
         append(&mut writer, &pair, &pixels, n);
     }
     writer.checkpoint().unwrap();
     let diagnostics = writer.diagnostics();
     fs::write(root.join("armed"), b"1").unwrap();
-    for n in 17..=32 {
+    for n in durable + 1..=sealed {
         append(&mut writer, &pair, &pixels, n);
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
@@ -1015,13 +1060,40 @@ fn pipeline_readback_child() {
         assert!(std::time::Instant::now() < deadline);
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    // The verifier is blocked reading chunk 2; chunk 3 must still accept 15 pairs.
-    for n in 33..=47 {
+    let index_path = root.join("capture.partial/records.jsonl");
+    let sealed_index_bytes = fs::metadata(&index_path).unwrap().len();
+    // Use remaining pair/byte credits without rotating or writing the index
+    // inode concurrently with the gated checkpoint.
+    for n in sealed + 1..=accepted {
         append(&mut writer, &pair, &pixels, n);
     }
-    assert_eq!(diagnostics.report()["durable_pairs"], 16);
-    assert_eq!(diagnostics.report()["uncommitted_pairs_peak"], 31);
-    assert_eq!(read_all(&root.join("capture.partial"), true).len(), 16);
+    assert_eq!(fs::metadata(&index_path).unwrap().len(), sealed_index_bytes);
+    assert!(
+        diagnostics.report()["index_buffer_capacity_peak_bytes"]
+            .as_u64()
+            .unwrap()
+            <= 32 * 65536
+    );
+    if imu_heavy {
+        assert!(
+            diagnostics.report()["index_buffer_peak_bytes"]
+                .as_u64()
+                .unwrap()
+                > 65536
+        );
+    }
+    assert_eq!(diagnostics.report()["durable_pairs"], durable);
+    assert_eq!(diagnostics.report()["uncommitted_pairs_peak"], peak);
+    assert!(
+        diagnostics.report()["uncommitted_payload_bytes_peak"]
+            .as_u64()
+            .unwrap()
+            <= 16 * 1024 * 1024
+    );
+    assert_eq!(
+        read_all(&root.join("capture.partial"), true).len(),
+        durable as usize
+    );
     fs::write(root.join("ready"), b"1").unwrap();
     if mode == "kill" {
         loop {
@@ -1038,18 +1110,21 @@ fn pipeline_readback_child() {
     if mode == "success" {
         // Commit must complete in the task without a subsequent append/join.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while diagnostics.report()["durable_pairs"] != 32 {
+        while diagnostics.report()["durable_pairs"] != if byte_limited { 14 } else { 32 } {
             assert!(std::time::Instant::now() < deadline);
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         writer.checkpoint().unwrap();
-        assert_eq!(diagnostics.report()["durable_pairs"], 47);
+        assert_eq!(diagnostics.report()["durable_pairs"], accepted);
         let path = writer.finish().unwrap();
-        assert_eq!(read_all(&path, false).len(), 47);
+        assert_eq!(read_all(&path, false).len(), accepted as usize);
     } else {
         assert!(writer.checkpoint().is_err());
         assert!(writer.finish().is_err());
-        assert_eq!(read_all(&root.join("capture.partial"), true).len(), 16);
+        assert_eq!(
+            read_all(&root.join("capture.partial"), true).len(),
+            durable as usize
+        );
         assert!(!root.join("capture/COMPLETE").exists());
     }
 }
@@ -1084,6 +1159,11 @@ fn full_credit_batches_reduce_transactions_without_increasing_recovery_exposure(
         let diagnostics = writer.diagnostics();
         for n in 1..=65 {
             append(&mut writer, &pair, &pixels, n);
+            // Explicit boundaries make the transaction-count comparison independent
+            // of scheduler timing; separate fault tests exercise deferred rotation.
+            if !full && n % 16 == 0 {
+                writer.checkpoint().unwrap();
+            }
         }
         assert!(writer.enable_checkpoint_batching().is_err());
         writer.checkpoint().unwrap();
@@ -1130,7 +1210,11 @@ fn pipeline_overlaps_sync_readback_and_commit_and_retains_prefix_on_fault_or_sig
             scenarios.push((operation, suffix, mode));
         }
     }
-    for (operation, suffix, mode) in scenarios {
+    for (operation, suffix, mode, credits) in
+        scenarios.into_iter().flat_map(|(op, suffix, mode)| {
+            ["pairs", "bytes", "imu"].map(|credits| (op, suffix, mode, credits))
+        })
+    {
         let root = tempfile::tempdir().unwrap();
         let library = io_faults::compile(root.path());
         let marker = root.path().join("injected");
@@ -1144,6 +1228,7 @@ fn pipeline_overlaps_sync_readback_and_commit_and_retains_prefix_on_fault_or_sig
             ])
             .env("GDP_PIPELINE_ROOT", root.path())
             .env("GDP_PIPELINE_MODE", mode)
+            .env("GDP_PIPELINE_CREDITS", credits)
             .env("GDP_IO_ARMED", root.path().join("armed"))
             .env("GDP_IO_RELEASE", root.path().join("release"));
         if mode != "error" {
@@ -1161,7 +1246,7 @@ fn pipeline_overlaps_sync_readback_and_commit_and_retains_prefix_on_fault_or_sig
             assert!(!child.wait().unwrap().success());
             assert_eq!(
                 read_all(&root.path().join("capture.partial"), true).len(),
-                16
+                if credits == "bytes" { 7 } else { 16 }
             );
         } else {
             let output = command.output().unwrap();
@@ -1757,6 +1842,11 @@ fn checkpoint_observation_preserves_artifacts_and_both_readbacks() {
             }
             for n in 1..=33 {
                 append(&mut writer, &pair, &pixels, n);
+                // Compare bytes with fixed boundaries, not scheduling-dependent
+                // chunk packing when an asynchronous checkpoint is busy.
+                if pipeline && n % 16 == 0 {
+                    writer.checkpoint().unwrap();
+                }
                 let context = diagnostics.failure_context();
                 assert_eq!(context["observation_enabled"], enabled);
                 assert!(context["active_append"].is_null());
@@ -1805,14 +1895,14 @@ fn checkpoint_observation_preserves_artifacts_and_both_readbacks() {
                 );
                 assert_eq!(obs["stages"]["final_readback"]["wall"]["samples"], 1);
                 if pipeline {
-                    assert_eq!(
-                        obs["stages"]["verify_wait"]["wall"]["samples"],
-                        report["checkpoints"].as_u64().unwrap() - 1
-                    );
-                    assert_eq!(
-                        obs["stages"]["verify_dispatch"]["wall"]["samples"],
-                        report["checkpoints"].as_u64().unwrap() - 1
-                    );
+                    let dispatched = obs["stages"]["verify_dispatch"]["wall"]["samples"]
+                        .as_u64()
+                        .unwrap_or(0);
+                    let joined = obs["stages"]["verify_wait"]["wall"]["samples"]
+                        .as_u64()
+                        .unwrap_or(0);
+                    assert_eq!(joined, dispatched, "every dispatched task must be joined");
+                    assert!(dispatched <= report["checkpoints"].as_u64().unwrap());
                 }
                 for event in obs["events"].as_array().unwrap() {
                     assert_eq!(event["ok"], true);
@@ -1943,4 +2033,125 @@ fn reader_cpu_profile_is_opt_in_and_keeps_validation_and_error_guards() {
             1
         );
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "isolated index/checkpoint contention performance child"]
+fn pending_index_contention_child() {
+    let root = std::path::PathBuf::from(std::env::var_os("GDP_INDEX_BENCH_ROOT").unwrap());
+    let (snapshot, pair, pixels, _) = imu_fixture();
+    let mut writer =
+        RawRecordingWriter::begin_chunked(&root, "capture", snapshot, 5_000_000).unwrap();
+    writer.enable_checkpoint_pipeline().unwrap();
+    let diagnostics = writer.diagnostics();
+    let append = |writer: &mut RawRecordingWriter, n| {
+        let samples: Vec<_> = (0..40)
+            .flat_map(|k| imu_samples((n - 1) * 40 + k + 1))
+            .collect();
+        writer
+            .append_with_imu(
+                &pair_at(&pair, n),
+                &[1, 2, 3, 4],
+                &pixels,
+                StorageEndian::Little,
+                &samples,
+            )
+            .unwrap();
+    };
+    for n in 1..=16 {
+        append(&mut writer, n);
+    }
+    writer.checkpoint().unwrap();
+    for n in 17..=32 {
+        append(&mut writer, n);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while !root.join("read-held").exists() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    fs::write(root.join("arm-index"), b"1").unwrap();
+    let started = std::time::Instant::now();
+    let mut append_ns = Vec::new();
+    for n in 33..=47 {
+        let start = std::time::Instant::now();
+        append(&mut writer, n);
+        append_ns.push(start.elapsed().as_nanos() as u64);
+    }
+    let section_ns = started.elapsed().as_nanos() as u64;
+    // Disarm the index-write stimulus before releasing the real readback.
+    fs::remove_file(root.join("arm-index")).unwrap();
+    fs::write(root.join("release-read"), b"1").unwrap();
+    let path = writer.finish().unwrap();
+    for _ in 0..2 {
+        let frames = read_all(&path, false);
+        assert_eq!(frames.len(), 47);
+        assert!(
+            frames
+                .iter()
+                .all(|f| f.record.imu.len() == 80 && f.depth == pixels)
+        );
+    }
+    let report = diagnostics.report();
+    assert_eq!(
+        report["validation_image_bytes"],
+        47 * (4 + pixels.len()) * 2
+    );
+    assert_eq!(report["validation_imu_samples"], 47 * 80 * 2);
+    assert!(report["uncommitted_pairs_peak"].as_u64().unwrap() <= 32);
+    assert!(report["uncommitted_payload_bytes_peak"].as_u64().unwrap() <= 16 * 1024 * 1024);
+    fs::write(
+        root.join("result.json"),
+        serde_json::to_vec_pretty(&json!({
+            "pairs":47,"section_pairs":15,"section_ns":section_ns,"append_ns":append_ns,
+            "index_write_delay_observed":root.join("index-write-delayed").exists(),
+            "writer_readback_passes":2,"extra_reader_passes":2,"diagnostics":report,
+            "scope":"80-sample metadata stress batch, not a 200 Hz real-time throughput claim"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pending_checkpoint_does_not_enter_delayed_index_write() {
+    let root = tempfile::tempdir().unwrap();
+    let library = io_faults::compile(root.path());
+    let marker = root.path().join("index-write-delayed");
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "pending_index_contention_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("GDP_INDEX_BENCH_ROOT", root.path())
+        .env("GDP_IO_ARMED", root.path().join("arm-index"))
+        .env("GDP_IO_DELAY_MS", "500")
+        .env("GDP_IO_REPEAT", "1")
+        .env(
+            "GDP_IO_HOLD_READ_SUFFIX",
+            "/payload-00000000000000000002.bin",
+        )
+        .env("GDP_IO_HOLD_MARKER", root.path().join("read-held"))
+        .env("GDP_IO_HOLD_RELEASE", root.path().join("release-read"));
+    io_faults::inject(&mut command, &library, "write", "/records.jsonl", &marker);
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read(root.path().join("read-held")).unwrap(), b"read");
+    let result: Value =
+        serde_json::from_slice(&fs::read(root.path().join("result.json")).unwrap()).unwrap();
+    assert_eq!(result["index_write_delay_observed"], false);
+    assert!(
+        !marker.exists(),
+        "a future index write raced the held checkpoint"
+    );
 }

@@ -56,3 +56,5 @@ sudo python3 experiments/sdk-2.10.6-diagnostics/run_retest.py run \
 ## 本地结果
 
 本轮验证记录见 `reports/recording-readiness-20261107/`。明确区分受控延迟回归、VM 正常负载、环境失败和正式硬件验收；任何未完成计划均不计作通过。旧 `8697b4f` 及更早失败证据保持原样。
+
+后续针对提前反压与索引 inode 争用的修正、内存代价及回归范围见[checkpoint 重叠说明](checkpoint-overlap.md)；原始本轮失败结论及归档不改写。
