@@ -3919,6 +3919,14 @@ fn raw_overflow_payload_sync_freezes_queue_and_checkpoint_wait_before_durable_fa
 
 fn assert_raw_overflow_context_frozen_during_critical_fsync(held_phase: &str) {
     let f = normal_rate_wait_fixture(1000);
+    // This fixture isolates checkpoint/status fencing, not IMU throughput.
+    // Keep callbacks active during the fence without making LLVM-instrumented
+    // shared-runner scheduling an unrelated 200 Hz queue-overflow stimulus.
+    // The independent normal-rate wait tests retain both 200 Hz streams.
+    let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    config["imu"]["accel_rate_hz"] = json!(50);
+    config["imu"]["gyro_rate_hz"] = json!(50);
+    fs::write(&f.config, config.to_string()).unwrap();
     let library = io_faults::compile(&f.root);
     // Scope the deliberate readback stall to an already healthy recording.
     // GDP_IO_ARMED governs fail(), not the independent read() hold hook.
