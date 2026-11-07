@@ -20,7 +20,7 @@
 - **`complete`**：小写时可能指采集预设；录制状态中的 `complete` 则表示事务已完成，两者含义不同。
 - **`COMPLETE`**：完整录制的完成标记；`.partial` 或有效 checkpoint 只说明存在未完成任务或可恢复前缀。
 
-本指南用“原生完整帧对录制”指该功能，用 `files-v2`／`chunked-v3` 指目录格式。Web 及部分错误提示仍沿用“原生 V2”旧称；实际格式以 `storage_format` 配置为准，V3 同样不支持独立单流录制。同步顺序见 [V3 契约](../contracts/native-recording-v3.md)。
+本指南用“原生完整帧对录制”指该功能，用 `files-v2`／`chunked-v3` 指目录格式。部分错误提示仍沿用“原生 V2”旧称；实际格式以 `storage_format` 配置为准，V3 同样不支持独立单流录制。同步顺序见 [V3 契约](../contracts/native-recording-v3.md)。
 
 ## 正常结束与读回
 

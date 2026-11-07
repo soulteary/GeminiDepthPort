@@ -43,3 +43,13 @@ inventory 字节改变后需重新生成。
 `tests/legacy_reference/` 仅为合成回归的行为参考，不进入生产管理镜像。
 [Linux 合成测试](linux-management-fixture.md)不访问真实设备或 Docker daemon；
 它与真实硬件证据的区别见[验证索引](../validation/README.md)。
+
+## Web 型号与后端选择
+
+`GET /api/state` 的 `configuration_options` 来自当前型号目录，包含型号／后端限制、Rust 参数允许项、默认镜像标签及首次切换的兼容 Rust 策略。UI 不推断实际支持的流档位，也不自动选择扫描到的第一台设备。
+
+`POST /api/config` 接受 `revision`、全量 `cameras` 更新及可选的 `capture_backend`、`image`、`acquisition`、`discard_unsupported_parameters`。相机更新可指定 `profile`；仍不接受 launch 路径、确认结果或任意 Rust 服务策略。未知字段、格式或后端组合拒绝保存。
+
+切换后端必须显式提交镜像标签；型号、后端或镜像变化要求正式相机和所有预览均已停止。移除旧配置中不兼容的参数需要显式布尔确认，新提交参数仍经过校验。型号变更时即使保留同一序列号，也重新检查检测到的型号。后端、镜像或共享采集策略变化清除全部确认；仅改型号清除该槽位确认。HTTP 变更仍先获取 mutation lock 并检查录制保护，保存前复核 revision。
+
+首次从官方切换 Rust 初始化兼容策略；编辑已存在的 Rust 配置不会重置心跳或其他服务预算。保存只更新 inventory，不构建镜像、不切换运行实例，也不自动启动相机。实际运行仍需新的镜像校验、档位确认和 generation。用户操作见 [Web 指南](../guides/web.md#切换型号或后端)。

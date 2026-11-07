@@ -8,7 +8,7 @@ const officialOnly = ['color_exposure','color_gain','ir_exposure','ir_gain','ena
 const parameterSupported = key => draft?.capture_backend !== 'rust' || !officialOnly.includes(key);
 const formats = ['color_format','depth_format'];
 let state, draft, revision, role = null, dirty = false, pending = false, jobBusy = false, polling = false, logMode = 'job';
-let saving = false;
+let saving = false, discardUnsupported = false;
 function notify(message, kind='success') { $('notice').hidden = false; $('notice').className = kind; $('notice').textContent = message; }
 async function api(path, body) {
   const response = await fetch(path, body === undefined ? {cache:'no-store'} : {method:'POST', headers:{'Content-Type':'application/json','X-CSRF-Token':csrf}, body:JSON.stringify(body)});
@@ -17,7 +17,7 @@ async function api(path, body) {
   return data;
 }
 const profiles = {gemini_335l:'Gemini 335L', gemini_2:'Gemini 2', gemini_305:'Gemini 305'};
-const model = c => c.model || profiles[c.profile] || c.profile;
+const model = c => state?.configuration_options?.profiles?.[c.profile]?.model || c.model || profiles[c.profile] || c.profile;
 const healthKeys = ['discovery_seconds','sample_seconds','freshness_seconds','min_fps_ratio'];
 function camera() { return draft.cameras.find(c => c.name === role); }
 function setDirty(value) { dirty = value; $('dirty-badge').textContent = value ? '有未保存修改' : '已保存'; }
@@ -30,9 +30,79 @@ function bindings() {
   $('serial').innerHTML = options.map(d => `<option value="${escapeHTML(d.serial_number)}">${escapeHTML(d.product)} · ${escapeHTML(d.serial_number)}</option>`).join('');
   $('serial').value = cameraData.serial_number;
 }
+function clearConfirmation(c) { c.profiles_verified = false; c.verification = null; }
+function selectionOptions() { return state?.configuration_options || {}; }
+function incompatible(backend, cameras) {
+  const catalog = selectionOptions().profiles || {};
+  const rust = selectionOptions().rust_parameters || [];
+  return cameras.flatMap(c => Object.keys(c.parameters).filter(key =>
+    (catalog[c.profile]?.parameters && !catalog[c.profile].parameters.includes(key)) ||
+    (backend === 'rust' && !rust.includes(key))).map(key => ({camera:c.name,key})));
+}
+function acceptParameterRemoval(removed) {
+  if (!removed.length) return true;
+  if (!window.confirm('所选型号／后端不支持以下参数，保存时将移除：\n' + removed.map(x=>`${x.camera}: ${x.key}`).join('\n') + '\n其他兼容参数保留。是否继续？')) return false;
+  discardUnsupported = true;
+  return true;
+}
+function changeBackend() {
+  const backend = $('capture-backend').value;
+  if (backend === (draft.capture_backend || 'official')) return;
+  const catalog = selectionOptions().profiles || {};
+  if (backend === 'official' && draft.cameras.some(c => c.imu?.enabled || catalog[c.profile]?.capture_backend === 'rust')) {
+    notify('当前有已启用的 IMU 或 Rust 专用型号。请先关闭 IMU 配置或更换相机型号，再切换官方后端。','error');
+    showRole(); return;
+  }
+  if (backend === 'rust' && draft.cameras.some(c => !c.parameters.enable_color || !c.parameters.enable_depth)) {
+    notify('Rust 后端要求每个槽位同时启用彩色和深度流，请先调整流设置。','error'); showRole(); return;
+  }
+  const original = state.inventory;
+  const restoring = (original?.capture_backend || 'official') === backend;
+  if (backend === 'rust' && !restoring && !selectionOptions().rust_capture) {
+    notify('后端配置选项尚未加载，请刷新后重试。','error'); showRole(); return;
+  }
+  const removed = incompatible(backend,draft.cameras);
+  if (!acceptParameterRemoval(removed)) { showRole(); return; }
+  draft.capture_backend = backend;
+  draft.image = restoring ? original.image : selectionOptions().default_images[backend];
+  if (backend === 'rust') draft.rust_capture = structuredClone(restoring ? original.rust_capture : selectionOptions().rust_capture);
+  else delete draft.rust_capture;
+  for (const item of removed) delete draft.cameras.find(c=>c.name===item.camera).parameters[item.key];
+  if (restoring) for (const c of draft.cameras) {
+    const old = original.cameras.find(item=>item.name===c.name);
+    for (const [key,value] of Object.entries(old?.parameters || {})) {
+      if (!(key in c.parameters) && catalog[c.profile]?.parameters.includes(key) &&
+          (backend !== 'rust' || selectionOptions().rust_parameters.includes(key))) c.parameters[key] = structuredClone(value);
+    }
+  }
+  const clock = draft.rust_capture?.acquisition?.advanced?.message_timestamp || (draft.rust_capture?.acquisition ? 'global' : 'system');
+  for (const c of draft.cameras) {
+    c.timestamp_source = backend === 'rust' ? (clock === 'global' ? 'global' : 'host') :
+      (restoring ? original.cameras.find(old=>old.name===c.name).timestamp_source : 'host');
+    clearConfirmation(c);
+  }
+  setDirty(true); showRole(); updateButtons();
+  notify('后端选择已更新，尚未保存。请核对镜像标签；保存后构建镜像并重新确认全部启用相机。');
+}
+function changeProfile() {
+  const profile = $('camera-profile').value, c = camera();
+  if (!profile || profile === c.profile) return;
+  const target = selectionOptions().profiles?.[profile];
+  if (!target || (target.capture_backend && target.capture_backend !== (draft.capture_backend || 'official'))) {
+    notify('此型号不支持当前采集后端。','error'); showRole(); return;
+  }
+  const removed = incompatible(draft.capture_backend || 'official',[{...c,profile}]);
+  if (!acceptParameterRemoval(removed)) { showRole(); return; }
+  for (const item of removed) delete c.parameters[item.key];
+  c.profile = profile; delete c.model;
+  c.serial_number = ''; c.enabled = false; c.calibration_revision = ''; clearConfirmation(c);
+  setDirty(true); showRole(); updateButtons();
+  notify('型号已更新，尚未保存。请重新绑定设备、核对流档位并启用，再预览确认。');
+}
 function showAcquisition() {
   const rust = draft.capture_backend === 'rust';
   $('acquisition-fields').hidden = !rust;
+  $('camera-timestamp-source').readOnly = rust && Boolean(draft.rust_capture?.acquisition);
   if (!rust) return;
   const policy = draft.rust_capture?.acquisition;
   const preset = policy?.preset || 'legacy';
@@ -47,8 +117,6 @@ function showAcquisition() {
   $('acquisition-note').textContent = preset === 'legacy' ? '保留原有 SDK 行为和时间戳；选择预设后才会应用新策略。' :
     preset === 'complete' ? '有效彩色和深度图像独立发布；SDK 默认关闭软件同步，配对失败不影响原始图像发布。' :
     preset === 'strict-rgbd' ? 'SDK 开启软件同步；仅发布通过时间差检查的 RGB-D 对，未配对帧不发布。' : '硬件同步尚无配置和验证通路，无法启动。';
-  const stamped = rust && Boolean(policy);
-  $('camera-timestamp-source').readOnly = stamped;
 }
 function readAcquisition(event) {
   if (!draft || draft.capture_backend !== 'rust') return;
@@ -74,16 +142,37 @@ function readAcquisition(event) {
   $('camera-timestamp-source').value = camera().timestamp_source;
   showAcquisition();
 }
+function updateRoleTabs() {
+  for (const tab of document.querySelectorAll('.role-tab')) {
+    const c = draft?.cameras.find(item=>item.name===tab.dataset.role);
+    tab.classList.toggle('active',tab.dataset.role===role);
+    if(c) {
+      tab.querySelector('small').textContent = model(c);
+      tab.querySelector('b').textContent = c.profiles_verified ? '已确认' : '待验证';
+    }
+  }
+}
 function showRole() {
   if (!draft) return;
   if (!draft.cameras.some(c => c.name === role)) role = draft.cameras[0]?.name;
   const c = camera();
   if (!c) return;
   for (const stream of ['color','depth']) { $(stream+'-image').hidden=true; $(stream+'-image').removeAttribute('src'); delete $(stream+'-image').dataset.loading; }
-  document.querySelectorAll('.role-tab').forEach(tab => tab.classList.toggle('active', tab.dataset.role === role));
+  updateRoleTabs();
   $('role-title').textContent = c.name;
   $('role-subtitle').textContent = `${model(c)} · ${c.namespace || '/' + role + '_camera'}`;
   bindings();
+  $('backend-fields').hidden = draft.schema_version !== 2;
+  $('model-field').hidden = draft.schema_version !== 2;
+  $('capture-backend').value = draft.capture_backend || 'official';
+  $('capture-image').value = draft.image || '';
+  const servicePolicy = draft.rust_capture?.service;
+  $('backend-policy-note').textContent = draft.capture_backend === 'rust' && servicePolicy?.heartbeat_timeout_ms ?
+    `Rust 服务预算：启动 ${servicePolicy.startup_timeout_ms / 1000} 秒；心跳最长间隔 ${servicePolicy.heartbeat_timeout_ms / 1000} 秒。既有策略在编辑型号和镜像时保持不变。` :
+    '官方后端使用所选型号的 ROS 驱动。首次切换 Rust 会初始化兼容服务策略。';
+  const catalog = selectionOptions().profiles || Object.fromEntries(Object.entries(profiles).map(([key,model])=>[key,{model}]));
+  $('camera-profile').innerHTML = Object.entries(catalog).map(([key,p])=>`<option value="${escapeHTML(key)}" ${p.capture_backend && p.capture_backend !== (draft.capture_backend || 'official') ? 'disabled' : ''}>${escapeHTML(p.model)}${p.capture_backend === 'rust' ? ' · Rust' : ''}</option>`).join('');
+  $('camera-profile').value = c.profile || '';
   $('color_exposure').closest('details').hidden = draft.capture_backend === 'rust';
   numeric.forEach(key => $(key).value = c.parameters[key] ?? (key.endsWith('exposure') || key.endsWith('gain') ? -1 : ''));
   $('v2-fields').hidden = draft.schema_version !== 2;
@@ -101,6 +190,9 @@ function showRole() {
 }
 function readForm(event) {
   if (!draft) return;
+  if (event?.target?.id === 'capture-backend') { changeBackend(); return; }
+  if (event?.target?.id === 'camera-profile') { changeProfile(); return; }
+  if (event?.target?.id === 'capture-image') { draft.image = $('capture-image').value; draft.cameras.forEach(clearConfirmation); }
   readAcquisition(event);
   const c = camera(); c.serial_number = $('serial').value;
   numeric.forEach(key => {if (parameterSupported(key) && $(key).value !== '') c.parameters[key] = Number($(key).value);});
@@ -137,12 +229,12 @@ function updatePreview() {
 }
 async function saveConfig() {
   if (!draft) return;
-  const cameras = draft.cameras.map(c => ({name:c.name,serial_number:c.serial_number,
+  const cameras = draft.cameras.map(c => ({name:c.name,serial_number:c.serial_number,...(draft.schema_version === 2 && c.profile ? {profile:c.profile} : {}),
     ...(draft.schema_version === 2 ? Object.fromEntries(['enabled','namespace','frame_prefix','timestamp_source','calibration_revision','health'].map(k=>[k,c[k]])) : {}),
     parameters:Object.fromEntries([...numeric,...booleans,...formats].filter(k => parameterSupported(k) && k in c.parameters).map(k=>[k,c.parameters[k]]))}));
-  const result = await api('/api/config', {revision,cameras,...(draft.capture_backend === 'rust' ? {acquisition:draft.rust_capture?.acquisition || null} : {})});
+  const result = await api('/api/config', {revision,cameras,...(draft.schema_version === 2 ? {capture_backend:draft.capture_backend || 'official',image:draft.image,discard_unsupported_parameters:discardUnsupported} : {}),...(draft.capture_backend === 'rust' ? {acquisition:draft.rust_capture?.acquisition || null} : {})});
   const fresh = await api('/api/state'); state = fresh; revision = fresh.revision;
-  draft = structuredClone(fresh.inventory); setDirty(false); showRole(); notify(result.message);
+  draft = structuredClone(fresh.inventory); discardUnsupported = false; setDirty(false); showRole(); notify(result.message);
 }
 async function operation(fn) {
   if (pending || jobBusy) return;
@@ -156,6 +248,8 @@ function updateButtons() {
   document.querySelectorAll('.role-tab').forEach(button => button.disabled = pending);
   $('refresh').disabled = pending;
   document.querySelectorAll('#camera-form input,#camera-form select').forEach(input => input.disabled = pending || jobBusy || !parameterSupported(input.id) || (draft?.schema_version === 2 && formats.includes(input.id)));
+  $('capture-backend').disabled ||= !state?.configuration_options;
+  $('camera-profile').disabled ||= !state?.configuration_options;
   if (draft?.rust_capture?.acquisition?.preset === 'strict-rgbd') $('acquisition-sync').disabled = true;
   updatePreview();
 }
@@ -166,7 +260,7 @@ async function refresh(manual=false) {
     const previousRevision = revision;
     state = await api('/api/state');
     if (!draft || (!dirty && !pending && !saving)) {
-      draft = structuredClone(state.inventory); revision = state.revision;
+      draft = structuredClone(state.inventory); revision = state.revision; discardUnsupported = false;
       if (!previousRevision || previousRevision !== revision || manual) {
         $('camera-tabs').innerHTML = draft.cameras.map(c => `<button class="role-tab" data-role="${escapeHTML(c.name)}"><span>${escapeHTML(c.name)}</span><small>${escapeHTML(model(c))}</small><b>${c.profiles_verified ? '已确认' : '待验证'}</b></button>`).join('');
         showRole();
@@ -178,7 +272,7 @@ async function refresh(manual=false) {
     $('device-list').innerHTML = state.devices.length ? state.devices.map(d => `<div class="device"><strong>${escapeHTML(d.model || '未识别型号')}</strong><div class="meta">SN ${escapeHTML(d.serial_number || '无序列号')}<br>USB ${escapeHTML(d.port)} · ${escapeHTML(d.speed_mbps || '未知')} Mb/s<br>${escapeHTML(d.product)}</div></div>`).join('') : '<div class="empty-devices">尚未发现相机。请在 Linux 主机连接设备，安装 udev 规则后重新扫描。界面不会生成模拟设备。</div>';
     $('docker-warning').hidden = !state.docker_error;
     $('docker-warning').textContent = state.docker_error ? `Docker 不可用：${state.docker_error}。可以编辑已保存的配置；预览与部署需要 Linux Docker 主机。` : '';
-    document.querySelectorAll('.role-tab').forEach(tab=>{const c=state.inventory.cameras.find(c=>c.name===tab.dataset.role);if(c)tab.querySelector('b').textContent=c.profiles_verified?'已确认':'待验证';});
+    updateRoleTabs();
     jobBusy = state.job?.status === 'running';
     $('job-status').textContent = state.job ? `${state.job.action} / ${{running:'运行中',passed:'通过',failed:'失败'}[state.job.status]}` : '空闲';
     if (state.job && logMode === 'job') $('logs').textContent = state.job.log.join('\n') || '操作执行中，等待输出…';

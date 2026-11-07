@@ -119,7 +119,34 @@ fn stop_preview(ctl: &Controller, name: &str) -> Result<()> {
     }
     Ok(())
 }
+fn configuration_options() -> Value {
+    json!({"profiles":config::catalog()["profiles"],
+        "rust_parameters":crate::capture_backend::RUST_PARAMETERS,
+        "default_images":{"official":"local/geminidepthport-official:web","rust":"local/geminidepthport-rust:web"},
+        "rust_capture":{"depth_unit_policy":"normalize-mm","pairing":{"clock":"device","max_delta_us":20000},
+            "poll_ms":100,"capacity":4,"startup_discovery_seconds":2,
+            "service":{"idle_timeout_ms":2000,"startup_timeout_ms":15000,"heartbeat_ms":500,
+                "heartbeat_timeout_ms":10000,"max_restarts":3,"restart_backoff_ms":1000,
+                "shutdown_timeout_ms":5000,"ready_min_pairs":5}}})
+}
 fn save_config(ctl: &Controller, payload: &Value) -> Result<Value> {
+    require(
+        payload.as_object().is_some_and(|object| {
+            object.keys().all(|key| {
+                [
+                    "revision",
+                    "cameras",
+                    "acquisition",
+                    "capture_backend",
+                    "image",
+                    "discard_unsupported_parameters",
+                ]
+                .contains(&key.as_str())
+            })
+        }),
+        "CONFIG_FIELDS",
+        "Unsupported configuration edit field",
+    )?;
     let (mut d, revision) = ctl.load_revision()?;
     require(
         payload["revision"] == revision,
@@ -127,6 +154,52 @@ fn save_config(ctl: &Controller, payload: &Value) -> Result<Value> {
         "Configuration changed; reload before saving",
     )?;
     config::validate(&d, true)?;
+    let old_backend = crate::capture_backend::selected(&d).to_owned();
+    let backend = payload.get("capture_backend").unwrap_or(&Value::Null);
+    require(
+        backend.is_null() && !payload.as_object().unwrap().contains_key("capture_backend")
+            || backend == "official"
+            || backend == "rust",
+        "CAPTURE_BACKEND",
+        "Unknown capture backend",
+    )?;
+    let backend_changed = backend.is_string() && backend != old_backend.as_str();
+    let profile_changed = payload["cameras"].as_array().is_some_and(|updates| {
+        updates.iter().any(|u| {
+            u.get("profile")
+                .is_some_and(|p| role(&d, text(&u["name"])).is_ok_and(|c| c["profile"] != *p))
+        })
+    });
+    require(
+        !(backend_changed || profile_changed) || d["schema_version"] == 2,
+        "CONFIG_SCHEMA",
+        "Model/backend selection requires schema v2",
+    )?;
+    require(
+        payload
+            .get("discard_unsupported_parameters")
+            .is_none_or(Value::is_boolean),
+        "PARAMETER_FIELDS",
+        "Parameter removal consent must be boolean",
+    )?;
+    let old_image = d["image"].clone();
+    if let Some(image) = payload.get("image") {
+        d["image"] = image.clone();
+    }
+    if backend_changed {
+        require(
+            payload.get("image").is_some_and(Value::is_string),
+            "CONFIG_IMAGE",
+            "Choose an image tag for the selected backend",
+        )?;
+        d["capture_backend"] = backend.clone();
+        if backend == "rust" {
+            d["rust_capture"] = configuration_options()["rust_capture"].clone();
+        } else {
+            d.as_object_mut().unwrap().remove("rust_capture");
+        }
+    }
+    let shared_changed = backend_changed || d["image"] != old_image;
     let updates = payload["cameras"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("CAMERA_FIELDS: All cameras required"))?;
@@ -168,18 +241,36 @@ fn save_config(ctl: &Controller, payload: &Value) -> Result<Value> {
     } else {
         false
     };
+    let schema_v2 = d["schema_version"] == 2;
+    let rust_backend = crate::capture_backend::selected(&d) == "rust";
     let found = ctl.scan()?;
     let mut changed = vec![];
     for update in updates {
-        require(update.as_object().unwrap().keys().all(|k|"name serial_number enabled namespace frame_prefix timestamp_source calibration_revision health parameters".split_whitespace().any(|v|v==k)),"CAMERA_FIELDS","Unsupported editable field")?;
+        require(update.as_object().unwrap().keys().all(|k|"name profile serial_number enabled namespace frame_prefix timestamp_source calibration_revision health parameters".split_whitespace().any(|v|v==k)),"CAMERA_FIELDS","Unsupported editable field")?;
         let name = text(&update["name"]);
         let old = role(&d, name)?;
-        let model = config::resolved(&d, old)["model"].clone();
+        let profile = update.get("profile").unwrap_or(&old["profile"]);
+        require(
+            !schema_v2
+                || profile.is_string()
+                    && config::catalog()["profiles"].get(text(profile)).is_some(),
+            "CAMERA_PROFILE",
+            "Unknown model profile",
+        )?;
+        let model_changed = old["profile"] != *profile;
+        let model = if schema_v2 {
+            config::catalog()["profiles"][text(profile)]["model"].clone()
+        } else {
+            config::resolved(&d, old)["model"].clone()
+        };
         let before = config::signature(old);
         let p = update.get("parameters").cloned().unwrap_or(json!({}));
         require(p.as_object().is_some_and(|m|m.keys().all(|k|"enable_color color_width color_height color_fps color_format enable_depth depth_width depth_height depth_fps depth_format enable_color_auto_exposure color_exposure color_gain enable_ir_auto_exposure ir_exposure ir_gain".split_whitespace().any(|v|v==k))),"PARAMETER_FIELDS","Unsupported editable parameter")?;
-        if let Some(serial) = update.get("serial_number") {
-            if serial != &old["serial_number"] && !text(serial).is_empty() {
+        if let Some(serial) = update
+            .get("serial_number")
+            .or_else(|| model_changed.then_some(&old["serial_number"]))
+        {
+            if (serial != &old["serial_number"] || model_changed) && !text(serial).is_empty() {
                 require(
                     found
                         .as_array()
@@ -202,12 +293,39 @@ fn save_config(ctl: &Controller, payload: &Value) -> Result<Value> {
                 c[k] = v.clone();
             }
         }
+        if backend_changed || model_changed {
+            let catalog = config::catalog();
+            let allowed = &catalog["profiles"][text(&c["profile"])]["parameters"];
+            let rust = rust_backend;
+            let unsupported: Vec<String> = c["parameters"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .filter(|key| {
+                    !allowed
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|v| v == key.as_str())
+                        || rust && !crate::capture_backend::RUST_PARAMETERS.contains(&key.as_str())
+                })
+                .cloned()
+                .collect();
+            require(
+                unsupported.is_empty() || payload["discard_unsupported_parameters"] == true,
+                "PARAMETER_REMOVAL_REQUIRED",
+                "Review incompatible parameters before switching",
+            )?;
+            for key in unsupported {
+                c["parameters"].as_object_mut().unwrap().remove(&key);
+            }
+        }
         c["parameters"]
             .as_object_mut()
             .unwrap()
             .extend(p.as_object().unwrap().clone());
         validate_editable(&c["parameters"])?;
-        if acquisition_changed || config::signature(c) != before {
+        if shared_changed || acquisition_changed || config::signature(c) != before {
             c["profiles_verified"] = false.into();
             if c.get("verification").is_some() {
                 c["verification"] = Value::Null;
@@ -216,6 +334,9 @@ fn save_config(ctl: &Controller, payload: &Value) -> Result<Value> {
         }
     }
     config::validate(&d, true)?;
+    if backend_changed || profile_changed || d["image"] != old_image {
+        ctl.assert_stopped()?;
+    }
     // An unchanged save does not touch preview instances or require Docker.
     if !changed.is_empty() {
         require(
@@ -633,7 +754,7 @@ fn state(m: &Manager) -> Result<Value> {
     let current = generation::load(&m.ctl).ok().flatten().is_some_and(|s| {
         s["draft"] == false && s["inventory_sha256"] == m.ctl.revision().unwrap_or_default()
     });
-    let mut result = json!({"generated_current":current,"inventory":d,"revision":m.ctl.revision()?,"devices":m.ctl.scan()?,"platform":if cfg!(target_os="linux"){"Linux"}else if cfg!(target_os="macos"){"Darwin"}else{"Unknown"},"job":m.job.lock().unwrap().clone(),"previews":{},"services":[],"docker_error":null});
+    let mut result = json!({"configuration_options":configuration_options(),"generated_current":current,"inventory":d,"revision":m.ctl.revision()?,"devices":m.ctl.scan()?,"platform":if cfg!(target_os="linux"){"Linux"}else if cfg!(target_os="macos"){"Darwin"}else{"Unknown"},"job":m.job.lock().unwrap().clone(),"previews":{},"services":[],"docker_error":null});
     let outcome = (|| {
         let raw = m.ctl.run_vec(
             &args(&[

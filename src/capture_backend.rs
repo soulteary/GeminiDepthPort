@@ -6,6 +6,24 @@ pub const SDK_PATH: &str = "/opt/orbbec-sdk/lib/libOrbbecSDK.so";
 pub const BRIDGE_PATH: &str = "/opt/gdp-ros/lib/libgeminidepthport_ros_bridge.so";
 pub const SERVICE_PATH: &str = "/usr/local/bin/capture-service";
 pub const SOURCE_COMMIT: &str = "c153462518ad674650bafa4464fda72c27ab797a";
+pub const RUST_PARAMETERS: &[&str] = &[
+    "enable_color",
+    "enable_depth",
+    "color_format",
+    "depth_format",
+    "depth_registration",
+    "color_width",
+    "color_height",
+    "color_fps",
+    "depth_width",
+    "depth_height",
+    "depth_fps",
+    "color_qos",
+    "color_camera_info_qos",
+    "depth_qos",
+    "depth_camera_info_qos",
+];
+
 pub fn selected(d: &Value) -> &str {
     d.get("capture_backend")
         .and_then(Value::as_str)
@@ -189,29 +207,12 @@ pub fn validate(d: &Value) -> Result<()> {
         "RUST_SERVICE_POLICY",
         "Supervisor deadlines inconsistent",
     )?;
-    let allowed = [
-        "enable_color",
-        "enable_depth",
-        "color_format",
-        "depth_format",
-        "depth_registration",
-        "color_width",
-        "color_height",
-        "color_fps",
-        "depth_width",
-        "depth_height",
-        "depth_fps",
-        "color_qos",
-        "color_camera_info_qos",
-        "depth_qos",
-        "depth_camera_info_qos",
-    ];
     for c in d["cameras"].as_array().into_iter().flatten() {
         let parameters = &c["parameters"];
         require(
             parameters
                 .as_object()
-                .is_some_and(|m| m.keys().all(|k| allowed.contains(&k.as_str()))),
+                .is_some_and(|m| m.keys().all(|k| RUST_PARAMETERS.contains(&k.as_str()))),
             "RUST_PARAMETER_UNSUPPORTED",
             "Rust backend cannot apply this official-driver parameter",
         )?;

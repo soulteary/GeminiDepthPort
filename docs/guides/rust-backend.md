@@ -2,8 +2,8 @@
 
 # Rust 采集后端
 
-管理器默认使用官方 ROS 驱动。需要 Rust 后端时，在 schema v2 inventory 中显式设置
-`capture_backend:"rust"`，并填写 `rust_capture`。首次配置可从[Rust 单机示例](../../examples/rust-single-camera/README.md)开始。
+管理器默认使用官方 ROS 驱动。可在 Web 中[切换后端](web.md#切换型号或后端)，也可在 schema v2 inventory 中
+显式设置 `capture_backend:"rust"` 并填写 `rust_capture`。首次配置可从[Rust 单机示例](../../examples/rust-single-camera/README.md)开始。
 
 <a id="配置边界"></a>
 

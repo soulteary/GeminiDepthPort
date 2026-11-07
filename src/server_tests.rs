@@ -962,3 +962,257 @@ fn legacy_single_stream_preview_confirmation_keeps_legacy_schema_and_checks_only
     assert_eq!(saved["cameras"][0]["profiles_verified"], true);
     assert!(saved["cameras"][0].get("verification").is_none());
 }
+
+#[test]
+fn web_backend_switch_is_atomic_invalidates_all_and_preserves_policy_on_later_edits() {
+    let mut f = Fixture::new(true, 2);
+    f.prepare_host();
+    f.ctl.stop("camera", true).unwrap();
+    let mut payload = acquisition_edit_payload(&f);
+    payload["capture_backend"] = json!("rust");
+    payload["image"] = json!("local/test-rust:web");
+    let (code, _, body) = request(
+        &manager(&f),
+        "POST",
+        "/api/config",
+        &payload.to_string(),
+        &[],
+    );
+    assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
+    let saved = f.ctl.load().unwrap();
+    assert_eq!(saved["capture_backend"], "rust");
+    assert_eq!(
+        saved["rust_capture"],
+        configuration_options()["rust_capture"]
+    );
+    for (before, after) in f.inventory["cameras"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(saved["cameras"].as_array().unwrap())
+    {
+        assert_eq!(before["serial_number"], after["serial_number"]);
+        assert_eq!(before["namespace"], after["namespace"]);
+        assert_eq!(after["profiles_verified"], false);
+        assert!(after["verification"].is_null());
+    }
+    assert!(config::validate(&saved, false).is_err());
+    let mut customized = saved.clone();
+    customized["rust_capture"]["service"]["heartbeat_timeout_ms"] = json!(12000);
+    atomic_json(&f.ctl.root.join("inventory.json"), &customized).unwrap();
+    let mut edit = acquisition_edit_payload(&f);
+    edit["capture_backend"] = json!("rust");
+    edit["image"] = json!("local/test-rust:rebuilt");
+    save_config(&f.ctl, &edit).unwrap();
+    assert_eq!(
+        f.ctl.load().unwrap()["rust_capture"],
+        customized["rust_capture"]
+    );
+    let mut reset = acquisition_edit_payload(&f);
+    reset["capture_backend"] = json!("official");
+    reset["image"] = json!("local/test-official:web");
+    save_config(&f.ctl, &reset).unwrap();
+    let official = f.ctl.load().unwrap();
+    assert_eq!(official["capture_backend"], "official");
+    assert!(official.get("rust_capture").is_none());
+}
+
+#[test]
+fn web_model_change_rechecks_even_retained_serial_and_invalidates_only_changed_slot() {
+    let mut f = Fixture::new(true, 2);
+    f.prepare_host();
+    f.ctl.stop("camera", true).unwrap();
+    let before = fs::read(f.ctl.root.join("inventory.json")).unwrap();
+    let mut edit = acquisition_edit_payload(&f);
+    edit["cameras"][0]["profile"] = json!("gemini_2");
+    assert!(
+        save_config(&f.ctl, &edit)
+            .unwrap_err()
+            .to_string()
+            .starts_with("CAMERA_BINDING")
+    );
+    assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
+    let device = f
+        .ctl
+        .host_root
+        .as_ref()
+        .unwrap()
+        .join("sys/bus/usb/devices/1-new");
+    private_dir(&device).unwrap();
+    for (key, value) in [
+        ("idVendor", "2bc5"),
+        ("product", "Gemini 2"),
+        ("serial", "NEW_MODEL_SERIAL"),
+    ] {
+        atomic(&device.join(key), value.as_bytes()).unwrap();
+    }
+    edit["cameras"][0]["serial_number"] = json!("NEW_MODEL_SERIAL");
+    save_config(&f.ctl, &edit).unwrap();
+    let saved = f.ctl.load().unwrap();
+    assert_eq!(saved["cameras"][0]["profile"], "gemini_2");
+    assert_eq!(saved["cameras"][0]["profiles_verified"], false);
+    assert!(saved["cameras"][0]["verification"].is_null());
+    assert_eq!(
+        saved["cameras"][1]["verification"],
+        f.inventory["cameras"][1]["verification"]
+    );
+}
+
+#[test]
+fn web_selection_changes_keep_running_preview_revision_and_recording_interlocks() {
+    for mode in ["running", "preview", "protected", "stale"] {
+        let mut f = Fixture::new(true, 1);
+        f.prepare_host();
+        let mut edit = acquisition_edit_payload(&f);
+        edit["capture_backend"] = json!("rust");
+        edit["image"] = json!("local/test-rust:web");
+        if mode != "running" {
+            f.ctl.stop("camera", true).unwrap();
+        }
+        if mode == "stale" {
+            edit["revision"] = json!("stale");
+        }
+        if mode == "protected" {
+            atomic_json(
+                &f.ctl.root.join("state/recording-guard.json"),
+                &json!({"version":1}),
+            )
+            .unwrap();
+        }
+        if mode == "preview" {
+            let previous = f.ctl.command_runner.clone().unwrap();
+            let id = "f".repeat(64);
+            f.ctl.command_runner = Some(Arc::new(move |args, input| {
+                if args.get(1).is_some_and(|a| a == "ps")
+                    && args.iter().any(|a| a.contains("orbbec.web.preview"))
+                {
+                    return Ok(id.clone());
+                }
+                if args.get(1).is_some_and(|a| a == "inspect") && args.iter().any(|a| a == &id) {
+                    return Ok(json!([{"Id":id,"Config":{"Labels":{"orbbec.web.preview":PROJECT}},"State":{"Running":true}}]).to_string());
+                }
+                previous(args, input)
+            }));
+        }
+        let before = fs::read(f.ctl.root.join("inventory.json")).unwrap();
+        let (code, _, body) = request(&manager(&f), "POST", "/api/config", &edit.to_string(), &[]);
+        assert_eq!(code, 400, "{mode}: {}", String::from_utf8_lossy(&body));
+        let error: Value = serde_json::from_slice(&body).unwrap();
+        let expected = match mode {
+            "running" => "CAMERAS_RUNNING",
+            "preview" => "PREVIEWS_RUNNING",
+            "protected" => "RECORDING_PROTECTED",
+            _ => "INVENTORY_DRIFT",
+        };
+        assert!(
+            text(&error["error"]).starts_with(expected),
+            "{mode}: {error}"
+        );
+        assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
+    }
+}
+
+#[test]
+fn web_backend_parameter_removal_requires_consent_and_cannot_bypass_validation() {
+    let f = Fixture::new(true, 1);
+    f.ctl.stop("camera", true).unwrap();
+    let mut d = f.ctl.load().unwrap();
+    d["cameras"][0]["parameters"]["color_exposure"] = json!(123);
+    atomic_json(
+        &f.ctl.root.join("inventory.json"),
+        &config::invalidate(&f.inventory, &d),
+    )
+    .unwrap();
+    let mut edit = acquisition_edit_payload(&f);
+    edit["capture_backend"] = json!("rust");
+    edit["image"] = json!("local/test-rust:web");
+    let before = fs::read(f.ctl.root.join("inventory.json")).unwrap();
+    assert!(
+        save_config(&f.ctl, &edit)
+            .unwrap_err()
+            .to_string()
+            .starts_with("PARAMETER_REMOVAL_REQUIRED")
+    );
+    assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
+    edit["discard_unsupported_parameters"] = json!(true);
+    edit["cameras"][0]["parameters"]["color_exposure"] = json!(456);
+    assert!(save_config(&f.ctl, &edit).is_err());
+    assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
+    edit["cameras"][0]["parameters"] = json!({});
+    save_config(&f.ctl, &edit).unwrap();
+    assert!(
+        f.ctl.load().unwrap()["cameras"][0]["parameters"]
+            .get("color_exposure")
+            .is_none()
+    );
+}
+
+#[test]
+fn web_selection_rejects_invalid_profiles_backend_images_and_injected_policy() {
+    for mode in 0..9 {
+        let f = Fixture::new(true, 1);
+        let mut edit = acquisition_edit_payload(&f);
+        match mode {
+            0 => edit["capture_backend"] = json!("other"),
+            1 => edit["capture_backend"] = Value::Null,
+            2 => edit["cameras"][0]["profile"] = json!("../bad"),
+            3 => edit["cameras"][0]["profile"] = Value::Null,
+            4 => edit["image"] = json!("bad image"),
+            5 => edit["discard_unsupported_parameters"] = json!(1),
+            6 => edit["rust_capture"] = json!({"service":{"heartbeat_timeout_ms":999999}}),
+            7 => edit["capture_backend"] = json!("rust"),
+            _ => edit["cameras"][0]["launch_file"] = json!("evil.launch.py"),
+        }
+        let before = fs::read(f.ctl.root.join("inventory.json")).unwrap();
+        assert!(save_config(&f.ctl, &edit).is_err(), "{mode}");
+        assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
+    }
+}
+
+#[test]
+fn web_official_switch_does_not_silently_drop_imu_or_rust_only_model() {
+    for imu in [false, true] {
+        let f = Fixture::new(false, 1);
+        f.ctl.stop("camera", true).unwrap();
+        let mut data = f.ctl.load().unwrap();
+        if imu {
+            data["rust_capture"]["acquisition"] =
+                json!({"preset":"strict-rgbd","advanced":{"message_timestamp":"system"}});
+            data["cameras"][0]["imu"] = json!({"enabled":true,"accel_rate_hz":200,"gyro_rate_hz":200,"accel_range_g":4,"gyro_range_dps":1000,"queue_capacity":128,"stale_timeout_ms":500,"accel_frame_id":"test_accel","gyro_frame_id":"test_gyro"});
+        } else {
+            data["cameras"][0]["profile"] = json!("gemini_305");
+        }
+        let data = config::invalidate(&f.inventory, &data);
+        config::validate(&data, true).unwrap();
+        atomic_json(&f.ctl.root.join("inventory.json"), &data).unwrap();
+        let before = fs::read(f.ctl.root.join("inventory.json")).unwrap();
+        let mut edit = acquisition_edit_payload(&f);
+        edit["capture_backend"] = json!("official");
+        edit["image"] = json!("local/test-official:web");
+        let (code, _, body) = request(&manager(&f), "POST", "/api/config", &edit.to_string(), &[]);
+        assert_eq!(code, 400, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
+    }
+}
+
+#[test]
+fn web_unchanged_model_backend_image_preserve_confirmation_without_docker() {
+    let mut f = Fixture::new(true, 1);
+    let mut edit = acquisition_edit_payload(&f);
+    edit["capture_backend"] = json!("official");
+    edit["image"] = f.inventory["image"].clone();
+    for (update, camera) in edit["cameras"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .zip(f.inventory["cameras"].as_array().unwrap())
+    {
+        update["profile"] = camera["profile"].clone();
+    }
+    f.ctl.command_runner = Some(Arc::new(|args, _| {
+        panic!("unchanged selection contacted Docker: {args:?}")
+    }));
+    let before = fs::read(f.ctl.root.join("inventory.json")).unwrap();
+    save_config(&f.ctl, &edit).unwrap();
+    assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
+}
