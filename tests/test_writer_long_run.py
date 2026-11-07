@@ -63,7 +63,7 @@ else:
     while not barrier.exists(): time.sleep(.002)
     target=json.loads(barrier.read_text())['start_monotonic_ns']
     while time.monotonic_ns()<target: time.sleep(.0001)
-    if behavior=='hang' or (behavior=='stale-status' and on) or (behavior=='early-failed-one' and root.name!='writer-0'):
+    if behavior=='hang' or (behavior=='stale-status' and on) or (behavior=='early-failed-one' and root.name!='writer-0') or (behavior=='on-overflow' and on and root.name!='writer-0'):
         while True:time.sleep(.01)
     if behavior=='stagger-finish' and on and root.name!='writer-0':
         end=time.monotonic()+10.3;sequence=1
@@ -297,7 +297,15 @@ class LongProcessTests(unittest.TestCase):
     def test_successful_first_trace_does_not_certify_an_omitted_failed_group(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);a=args(root,fake_binary(root/'driver','on-overflow'))
+            # Only the on group's first writer fails; peers wait for controller
+            # cleanup. Simultaneous exits can legitimately finish the whole trace
+            # before data rejection, which is a different scenario from omission.
             result=long.run(a,trace_factory=CompleteTrace)
+            failed=a.output/'round-00-status-on'
+            self.assertFalse((a.output/'round-00-status-on.json').exists())
+            self.assertEqual(json.loads((failed/'writer-0/result.json').read_text())['reason'],'RAW_QUEUE_OVERFLOW')
+            self.assertFalse((failed/'writer-1/result.json').exists())
+            self.assertFalse((failed/'writer-2/result.json').exists())
             self.assertFalse(result['ok']);self.assertEqual(result['completed_groups'],1)
             self.assertTrue(result['completed_group_traces_complete'])
             self.assertFalse(result['trace_complete'])
