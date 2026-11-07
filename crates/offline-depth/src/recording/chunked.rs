@@ -14,6 +14,7 @@ pub(super) struct Chunked {
     pub index_bytes: u64,
     pub index_buffer: Vec<u8>,
     pipeline: bool,
+    full_credit_batches: bool,
     pending: Option<PendingCheckpoint>,
     checkpoint_bytes: u64,
     verified: Option<VerifiedPrefix>,
@@ -289,6 +290,26 @@ impl RawRecordingWriter {
             .as_mut()
             .ok_or(OfflineError::Invalid("RECORDING_PIPELINE_REQUIRES_V3"))?;
         state.pipeline = true;
+        state.full_credit_batches = false;
+        self.diagnostics
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .checkpoint_batching = Some("half-credit");
+        Ok(())
+    }
+    /// Batch checkpoints up to the existing global credits instead of forcing
+    /// a sync transaction for each half-credit chunk. This trades overlap for
+    /// fewer transactions; it does not grant any additional uncommitted bytes
+    /// or pairs. Slow syncs still fail through the caller's bounded FIFO.
+    pub fn enable_checkpoint_batching(&mut self) -> Result<()> {
+        self.enable_checkpoint_pipeline()?;
+        self.chunked.as_mut().unwrap().full_credit_batches = true;
+        self.diagnostics
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .checkpoint_batching = Some("full-credit");
         Ok(())
     }
     pub(super) fn automatic_checkpoint(&mut self) -> Result<()> {
@@ -300,7 +321,11 @@ impl RawRecordingWriter {
         }
     }
     pub(super) fn chunk_limits(&self) -> (u64, u64) {
-        if self.chunked.as_ref().is_some_and(|s| s.pipeline) {
+        if self
+            .chunked
+            .as_ref()
+            .is_some_and(|s| s.pipeline && !s.full_credit_batches)
+        {
             (CHUNK_PAIRS / 2, CHUNK_BYTES / 2)
         } else {
             (CHUNK_PAIRS, CHUNK_BYTES)

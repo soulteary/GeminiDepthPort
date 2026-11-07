@@ -29,7 +29,8 @@ def transition(root):
         os.close(fd)
 
 
-def prepare_configs(plan, root):
+def prepare_configs(plan, root, checkpoint_batching=None):
+    rt.require(checkpoint_batching in (None,'half-credit','full-credit'),'CHECKPOINT_BATCH_POLICY')
     files, originals = batch.freeze(plan, root)
     for camera in rt.read_json(root/'frozen/plan.json')['cameras']:
         path = Path(camera['capture_config'])
@@ -38,6 +39,8 @@ def prepare_configs(plan, root):
         if raw is None: raw = {}
         rt.require(isinstance(raw, dict), 'RAW_RECORDING_OBJECT')
         raw.update(storage_format='chunked-v3', checkpoint_pipeline=True)
+        if checkpoint_batching == 'full-credit': raw['checkpoint_batching'] = checkpoint_batching
+        elif checkpoint_batching == 'half-credit': raw.pop('checkpoint_batching',None)
         raw.setdefault('queue_capacity', 16)
         config['raw_recording'] = raw
         one.atomic(path, config); path.chmod(0o600)
@@ -58,7 +61,40 @@ def batch_args(a, image):
                  'trim_seconds', 'cooldown_seconds'):
         argv += ['--'+name.replace('_', '-'), str(getattr(a, name))]
     for disk in a.disk: argv += ['--disk', disk]
+    argv += ['--source-gap-policy', getattr(a,'source_gap_policy','reject')]
     return argv
+
+
+def storage_preflight(a):
+    """Conservative retained-data estimate; no deletion or filesystem tuning.
+
+    Covers all normal groups plus a full native crash run. The DDS observer
+    stores hashes/metadata (not pixels), with a 4096 MiB database cap and DELETE
+    journal; reserve the cap plus an equal rollback journal, then 25% + 1 GiB.
+    This is an estimate, not a quota or a guarantee against another writer.
+    """
+    cameras = rt.read_json(a.plan)['cameras']
+    native = 0; wire = hw.DDS_DATABASE_MAX_MIB * 1024**2
+    for camera in cameras:
+        config = rt.read_json(camera['capture_config'])
+        sizes = {}
+        for stream in ('color','depth'):
+            profile = config[stream]
+            for key in ('width','height','fps'):
+                rt.require(type(profile.get(key)) is int and profile[key] > 0, 'STORAGE_PROFILE_INTEGER')
+            sizes[stream] = profile['width'] * profile['height']
+        native += a.pairs * (2*sizes['color'] + 2*sizes['depth'] + 65536)
+    groups = a.rounds * 2
+    estimate = ((groups+1)*native + groups*2*wire)*5//4 + 1024**3
+    fs = os.statvfs(a.root)
+    available = fs.f_bavail * fs.f_frsize
+    proof = {'estimated_required_bytes':estimate,'available_bytes':available,
+             'normal_groups':groups,'native_bytes_per_group':native,'dds_bytes_per_group':wire,
+             'source_gap_policy':getattr(a,'source_gap_policy','reject'),
+             'scope':'retained native + 4096 MiB DDS hash/metadata database and equal DELETE journal per group + crash budget, 25% + 1 GiB headroom; estimate, not quota; no old data deleted'}
+    one.atomic(a.root/'storage-preflight.json',proof)
+    rt.require(available >= estimate, 'INSUFFICIENT_RETEST_STORAGE')
+    return proof
 
 
 def crash_binding(run, expected_hashes, image, runtime):
@@ -210,8 +246,9 @@ def execute(a):
     def cancelled(sig, _frame): raise one.Cancelled('SIGNAL:'+str(sig))
     save(); previous = {s: signal.signal(s, cancelled) for s in (signal.SIGINT, signal.SIGTERM)}
     try:
-        manifest = prepare_configs(a.plan, a.root)
+        manifest = prepare_configs(a.plan, a.root, a.checkpoint_batching)
         a.plan = a.root/'frozen/plan.json'; one.settings(a)
+        manifest['storage_preflight'] = storage_preflight(a)
         names = [c['name'] for c in rt.read_json(a.plan)['cameras']]
         rt.require(a.camera in names, 'CRASH_CAMERA_NOT_FOUND')
         if a.build: command(['bash', str(HERE/'build_runtime.sh'), a.image, a.platform], 'build', a.build_timeout)
@@ -233,6 +270,8 @@ def execute(a):
                    and len(summary['groups']) == len(expected)
                    and all({k: group[k] for k in ('name', 'round', 'mode')} == planned and group['summary']['ok'] is True
                            for group, planned in zip(summary['groups'], expected)), 'AB_ROUNDS_INCOMPLETE')
+        if getattr(a,'source_gap_policy','reject') == 'reject':
+            rt.require(all(group['summary'].get('source_gap_free') is True for group in summary['groups']), 'AB_SOURCE_SEQUENCE_GAP')
         result['ab'] = summary; save(); assert_active(a, manifest); phase('crash-prepare')
         cargs = argparse.Namespace(plan=a.plan, image=image, run_dir=a.root/'crash',
                                   diagnostics_root=Path('/dev/shm')/('gdp-retest-'+controller.token), mode='on',
@@ -279,6 +318,9 @@ def execute(a):
         result['finished_unix_ns'] = time.time_ns(); save()
         report = {'ok': result['ok'], 'ab': result.get('ab'), 'recovery': result.get('recovery'),
                   'error': result.get('error'), 'cleanup': result.get('cleanup'), 'rollback_argv': result['rollback_argv']}
+        report['source_gap_policy'] = getattr(a,'source_gap_policy','reject')
+        report['strict_600s_acceptance_passed'] = (result['ok'] is True and a.seconds >= 600
+            and a.rounds >= 3 and report['source_gap_policy'] == 'reject')
         one.atomic(a.root/'summary.json', report)
         lines = ['# Three-camera pipeline retest', '', f"Accepted: {result['ok']}", '',
                  'CPU/RSS: sampled workers; append P99/verification: recording lifetime.',
@@ -311,6 +353,10 @@ def parser():
     r.add_argument('--poll-seconds', type=float, default=5); r.add_argument('--trim-seconds', type=float, default=5)
     r.add_argument('--cooldown-seconds', type=float, default=30); r.add_argument('--disk', action='append', default=[])
     r.add_argument('--execute', action='store_true'); sub.add_parser('rollback')
+    r.add_argument('--source-gap-policy', choices=('reject','report'), default='reject',
+                   help='formal retest rejects source gaps by default; report retains a limited recording-only result')
+    r.add_argument('--checkpoint-batching',choices=('half-credit','full-credit'),default='half-credit',
+                   help='full-credit is an explicit experimental rollout; credits and durability barriers stay fixed')
     for command in sub.choices.values(): command.add_argument('--root', type=Path, required=True)
     return p
 

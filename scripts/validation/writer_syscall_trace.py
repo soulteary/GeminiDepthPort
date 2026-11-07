@@ -266,6 +266,9 @@ class Decoder:
             'paired_syscalls_by_name':self.paired_by_name}
 
 
+TRACE_OUTPUT_BUFFER_BYTES = 256 * 1024
+
+
 class TraceSession:
     def __init__(self,output,max_bytes,max_seconds,buffer_kib=256,tracefs=Path('/sys/kernel/tracing'),
                  required=True,max_memory_bytes=64*1024**2,include_reads=False,proc=Path('/proc')):
@@ -388,7 +391,7 @@ class TraceSession:
             self.before=self._stats()
             require(all(value==0 for counters in self.before.values() for value in counters.values()),'TRACE_DIRTY_INITIAL_COUNTERS')
             self.fd=os.open(self.instance/'trace_pipe',os.O_RDONLY|os.O_NONBLOCK)
-            self.stream=(self.output/'trace-events.jsonl').open('xb');os.chmod(self.output/'trace-events.jsonl',0o600)
+            self.stream=(self.output/'trace-events.jsonl').open('xb',buffering=TRACE_OUTPUT_BUFFER_BYTES);os.chmod(self.output/'trace-events.jsonl',0o600)
             self.decoder=Decoder(tids,self._emit,comm=comm,owners=owners);self._write('tracing_on','1');self.active=True;self.state='running'
             ready={'ok':True,'available':True,'state':self.state,'started_monotonic_ns':time.monotonic_ns(),
                 'clock':'mono','initial_tids':sorted(tids),'targets':[{**target['identity'],'abi':target['abi']} for target in self.targets],
@@ -397,6 +400,7 @@ class TraceSession:
                 'initial_owned_thread_comm':comm,
                 'initial_tid_root_pid':owners,
                 'events':self.capabilities['events'],'kernel_ring_buffer_bytes':int(total)*1024,
+                'output_buffer_bytes':TRACE_OUTPUT_BUFFER_BYTES,
                 'max_output_bytes':self.max_bytes,'metadata_reserve_bytes':METADATA_RESERVE,
                 'max_seconds':self.max_seconds,'scope':SCOPE}
             self._json('ready.json',ready);return ready
@@ -450,7 +454,7 @@ class TraceSession:
     def finish(self):
         if self.finished is not None:return self.finished
         require(self.state!='not-started','TRACE_NOT_STARTED')
-        self._stop();after={};stats_error=None
+        self._stop();after={};stats_error=None;drain_error=None
         if self.fd is not None:
             try:
                 # Bounded final drain after tracing is disabled. An exhausted
@@ -461,18 +465,26 @@ class TraceSession:
                     if drained:break
                 require(time.monotonic()<limit,'TRACE_FINAL_DRAIN_LIMIT')
                 require(not self.fragment,'TRACE_TRUNCATED_FINAL_LINE')
-                after=self._stats()
             except (OSError,ValueError,UnicodeError) as error:
-                stats_error=type(error).__name__+':'+str(error);self.failure=self.failure or 'TRACE_FINISH_ERROR:'+stats_error
-            finally:os.close(self.fd);self.fd=None
+                drain_error=type(error).__name__+':'+str(error);self.failure=self.failure or 'TRACE_FINISH_ERROR:'+drain_error
+            finally:
+                # Loss counters are independent evidence. A decode/drain error
+                # must not suppress them or turn missing evidence into zero loss.
+                try:after=self._stats()
+                except (OSError,ValueError) as error:
+                    stats_error=type(error).__name__+':'+str(error)
+                    self.failure=self.failure or 'TRACE_STATS_ERROR:'+stats_error
+                os.close(self.fd);self.fd=None
         if self.stream is not None:self.stream.close();self.stream=None
         lost=0
+        counters_complete=bool(self.before) and stats_error is None and set(after)==set(self.before)
         if set(after)!=set(self.before):self.failure=self.failure or 'TRACE_CPU_SET_CHANGED'
         for cpu,values in after.items():
             if cpu not in self.before:self.failure=self.failure or 'TRACE_CPU_SET_CHANGED';continue
             for key,value in values.items():
                 delta=value-self.before[cpu][key]
-                if delta<0:self.failure=self.failure or 'TRACE_COUNTER_REGRESSION'
+                if delta<0:
+                    self.failure=self.failure or 'TRACE_COUNTER_REGRESSION';counters_complete=False
                 else:lost+=delta
         if lost:self.failure=self.failure or 'TRACE_KERNEL_LOSS'
         decoded=self.decoder.report() if self.decoder else {}
@@ -490,16 +502,20 @@ class TraceSession:
         if terminal and all(value is True for value in terminal.values()) and decoded.get('live_tid_contexts',0):
             self.failure=self.failure or 'TRACE_MISSING_THREAD_EXIT'
         unavailable=self.state=='unavailable'
-        ok=not unavailable and self.failure is None and self.decoder is not None
+        if self.decoder is not None and not counters_complete:
+            self.failure=self.failure or 'TRACE_LOSS_COUNTERS_UNAVAILABLE'
+        ok=not unavailable and self.failure is None and self.decoder is not None and counters_complete
         try:self._remove_instance()
         except OSError as error:
             self.failure=self.failure or 'TRACE_CLEANUP_ERROR:'+type(error).__name__;ok=False
-        self.finished={'ok':ok,'available':not unavailable and self.decoder is not None,
+        self.finished={'schema_version':2,'ok':ok,'available':not unavailable and self.decoder is not None,
             'state':'complete' if ok else self.state if unavailable else 'incomplete','error':self.failure,
-            'capabilities':self.capabilities,'lost_events':lost+decoded.get('stream_lost_events',0),
+            'capabilities':self.capabilities,'lost_events':lost+decoded.get('stream_lost_events',0) if counters_complete else None,
+            'loss_counters_complete':counters_complete,'final_drain_error':drain_error,
             'kernel_loss_counters_before':self.before,'kernel_loss_counters_after':after,'stats_error':stats_error,
-            'loss_count_scope':'sum of exposed counter deltas and stream annotations; categories may overlap; not a unique event count; any loss rejects completeness',
+            'loss_count_scope':'sum of complete exposed counter deltas and stream annotations; null when counters unavailable/regressed; categories may overlap, not a unique event count; any loss rejects completeness',
             'decoded':decoded,'event_bytes':self.data_bytes,'max_output_bytes':self.max_bytes,
+            'output_buffer_bytes':TRACE_OUTPUT_BUFFER_BYTES,
             'started_monotonic_ns':self.started_ns,'finished_monotonic_ns':time.monotonic_ns(),
             'scope':SCOPE,'hardware_acceptance_verified':False}
         self.finished['targets_terminal_at_finish']=terminal

@@ -60,6 +60,7 @@ def forward(a,mode,root,image):
     for disk in a.disk:args+=['--disk',disk]
     if a.perf:args+=['--perf']
     if getattr(a,'observe_lifecycle',False):args+=['--observe-lifecycle']
+    args+=['--source-gap-policy',getattr(a,'source_gap_policy','report')]
     return args
 
 
@@ -188,6 +189,7 @@ def main():
     r.add_argument('--poll-seconds',type=float,default=5);r.add_argument('--trim-seconds',type=float,default=5)
     r.add_argument('--cooldown-seconds',type=float,default=30);r.add_argument('--disk',action='append',default=[])
     r.add_argument('--observe-lifecycle',action='store_true')
+    r.add_argument('--source-gap-policy',choices=('reject','report'),default='report')
     r.add_argument('--perf',action='store_true');r.add_argument('--execute',action='store_true')
     sub.add_parser('rollback')
     for s in sub.choices.values():s.add_argument('--root',type=Path,required=True)

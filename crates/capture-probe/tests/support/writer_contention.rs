@@ -19,6 +19,63 @@ mod common;
 
 const SAMPLE_BYTES: usize = 64 * 1024 * 1024;
 const HEARTBEAT: Duration = Duration::from_millis(500);
+const EVENT_BYTES: usize = 16 * 1024 * 1024;
+
+struct EventArchive {
+    file: fs::File,
+    latest: u64,
+    bytes: usize,
+}
+impl EventArchive {
+    fn new(root: &Path) -> anyhow::Result<Self> {
+        Ok(Self {
+            file: OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(root.join("checkpoint-events.jsonl"))?,
+            latest: 0,
+            bytes: 0,
+        })
+    }
+    fn collect(&mut self, report: &Value) -> anyhow::Result<()> {
+        let observation = &report["checkpoint_observation"];
+        anyhow::ensure!(
+            observation["enabled"] == true,
+            "CHECKPOINT_ARCHIVE_DISABLED"
+        );
+        let events = observation["events"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_ARCHIVE_SCHEMA"))?;
+        for event in events {
+            let id = event["event_id"]
+                .as_u64()
+                .ok_or_else(|| anyhow::anyhow!("CHECKPOINT_ARCHIVE_ID"))?;
+            if id <= self.latest {
+                continue;
+            }
+            anyhow::ensure!(id == self.latest + 1, "CHECKPOINT_ARCHIVE_GAP");
+            let mut raw = serde_json::to_vec(event)?;
+            raw.push(b'\n');
+            anyhow::ensure!(
+                raw.len() <= 65536 && raw.len() <= EVENT_BYTES.saturating_sub(self.bytes),
+                "CHECKPOINT_ARCHIVE_LIMIT"
+            );
+            self.file.write_all(&raw)?;
+            self.latest = id;
+            self.bytes += raw.len();
+        }
+        anyhow::ensure!(
+            observation["latest_event_id"].as_u64() == Some(self.latest),
+            "CHECKPOINT_ARCHIVE_TAIL"
+        );
+        Ok(())
+    }
+    fn report(&self) -> Value {
+        json!({"ok":true,"rows":self.latest,"bytes":self.bytes,"max_bytes":EVENT_BYTES,
+            "relative_path":"checkpoint-events.jsonl","scope":"contiguous completed event IDs; sampled active context remains non-atomic; missing/overwritten events fail this diagnostic experiment"})
+    }
+}
 enum Control {
     Checkpoint(mpsc::SyncSender<Value>),
     Draining(mpsc::SyncSender<Value>),
@@ -276,7 +333,9 @@ fn background_loop(
     let mut next = previous + HEARTBEAT;
     let mut old_phase = 0;
     let mut draining_ack = false;
+    let mut events = EventArchive::new(root)?;
     let success = loop {
+        events.collect(&diagnostics.report())?;
         match receiver.recv_timeout(next.saturating_duration_since(Instant::now())) {
             Ok(Control::Finish(success)) => break success,
             Ok(Control::Draining(reply)) => {
@@ -360,6 +419,8 @@ fn background_loop(
         )?;
     }
     file.flush()?;
+    events.collect(&diagnostics.report())?;
+    events.file.flush()?;
     let mut report = state
         .as_ref()
         .map(|s| s.persistence.report())
@@ -373,7 +434,7 @@ fn background_loop(
     report["submission_errors"] = json!(0);
     report["heartbeat_max_gap_ns"] = json!(max_gap);
     report["sampling"] = json!({"ok":true,"rows":rows,"bytes":bytes,"max_rows":row_limit,"max_bytes":SAMPLE_BYTES,
-        "relative_path":"status-load-samples.jsonl","scope":"500ms sampled queue/writer context; not atomic across components, not continuous syscall timing"});
+        "relative_path":"status-load-samples.jsonl","checkpoint_events":events.report(),"scope":"500ms sampled queue/writer context; not atomic across components, not continuous syscall timing"});
     Ok(report)
 }
 
@@ -496,7 +557,7 @@ fn real_status_rename_failure_sets_shared_fatal_and_cannot_ack_completion() {
     let load = Background::start_mode(
         root.path(),
         &snapshot,
-        RawRecordingDiagnostics::default(),
+        RawRecordingDiagnostics::with_checkpoint_observation(true),
         progress.clone(),
         true,
     );
@@ -510,6 +571,13 @@ fn real_status_rename_failure_sets_shared_fatal_and_cannot_ack_completion() {
     let report = load.finish(false);
     assert!(progress.failed.load(Ordering::Acquire), "{report}");
     assert_eq!(report["errors"], 1);
+    assert!(
+        report["error"]
+            .as_str()
+            .unwrap()
+            .contains("status persistence"),
+        "{report}"
+    );
     assert_eq!(report["final_critical_ack"], false);
     assert_eq!(report["sampling"]["ok"], false);
     assert!(!root.path().join("capture/COMPLETE").exists());
@@ -629,6 +697,15 @@ fn real_ignored_child_finishes_on_and_off_without_report_lock_recursion() {
             json!([30, 30])
         );
         assert_eq!(report["background_sampling"]["ok"], true);
+        let events = &report["background_sampling"]["checkpoint_events"];
+        assert_eq!(events["ok"], true);
+        assert!(events["rows"].as_u64().unwrap() > 0);
+        assert_eq!(
+            fs::metadata(root.join("checkpoint-events.jsonl"))
+                .unwrap()
+                .len(),
+            events["bytes"].as_u64().unwrap()
+        );
         assert!(root.join("capture/COMPLETE").is_file());
         if enabled {
             assert_eq!(report["status_persistence"]["draining_critical_ack"], true);
@@ -637,4 +714,42 @@ fn real_ignored_child_finishes_on_and_off_without_report_lock_recursion() {
             assert!(report["status_persistence"].is_null());
         }
     }
+}
+
+#[test]
+fn checkpoint_archive_rejects_gaps_limits_and_unwritten_tail_without_duplicates() {
+    let report = |ids: &[u64], latest: u64| json!({"checkpoint_observation":{"enabled":true,"latest_event_id":latest,"events":ids.iter().map(|id|json!({"event_id":id})).collect::<Vec<_>>()}});
+    let root = tempfile::tempdir().unwrap();
+    let mut a = EventArchive::new(root.path()).unwrap();
+    a.collect(&report(&[], 0)).unwrap();
+    a.collect(&report(&[1, 2], 2)).unwrap();
+    let size = a.bytes;
+    a.collect(&report(&[1, 2], 2)).unwrap();
+    assert_eq!(a.bytes, size);
+    assert!(
+        a.collect(&report(&[4], 4))
+            .unwrap_err()
+            .to_string()
+            .contains("GAP")
+    );
+    assert!(
+        a.collect(&report(&[1, 2], 3))
+            .unwrap_err()
+            .to_string()
+            .contains("TAIL")
+    );
+    a.bytes = EVENT_BYTES;
+    assert!(
+        a.collect(&report(&[3], 3))
+            .unwrap_err()
+            .to_string()
+            .contains("LIMIT")
+    );
+    assert_eq!(a.latest, 2);
+    assert_eq!(
+        fs::metadata(root.path().join("checkpoint-events.jsonl"))
+            .unwrap()
+            .len(),
+        size as u64
+    );
 }

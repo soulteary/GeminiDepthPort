@@ -151,6 +151,22 @@ class DecoderTests(unittest.TestCase):
 
 @unittest.skipUnless(hasattr(os,'mkfifo'),'FIFO trace control fixture')
 class TraceSessionTests(unittest.TestCase):
+    def test_bounded_output_buffer_preserves_every_event_on_final_close(self):
+        session=self.start();self.emit_complete();pid=self.process.pid
+        for n in range(64):
+            raw=line(pid,'sys_enter_fsync','fd: 0x3',f'{101+n}.100000')
+            raw+=line(pid,'sys_exit_fsync','0x0',f'{101+n}.100001')
+            os.write(session.pipe_writer,raw.encode());session.poll()
+        self.assertEqual(trace.TRACE_OUTPUT_BUFFER_BYTES,256*1024)
+        self.assertLess(session.data_bytes,trace.TRACE_OUTPUT_BUFFER_BYTES)
+        path=session.output/'trace-events.jsonl'
+        self.assertEqual(path.stat().st_size,0)
+        report=session.finish();self.assertTrue(report['ok'],report)
+        rows=[json.loads(raw) for raw in path.read_bytes().splitlines()]
+        self.assertEqual(len(rows),report['decoded']['events'])
+        self.assertEqual(report['decoded']['paired_syscalls'],65)
+        self.assertEqual(path.stat().st_size,report['event_bytes'])
+
     def test_long_trace_disk_budget_is_explicit_without_allocating_kernel_memory(self):
         with tempfile.TemporaryDirectory() as d:
             out=Path(d)/'new'
@@ -229,8 +245,21 @@ class TraceSessionTests(unittest.TestCase):
                 stats.write_text(''.join(key+': 1\n' if row==key+': 0' else row+'\n' for row in text.splitlines()) if key!='missing' else 'overrun: 0\n')
                 final=session.finish();self.assertFalse(final['ok'])
                 if key!='missing':self.assertEqual(final['lost_events'],1)
-                else:self.assertIn('LOSS_COUNTERS_UNAVAILABLE',final['error'])
+                else:
+                    self.assertIn('LOSS_COUNTERS_UNAVAILABLE',final['error'])
+                    self.assertIsNone(final['lost_events']);self.assertFalse(final['loss_counters_complete'])
                 self.session=None;shutil.rmtree(self.root/'out')
+
+    def test_decoder_failure_still_collects_kernel_loss_and_keeps_original_error(self):
+        session=self.start();self.emit_complete()
+        stats=session.instance/'per_cpu/cpu1/stats'
+        stats.write_text(stats.read_text().replace('dropped events: 0','dropped events: 7'))
+        os.write(session.pipe_writer,b'malformed kernel record\n');session.poll()
+        first=session.failure;self.assertIn('TRACE_LINE_SCHEMA',first)
+        final=session.finish()
+        self.assertFalse(final['ok']);self.assertEqual(final['error'],first)
+        self.assertEqual(final['lost_events'],7);self.assertTrue(final['loss_counters_complete'])
+        self.assertIsNone(final['stats_error'])
 
     def test_pid_reuse_wall_limit_and_final_partial_line_are_diagnostic_failures(self):
         for fault in ('pid','wall','fragment'):

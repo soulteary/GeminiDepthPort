@@ -25,6 +25,7 @@ use std::{
 pub(crate) struct RawSettings {
     pub chunked: bool,
     pub checkpoint_pipeline: bool,
+    pub checkpoint_full_credit: bool,
     pub checkpoint_observation: bool,
     pub directory: PathBuf,
     pub name: String,
@@ -43,6 +44,7 @@ impl RawSettings {
                 "max_pairs",
                 "max_bytes",
                 "checkpoint_pipeline",
+                "checkpoint_batching",
                 "checkpoint_observation",
                 "storage_format"
             ]
@@ -74,6 +76,16 @@ impl RawSettings {
             Some(Value::Bool(v)) => *v,
             _ => anyhow::bail!("checkpoint observation must be boolean"),
         };
+        let checkpoint_full_credit = match m.get("checkpoint_batching") {
+            None => false,
+            Some(Value::String(policy)) if policy == "half-credit" => false,
+            Some(Value::String(policy)) if policy == "full-credit" => true,
+            _ => anyhow::bail!("checkpoint batching must be half-credit or full-credit"),
+        };
+        ensure!(
+            !m.contains_key("checkpoint_batching") || checkpoint_pipeline,
+            "checkpoint batching requires enabled pipeline"
+        );
         ensure!(
             !checkpoint_pipeline || chunked,
             "checkpoint pipeline requires chunked-v3"
@@ -117,6 +129,7 @@ impl RawSettings {
         Ok(Self {
             chunked,
             checkpoint_pipeline,
+            checkpoint_full_credit,
             checkpoint_observation,
             directory,
             name,
@@ -704,7 +717,11 @@ impl RawRecorder {
                         )
                     }?;
                     if settings.checkpoint_pipeline {
-                        writer.enable_checkpoint_pipeline()?;
+                        if settings.checkpoint_full_credit {
+                            writer.enable_checkpoint_batching()?;
+                        } else {
+                            writer.enable_checkpoint_pipeline()?;
+                        }
                     }
                     shared.lock().unwrap_or_else(|e| e.into_inner()).disk = writer.diagnostics();
                     #[cfg(test)]
@@ -1161,6 +1178,7 @@ mod tests {
         RawSettings {
             chunked: true,
             checkpoint_pipeline: false,
+            checkpoint_full_credit: false,
             checkpoint_observation: true,
             directory: directory.into(),
             name: "native".into(),
@@ -2071,6 +2089,7 @@ mod tests {
         let ros = snapshot();
         let mut config = settings(&dir, 16, 1_000_000);
         config.checkpoint_pipeline = true;
+        config.checkpoint_full_credit = true;
         config.queue_capacity = 16;
         let mut sink = RawRecorder::new(config, ros.content.binding.session_id.as_str());
         sink.initialize(&ros, Instant::now(), 0.1).unwrap();
@@ -2086,6 +2105,10 @@ mod tests {
         sink.finish_session(true).unwrap();
         assert_eq!(sink.status()["state"], "complete");
         assert_eq!(sink.status()["checkpoint_pipeline"], true);
+        assert_eq!(
+            sink.status()["disk_stages"]["checkpoint_batching"],
+            "full-credit"
+        );
         assert_eq!(sink.status()["disk_stages"]["durable_pairs"], 16);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -2229,6 +2252,20 @@ mod tests {
         assert!(!RawSettings::parse(&v).unwrap().checkpoint_pipeline);
         v["checkpoint_pipeline"] = json!(true);
         assert!(RawSettings::parse(&v).unwrap().checkpoint_pipeline);
+        assert!(!RawSettings::parse(&v).unwrap().checkpoint_full_credit);
+        v["checkpoint_batching"] = json!("full-credit");
+        assert!(RawSettings::parse(&v).unwrap().checkpoint_full_credit);
+        v["checkpoint_batching"] = json!("half-credit");
+        assert!(!RawSettings::parse(&v).unwrap().checkpoint_full_credit);
+        for bad in [json!(true), json!("automatic"), Value::Null] {
+            v["checkpoint_batching"] = bad;
+            assert!(RawSettings::parse(&v).is_err());
+        }
+        v["checkpoint_batching"] = json!("full-credit");
+        v["checkpoint_pipeline"] = json!(false);
+        assert!(RawSettings::parse(&v).is_err());
+        v["checkpoint_pipeline"] = json!(true);
+        v.as_object_mut().unwrap().remove("checkpoint_batching");
         v["storage_format"] = json!("files-v2");
         assert!(RawSettings::parse(&v).is_err());
         v["storage_format"] = json!("chunked-v3");

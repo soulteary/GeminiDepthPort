@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('writer_long_run', ROOT / 'scripts/validation/writer_long_run.py')
@@ -77,7 +78,7 @@ else:
     value.update(pairs=pairs,written_pairs=pairs,status_background_load=on,status_persistence=proof(max(2,pairs//30)) if on else None,
                  capture_elapsed_ns=pairs//30*1000000000,capture_cpu_seconds=.01,capture_cpu_cores=.01,checkpoint_pipeline=True,credit_pairs=32,credit_bytes=16777216,
                  actual_start_monotonic_ns=time.monotonic_ns(),actual_start_unix_ns=time.time_ns(),**hashes)
-    value['diagnostics'].update(durable_pairs=pairs,validation_image_bytes=2*PAIR_BYTES*pairs)
+    value['diagnostics'].update(durable_pairs=pairs,validation_image_bytes=2*PAIR_BYTES*pairs,checkpoint_batching=os.environ.get('GDP_CONTENTION_BATCH_POLICY','full-credit'))
     value['independent_readback']['pairs_per_pass']=[pairs,pairs]
     if behavior in ('overflow','early-failed-one') or (behavior=='on-overflow' and on):value.update(ok=False,reason='RAW_QUEUE_OVERFLOW',overflow=1,queue_peak=16)
     if behavior=='different-on' and on:value['input_sha256']='c'*64
@@ -86,6 +87,9 @@ else:
     samples=(json.dumps({'monotonic_ns':1,'synthetic_fixture':True})+'\\n').encode()*2
     (root/'status-load-samples.jsonl').write_bytes(samples)
     value['background_sampling']={'ok':True,'rows':2,'bytes':len(samples),'max_rows':20000,'max_bytes':67108864,'relative_path':'status-load-samples.jsonl'}
+    events=json.dumps({'event_id':1}).encode()+bytes([10])
+    (root/'checkpoint-events.jsonl').write_bytes(events)
+    value['background_sampling']['checkpoint_events']={'ok':True,'rows':1,'bytes':len(events),'max_bytes':16777216,'relative_path':'checkpoint-events.jsonl'}
     if on:
         value['status_persistence']['state_directory']=str(root/'state')
     write('result.json',value)
@@ -133,6 +137,32 @@ class LostTrace(CompleteTrace):
 
 
 class LongPolicyTests(unittest.TestCase):
+    def test_runtime_free_space_reserve_includes_visible_backing_without_deleting(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);a=args(root,root/'binary');a.output.mkdir();a.backing_path=root
+            (a.output/'preserved').write_bytes(b'old')
+            enough=type('FS',(),{'f_bavail':long.FREE_SPACE_RESERVE,'f_frsize':1})()
+            low=type('FS',(),{'f_bavail':1,'f_frsize':1})()
+            with patch.object(long.os,'statvfs',side_effect=[enough,low]),self.assertRaisesRegex(RuntimeError,'FREE_SPACE_RESERVE'):
+                long.storage_guard(a,time.monotonic()+10)
+            self.assertEqual((a.output/'preserved').read_bytes(),b'old')
+
+    def test_checkpoint_archive_requires_contiguous_bounded_real_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);path=root/'checkpoint-events.jsonl'
+            for raw,rows,error in [(b'{"event_id":1}\n',1,None),
+                                   (b'{"event_id":2}\n',1,'GAP'),
+                                   (b'{"event_id":1}\n{"event_id":1}\n',2,'GAP'),
+                                   (b'{"event_id":1}\n',2,'TAIL'),
+                                   (b'x'*65537,1,'LINE_LIMIT')]:
+                path.write_bytes(raw)
+                proof={'ok':True,'rows':rows,'bytes':len(raw),'max_bytes':16*long.MIB,'relative_path':path.name}
+                if error:
+                    with self.assertRaisesRegex(ValueError,error):long.validate_event_archive(root,proof)
+                else:long.validate_event_archive(root,proof)
+            path.unlink();path.symlink_to(root/'missing')
+            with self.assertRaisesRegex(ValueError,'FILE'):long.validate_event_archive(root,proof)
+
     def test_defaults_are_six_three_writer_groups_at_least_600_seconds(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);a=long.parser().parse_args(['--binary',str(root/'binary'),'--output',str(root/'new')])
@@ -218,6 +248,9 @@ class LongPolicyTests(unittest.TestCase):
             sample=root/'status-load-samples.jsonl';sample.write_bytes(data)
             row={'background_sampling':{'ok':True,'rows':1,'bytes':len(data),'max_rows':20000,
                 'max_bytes':64*long.MIB,'relative_path':sample.name},'status_persistence':None}
+            events=b'{"event_id":1}\n'
+            (root/'checkpoint-events.jsonl').write_bytes(events)
+            row['background_sampling']['checkpoint_events']={'ok':True,'rows':1,'bytes':len(events),'max_bytes':16*long.MIB,'relative_path':'checkpoint-events.jsonl'}
             long.validate_child_files(root,row,False,root.stat().st_dev)
             bad=copy.deepcopy(row);bad['background_sampling']['rows']=2
             with self.assertRaisesRegex(ValueError,'ROW_COUNT'):long.validate_child_files(root,bad,False,root.stat().st_dev)

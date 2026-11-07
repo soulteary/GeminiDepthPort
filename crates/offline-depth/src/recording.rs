@@ -1025,6 +1025,7 @@ struct RawIoStats {
     finish: StageStats,
     uncommitted_pairs_peak: u64,
     uncommitted_payload_bytes_peak: u64,
+    checkpoint_batching: Option<&'static str>,
     validation_imu_samples: u64,
     payload_write_calls: u64,
     index_write_calls: u64,
@@ -1108,6 +1109,7 @@ impl RawIoStats {
             "failed_calls":stats.failures,"durable_pairs":stats.durable_pairs,"checkpoints":stats.checkpoints,"payload_files":stats.payload_files,"validation_image_bytes":stats.validation_image_bytes,
             "validation_buffer_peak_bytes":stats.validation_buffer_peak_bytes,
             "uncommitted_pairs_peak":stats.uncommitted_pairs_peak,"uncommitted_payload_bytes_peak":stats.uncommitted_payload_bytes_peak,
+            "checkpoint_batching":stats.checkpoint_batching.unwrap_or("synchronous"),
             "validation_imu_samples":stats.validation_imu_samples,
             "payload_write_calls":stats.payload_write_calls,"index_write_calls":stats.index_write_calls,
             "index_flushes":stats.index_flushes});

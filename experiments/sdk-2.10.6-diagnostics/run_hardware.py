@@ -287,15 +287,21 @@ class Runner:
         rt.require(report.get('ok') is True and len(cameras) == 3
                    and {c['camera'] for c in cameras} == {c['name'] for c in self.run['cameras']}, 'DDS_ACCEPTANCE_REPORT_REQUIRED')
         for camera in cameras:
+            rt.require(type(camera.get('zero_source_gaps')) is bool, 'SOURCE_GAP_BOOLEAN_REQUIRED')
             summary = camera['summary']
             rt.require(summary.get('ok') is True and summary.get('audit_version') == 2
                        and summary.get('native_hashes_verified') is True
                        and summary.get('independent_audit_passes') == 2 and summary.get('recovered') is False
                        and summary.get('pairs') == self.a.pairs, 'NORMAL_TWO_READ_ACCEPTANCE_REQUIRED')
-        self.result.update(source_gap_free=all(c['zero_source_gaps'] for c in cameras),
+        self.result.update(source_gap_free=all(c['zero_source_gaps'] is True for c in cameras),
                            source_sequence_gaps={c['camera']:c['sequence_gaps'] for c in cameras},
                            acceptance_scope='normal recording, two native readers, hashes, Global/IMU and DDS matching; source gaps reported separately',
                            crash_recovery_verified=False)
+        policy = getattr(self.a, 'source_gap_policy', 'report')
+        self.result['source_gap_policy'] = policy
+        rt.require(policy in ('reject', 'report'), 'SOURCE_GAP_POLICY')
+        if policy == 'reject':
+            rt.require(self.result['source_gap_free'] is True, 'SOURCE_SEQUENCE_GAP')
 
     def evidence(self):
         if self.run is None:return
@@ -426,6 +432,8 @@ def parser():
     s.add_argument('--build-timeout', type=int, default=3600);s.add_argument('--poll-seconds', type=float, default=5)
     s.add_argument('--trim-seconds', type=float, default=5);s.add_argument('--disk', action='append', default=[])
     s.add_argument('--observe-lifecycle', action='store_true')
+    s.add_argument('--source-gap-policy', choices=('reject','report'), default='report',
+                   help='reject requires gap-free SDK source sequences; report is diagnostics-only for this property')
     s.add_argument('--perf', action='store_true');s.add_argument('--execute', action='store_true')
     sub.add_parser('rollback')
     for s in sub.choices.values():s.add_argument('--root', type=Path, required=True)

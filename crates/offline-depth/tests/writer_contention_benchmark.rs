@@ -394,7 +394,11 @@ pub(crate) fn run_child_with_background(
         raw_diagnostics,
     )
     .unwrap();
-    writer.enable_checkpoint_pipeline().unwrap();
+    match std::env::var("GDP_CONTENTION_BATCH_POLICY").as_deref() {
+        Ok("half-credit") => writer.enable_checkpoint_pipeline().unwrap(),
+        Ok("full-credit") | Err(_) => writer.enable_checkpoint_batching().unwrap(),
+        _ => panic!("unknown test checkpoint batch policy"),
+    }
     let diagnostics = writer.diagnostics();
     let background = factory.map(|start| {
         start(

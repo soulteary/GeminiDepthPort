@@ -32,6 +32,7 @@ TEST_NAME = 'service::writer_contention::writer_contention_with_status_child'
 WRITERS = 3
 MIB = 1024 ** 2
 GIB = 1024 ** 3
+FREE_SPACE_RESERVE = 2 * GIB
 LIMITS = (
     'Three modeled nonblocking FIFO writers, real production checkpoint/readback and status persistence; '
     'no SDK/USB/ROS or physical camera acceptance. Status-off disables only the test adapter background. '
@@ -52,6 +53,16 @@ def source_hashes():
         'status_driver_sha256': ab.sha256(repo / 'crates/capture-probe/tests/support/writer_contention.rs'),
         'fixture_sha256': ab.sha256(repo / 'crates/offline-depth/tests/support/fixture.rs'),
     }
+
+
+def storage_guard(args, deadline):
+    ab.guard_budget(args.output, args.max_output_bytes, deadline)
+    for path in (args.output, getattr(args,'backing_path',None)):
+        if path is None: continue
+        fs = os.statvfs(path)
+        available = fs.f_bavail * fs.f_frsize
+        if available < FREE_SPACE_RESERVE:
+            raise RuntimeError('FREE_SPACE_RESERVE:' + str(path) + ':' + str(available))
 
 
 def plan(args):
@@ -75,7 +86,7 @@ def plan(args):
     per_writer = pairs * (ab.PAIR_BYTES + 32768) + 16 * MIB
     # Replaced status files are bounded individually by the driver; reserve
     # live metadata, resource logs, per-group trace and trace summary/shas.
-    group_overhead = max(8 * MIB, args.seconds * 65536) + 3 * 80 * MIB + args.trace_max_bytes + MIB
+    group_overhead = max(8 * MIB, args.seconds * 65536) + 3 * 96 * MIB + args.trace_max_bytes + MIB
     recovery = 32 * (ab.PAIR_BYTES + 32768) + 16 * MIB + 16 * MIB
     estimate = args.repeats * 2 * (WRITERS * per_writer + group_overhead) + 2 * recovery + 64 * MIB
     if estimate > args.max_output_bytes:
@@ -90,9 +101,10 @@ def plan(args):
             'resource_and_status_reserve_per_group': group_overhead - args.trace_max_bytes}
 
 
-def launch(binary, root, pairs, mode, status_on, barrier=None):
+def launch(binary, root, pairs, mode, status_on, barrier=None, checkpoint_batching='full-credit'):
     env = ab.child_environment(root, pairs, mode, barrier)
     env['GDP_CONTENTION_STATUS_LOAD'] = '1' if status_on else '0'
+    env['GDP_CONTENTION_BATCH_POLICY'] = checkpoint_batching
     file_limit = pairs * 32768 + 16 * MIB
     def limits():
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
@@ -174,6 +186,7 @@ def validate_child_files(root, row, status_on, expected_dev):
         rows = sum(1 for _ in source)
     if rows != sample['rows']:
         raise ValueError('BACKGROUND_SAMPLE_ROW_COUNT')
+    validate_event_archive(root, sample.get('checkpoint_events'))
     state = root / 'state'
     if status_on:
         reported = (row.get('status_persistence') or {}).get('state_directory')
@@ -186,6 +199,29 @@ def validate_child_files(root, row, status_on, expected_dev):
     for path in (root, root/'capture', root/sample['relative_path']):
         if path.stat().st_dev != expected_dev:
             raise ValueError('STATUS_AND_RECORDING_FILESYSTEM_DIFFER')
+
+
+def validate_event_archive(root, proof):
+    if (type(proof) is not dict or proof.get('ok') is not True
+            or proof.get('relative_path') != 'checkpoint-events.jsonl'
+            or type(proof.get('rows')) is not int or proof['rows'] <= 0
+            or type(proof.get('bytes')) is not int or type(proof.get('max_bytes')) is not int
+            or not 0 < proof['bytes'] <= proof['max_bytes'] <= 16 * MIB):
+        raise ValueError('CHECKPOINT_EVENT_ARCHIVE_CONTRACT')
+    path = root / proof['relative_path']
+    if path.is_symlink() or not path.is_file() or path.stat().st_size != proof['bytes']:
+        raise ValueError('CHECKPOINT_EVENT_ARCHIVE_FILE')
+    seen = 0
+    with path.open('rb') as source:
+        while raw := source.readline(65537):
+            if len(raw) > 65536 or not raw.endswith(b'\n'):
+                raise ValueError('CHECKPOINT_EVENT_ARCHIVE_LINE_LIMIT')
+            event = json.loads(raw)
+            if type(event) is not dict or type(event.get('event_id')) is not int or event['event_id'] != seen + 1:
+                raise ValueError('CHECKPOINT_EVENT_ARCHIVE_GAP')
+            seen += 1
+    if seen != proof['rows']:
+        raise ValueError('CHECKPOINT_EVENT_ARCHIVE_TAIL')
 
 
 class StatusMonitor:
@@ -291,7 +327,7 @@ def run_batch(binary, root, pairs, status_on, args, deadline, trace_factory=None
         for index in range(WRITERS):
             child_root = root / ('writer-' + str(index));child_root.mkdir()
             child_roots.append(child_root)
-            children.append(launch(binary, child_root, pairs, 'run', status_on, root / 'start.json'))
+            children.append(launch(binary, child_root, pairs, 'run', status_on, root / 'start.json', args.checkpoint_batching))
         wait_ready(children, child_roots, args.output, args.max_output_bytes, deadline)
         status_monitors=[StatusMonitor(path,child.pid) for path,child in zip(child_roots,children)] if status_on else []
         factory = trace_factory or trace_class()
@@ -302,6 +338,7 @@ def run_batch(binary, root, pairs, status_on, args, deadline, trace_factory=None
         missing_trace = trace_unavailable(initial_trace)
         if initial_trace.get('ok') is not True and not (missing_trace and args.allow_unavailable_trace):
             raise RuntimeError('TRACE_NOT_READY:' + str(initial_trace.get('reason') or initial_trace.get('error') or initial_trace.get('state')))
+        storage_guard(args, deadline)
         target = time.monotonic_ns() + 200_000_000
         ab.write_json(root / 'start.tmp', {'start_monotonic_ns': target, 'start_unix_ns': time.time_ns() + 200_000_000})
         (root / 'start.tmp').rename(root / 'start.json')
@@ -368,7 +405,7 @@ def run_batch(binary, root, pairs, status_on, args, deadline, trace_factory=None
                 if last_ns is not None:max_gap = max(max_gap, now - last_ns)
                 last_ns = now
                 if now >= next_budget:
-                    ab.guard_budget(args.output, args.max_output_bytes, deadline);next_budget = now + 1_000_000_000
+                    storage_guard(args, deadline);next_budget = now + 1_000_000_000
                 if time.monotonic() >= deadline:raise RuntimeError('WALL_TIME_LIMIT')
                 if all(p.poll() is not None for p in children):break
                 time.sleep(sample_interval)
@@ -378,6 +415,8 @@ def run_batch(binary, root, pairs, status_on, args, deadline, trace_factory=None
             writers.append(finished_results.get(index) or read_result(child_root / 'result.json'))
             if status_on:final_heartbeats.append(finished_heartbeats.get(index) or status_monitors[index].sample(require_fresh=False))
             if writers[-1].get('ok') is True:
+                if writers[-1].get('diagnostics', {}).get('checkpoint_batching') != args.checkpoint_batching:
+                    raise ValueError('CHECKPOINT_BATCH_POLICY_MISMATCH')
                 validate_child_files(child_root, writers[-1], status_on, args.output.stat().st_dev)
         result = {'writers': writers, 'status_background_load': status_on,'final_status_heartbeats':final_heartbeats,
                   'simultaneous_rss_peak_bytes': rss_peak, 'resource_samples': samples,
@@ -448,7 +487,7 @@ def checkpoint_status_contract(ready, status_on):
 
 
 def run_recovery(binary, root, status_on, args, deadline, hashes):
-    root.mkdir();child = launch(binary, root, 32, 'crash', status_on)
+    root.mkdir();child = launch(binary, root, 32, 'crash', status_on, checkpoint_batching=args.checkpoint_batching)
     try:
         while True:
             if child.poll() is not None:raise RuntimeError('CRASH_CHILD_EXITED_BEFORE_CHECKPOINT')
@@ -461,7 +500,7 @@ def run_recovery(binary, root, status_on, args, deadline, hashes):
                 for key, digest in hashes.items():
                     if ready.get(key) != digest:raise ValueError('RECOVERY_SOURCE_IDENTITY:' + key)
                 break
-            ab.guard_budget(args.output, args.max_output_bytes, deadline);time.sleep(.02)
+            storage_guard(args, deadline);time.sleep(.02)
         if not ab.signal_group(child, signal.SIGKILL):raise RuntimeError('CRASH_CHILD_EXITED_BEFORE_SIGKILL')
         child.wait(timeout=5)
         if child.returncode != -signal.SIGKILL:raise RuntimeError('SIGKILL_NOT_OBSERVED')
@@ -472,10 +511,10 @@ def run_recovery(binary, root, status_on, args, deadline, hashes):
     if status_on and ((root/'state').is_symlink() or (root/'state').stat().st_dev != args.output.stat().st_dev):
         raise ValueError('RECOVERY_STATUS_FILESYSTEM_DIFFER')
     before = {str(p.relative_to(partial)): ab.sha256(p) for p in partial.rglob('*') if p.is_file()}
-    reader = launch(binary, root, 32, 'recover', status_on)
+    reader = launch(binary, root, 32, 'recover', status_on, checkpoint_batching=args.checkpoint_batching)
     try:
         while reader.poll() is None:
-            ab.guard_budget(args.output, args.max_output_bytes, deadline);time.sleep(.02)
+            storage_guard(args, deadline);time.sleep(.02)
         if reader.returncode != 0:raise RuntimeError('RECOVERY_READER_FAILED')
     finally:ab.stop_group(reader)
     after = {str(p.relative_to(partial)): ab.sha256(p) for p in partial.rglob('*') if p.is_file()}
@@ -564,11 +603,17 @@ def run(args, trace_factory=None):
     if output.exists() or output.is_symlink():raise ValueError('FRESH_OUTPUT_REQUIRED')
     output.parent.mkdir(parents=True, exist_ok=True)
     fs = os.statvfs(output.parent)
-    if fs.f_bavail * fs.f_frsize < planned['planned_upper_bound_bytes']:raise ValueError('INSUFFICIENT_FREE_SPACE')
+    if fs.f_bavail * fs.f_frsize < planned['planned_upper_bound_bytes'] + FREE_SPACE_RESERVE:raise ValueError('INSUFFICIENT_FREE_SPACE')
+    if args.backing_path is not None:
+        args.backing_path = args.backing_path.resolve(strict=True)
+        if not args.backing_path.is_dir():raise ValueError('BACKING_DIRECTORY_REQUIRED')
+        backing_fs = os.statvfs(args.backing_path)
+        if backing_fs.f_bavail * backing_fs.f_frsize < planned['planned_upper_bound_bytes'] + FREE_SPACE_RESERVE:
+            raise ValueError('INSUFFICIENT_BACKING_FREE_SPACE')
     requested_disk=disk_identity(args.disk)
     output.mkdir(mode=0o700);args.output = output.resolve()
     hashes = source_hashes()
-    manifest = {'kind': 'writer-long-status-ab-v1', 'baseline': '80585eca829eae58e2c4ceae2932a88253c5271c',
+    manifest = {'kind': 'writer-long-status-ab-v1', 'baseline': '8697b4fe1111ad0c99da2a14c961d1e0e39570eb',
         'uname': list(platform.uname()), 'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
         'filesystem': ab.mount_evidence(args.output), 'output': str(args.output),
         'binary': {'path': str(binary), 'sha256': ab.sha256(binary)}, **hashes,
@@ -577,6 +622,9 @@ def run(args, trace_factory=None):
         'seconds_per_recording': args.seconds,
         'repeats': args.repeats, 'status_modes': ['off', 'on'], 'fps': 30, 'imu_hz_per_stream': 200,
         'queue_capacity': 16, 'checkpoint_credit_pairs': 32, 'checkpoint_credit_bytes': 16 * MIB,
+        'checkpoint_batching':args.checkpoint_batching,
+        'backing_path':str(args.backing_path) if args.backing_path is not None else None,
+        'runtime_free_space_reserve_bytes':FREE_SPACE_RESERVE,
         'status_period_ms': 500, 'status_deadline_ms':10000, 'status_backend': 'production ServiceQuality/Persistence in each writer process',
         'smoke': bool(args.smoke), 'allow_unavailable_trace': bool(args.allow_unavailable_trace),
         'disk': args.disk, 'disk_identity':requested_disk, 'max_output_bytes': args.max_output_bytes, 'max_wall_seconds': args.max_wall_seconds,
@@ -637,6 +685,9 @@ def parser():
     p.add_argument('--trace-max-bytes', type=int, default=4 * GIB)
     p.add_argument('--trace-buffer-kib', type=int, default=256)
     p.add_argument('--tracefs', type=Path, default=Path('/sys/kernel/tracing'))
+    p.add_argument('--checkpoint-batching', choices=['full-credit','half-credit'], default='full-credit',
+                   help='test-only checkpoint policy; credits/barriers unchanged; record both modes in separate fresh roots')
+    p.add_argument('--backing-path',type=Path,help='visible host/backing directory for loopback/VM capacity checks; sampled reserve is not a quota')
     p.add_argument('--disk', help='verified whole-device diskstats name, not a path')
     p.add_argument('--smoke', action='store_true', help='explicit short correctness run; never long-comparison acceptance')
     p.add_argument('--allow-unavailable-trace', action='store_true', help='retain capability-unavailable evidence; never accept missing tracing as complete')

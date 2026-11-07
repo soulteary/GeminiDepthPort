@@ -23,6 +23,7 @@ import experiment_runtime as rt
 LABEL = 'org.geminidepthport.sdk-experiment'
 RUN = 'org.geminidepthport.sdk-experiment-run'
 HERE = Path(__file__).resolve().parent
+DDS_DATABASE_MAX_MIB = 4096
 
 
 def digest(value):
@@ -524,7 +525,7 @@ def sample_commands(a,run):
                 '--user',str(os.getuid())+':'+str(os.getgid()),'--tmpfs','/tmp:rw,nosuid,nodev,size=128m',
                 '-e','ROS_DOMAIN_ID='+str(run['ros_domain_id']),'-v',str(a.run_dir)+':/evidence:rw',run['image_id'],
                 'python3',rt.HOME+'/ros/imu_long_run_observer.py','--namespaces',*[c['namespace'] for c in run['cameras']],
-                '--seconds',str(a.seconds),'--output','/evidence/wire.sqlite3']}
+                '--seconds',str(a.seconds),'--max-mib',str(DDS_DATABASE_MAX_MIB),'--output','/evidence/wire.sqlite3']}
 
 
 def sample(a,run):

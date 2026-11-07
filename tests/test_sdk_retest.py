@@ -1,6 +1,7 @@
 """Pipeline retest orchestration; synthetic SDK/Docker, no camera commands."""
 import argparse
 import copy
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -25,7 +26,7 @@ def source_plan(root):
     cameras = []
     for n in 'abc':
         path = root/n; path.mkdir()
-        one.atomic(path/'capture.json', {'serial': n, 'color': {'fps': 30}, 'depth': {'fps': 30},
+        one.atomic(path/'capture.json', {'serial': n, 'color': {'width':2,'height':1,'fps': 30}, 'depth': {'width':2,'height':1,'fps': 30},
                    'service': {'generation': 'original'}, 'raw_recording': {'queue_capacity': 7, 'checkpoint_pipeline': False}})
         one.atomic(path/'health.json', {'fixture': n})
         cameras.append({'name': n, 'capture_config': str(path/'capture.json'), 'health_config': str(path/'health.json')})
@@ -65,10 +66,30 @@ class ConfigTests(unittest.TestCase):
         a = retest.parser().parse_args(['run', '--root', '/tmp/new', '--plan', '/tmp/p', '--image', 'tag',
                                      '--max-bytes', '100', '--ros-domain-id', '78'])
         self.assertEqual(a.rounds, 3); self.assertEqual(a.camera, 'b'); self.assertFalse(a.execute)
+        self.assertEqual(a.source_gap_policy,'reject')
+        self.assertEqual(a.checkpoint_batching,'half-credit')
         with self.assertRaises(ValueError): batch.schedule(2, 'on')
         with patch.object(retest.one, 'local_rootful', side_effect=ValueError('rootful required')), \
              patch.object(retest, 'execute') as execute, patch.object(sys, 'argv', ['run_retest.py', 'rollback', '--root', '/tmp/fake']):
             self.assertEqual(retest.main(), 1); execute.assert_not_called()
+
+    def test_storage_admission_retains_proof_and_rejects_before_camera_work(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);plan=source_plan(root)
+            a=argparse.Namespace(root=root,plan=plan,pairs=18000,seconds=600,rounds=3,source_gap_policy='reject')
+            fs=argparse.Namespace(f_bavail=0,f_frsize=4096)
+            with patch.object(retest.os,'statvfs',return_value=fs),self.assertRaisesRegex(ValueError,'INSUFFICIENT_RETEST_STORAGE'):
+                retest.storage_preflight(a)
+            proof=rt.read_json(root/'storage-preflight.json')
+            spec=importlib.util.spec_from_file_location('storage_observer_contract',HERE.parents[1]/'ros/imu_long_run_observer.py')
+            observer=importlib.util.module_from_spec(spec);spec.loader.exec_module(observer)
+            db=observer.database(root/'wire.sqlite3',hw.DDS_DATABASE_MAX_MIB)
+            self.assertEqual(db.execute('PRAGMA max_page_count').fetchone()[0]*db.execute('PRAGMA page_size').fetchone()[0],proof['dds_bytes_per_group'])
+            self.assertEqual(db.execute('PRAGMA journal_mode').fetchone()[0],'delete');db.close()
+            self.assertEqual(proof['normal_groups'],6)
+            self.assertGreater(proof['estimated_required_bytes'],proof['native_bytes_per_group']*6)
+            fs.f_bavail=proof['estimated_required_bytes']//4096+1
+            with patch.object(retest.os,'statvfs',return_value=fs):retest.storage_preflight(a)
 
     def test_real_controller_command_has_poll_interval_and_prunes_reaped_children(self):
         with tempfile.TemporaryDirectory() as d:
@@ -144,10 +165,10 @@ class AcceptanceTests(unittest.TestCase):
 
 
 class FlowTests(unittest.TestCase):
-    def execute(self, root, failure=None):
+    def execute(self, root, failure=None, source_gap_policy='reject'):
         plan = source_plan(root)
         a = retest.parser().parse_args(['run', '--root', str(root/'run'), '--plan', str(plan), '--image', 'tag',
-             '--max-bytes', '137438953472', '--ros-domain-id', '78', '--build', '--execute'])
+             '--max-bytes', '137438953472', '--ros-domain-id', '78', '--source-gap-policy',source_gap_policy,'--build', '--execute'])
         calls = []; image = 'sha256:'+'a'*64; inventory = {'fixture': 'sdk', 'gdp_revision': retest.CHECKPOINT_BASE}
         def prepare(args):
             args.run_dir.mkdir()
@@ -165,10 +186,11 @@ class FlowTests(unittest.TestCase):
                 (a.root/'ab').mkdir()
                 one.atomic(a.root/'ab/result.json', {'ok': True, 'image_id': image, 'runtime_sha256': hw.digest(inventory)})
                 one.atomic(a.root/'ab/summary.json', {'complete': True, 'batch_ok': True, 'comparison': {'cpu': {'on_median': 1, 'off_median': 1}},
-                           'accepted_groups': 4 if failure == 'incomplete' else 6, 'required_rounds': 3, 'groups': [dict(g, summary={'ok': True, 'normalized_config_hashes': {'a': 'fixed'}}) for g in batch.schedule(3, 'on')]})
+                           'accepted_groups': 4 if failure == 'incomplete' else 6, 'required_rounds': 3, 'groups': [dict(g, summary={'ok': True, 'source_gap_free': True, 'normalized_config_hashes': {'a': 'fixed'}}) for g in batch.schedule(3, 'on')]})
             if name == 'crash-audit': one.atomic(controller.root/'crash-audit.log', audit())
         cleanup = {'ok': failure != 'cleanup', 'errors': [], 'recordings_retained': True}
         with patch.object(rt, 'validate_health'), patch.object(hw, 'command', return_value=''), patch.object(hw, 'image_manifest', return_value=(image, inventory)) as resolve, \
+             patch.object(retest.os,'statvfs',return_value=argparse.Namespace(f_bavail=1<<30,f_frsize=4096)), \
              patch.object(one,'Lifecycle',return_value=Mock(stop=Mock(return_value={"sampling_ok":True}))), \
              patch.object(one.Runner, 'command', side_effect=command, autospec=True), \
              patch.object(hw, 'prepare', side_effect=prepare) as prep, patch.object(hw, 'load_run', side_effect=lambda p, **kw: rt.read_json(p/'run.json')), \
@@ -190,6 +212,14 @@ class FlowTests(unittest.TestCase):
             self.assertEqual(prep.call_args.args[0].image, 'sha256:'+'a'*64)
             self.assertEqual(crash.call_count, 1)
             self.assertTrue(rt.read_json(a.root/'summary.json')['ok']); self.assertTrue(cleanup.called)
+
+    def test_report_only_policy_never_claims_strict_600_second_acceptance(self):
+        with tempfile.TemporaryDirectory() as d:
+            a,code,*_=self.execute(Path(d),source_gap_policy='report')
+            self.assertEqual(code,0)
+            result=rt.read_json(a.root/'summary.json')
+            self.assertTrue(result['ok']);self.assertFalse(result['strict_600s_acceptance_passed'])
+            self.assertEqual(result['source_gap_policy'],'report')
 
     def test_failures_stop_later_stages_and_retain_summary_and_rollback(self):
         for failure in ['build', 'ab', 'crash-audit', 'signal', 'cleanup', 'incomplete']:

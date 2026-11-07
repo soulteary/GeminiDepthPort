@@ -52,6 +52,8 @@ ARM64 改为 `linux/arm64`；磁盘名称按现场替换。镜像构建至多一
 
 另可在独立新目录执行[三 writer 同盘 600 秒状态后台对照](../../docs/validation/writer-long-run.md)，复用生产状态持久化代码，并采集有界 syscall／调度事件。该实验没有 SDK/USB/ROS 输入，不计入上述六组相机验收；缺失追踪、未完成窗口及失败组均不得写成完整性能对照通过。
 
+后续正式脚本默认 `--source-gap-policy reject`，源序号缺口使本组失败；`report` 是明确保留缺口的诊断范围，不获得 `strict_600s_acceptance_passed`。冻结配置后还会保存容量预估，空间不足在启动相机前拒绝。完整额度批次候选通过 `--checkpoint-batching full-credit` 显式启用，生产默认仍是 `half-credit`，不能把候选存在当作溢出已修复；说明与新目录命令见[部署验收](../../docs/validation/recording-readiness.md)。
+
 ```bash
 sudo cat /srv/sdk-test/c063450-full-lifecycle-01/summary.md
 sudo python3 -m json.tool /srv/sdk-test/c063450-full-lifecycle-01/summary.json

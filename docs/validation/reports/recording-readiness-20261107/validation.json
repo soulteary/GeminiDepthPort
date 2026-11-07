@@ -1,0 +1,343 @@
+{
+  "all_deployment_issues_fixed": false,
+  "archive_scope": "metadata and logs only; all source user archives unchanged; local native pixels/records/large image/ELFs excluded from delivery",
+  "baseline": "8697b4fe1111ad0c99da2a14c961d1e0e39570eb",
+  "binaries": {
+    "baseline.elf": "1cbbe7e47c7d5fc1af1457c32e7c46624a27b5500ef3dafafeb60c8d4318ad35",
+    "candidate-final.elf": "910f1bc56aef4f2944150a302a63339e757763ba87328dae083ab571cf47a033",
+    "candidate.elf": "fa513a14031acd56d3c1d1c6fca90715cd807ad0fd9721e78fe3c5c00feb4ae4",
+    "release-final-02.elf": "f7388bbeeaca20893aad2ead67cd1222ab3a781fffdd5e4af2fcbdc0534985b4",
+    "release-final.elf": "f7388bbeeaca20893aad2ead67cd1222ab3a781fffdd5e4af2fcbdc0534985b4"
+  },
+  "blocking_items": [
+    "RAW_QUEUE_OVERFLOW remains reproducible",
+    "SDK depth source sequence gaps unresolved",
+    "formal six camera groups and independent camera recovery not executed here",
+    "full task-duration durability and deployment validation pending"
+  ],
+  "checks": {
+    "input_evidence": {
+      "inputs": [
+        {
+          "entries_verified": 110,
+          "package": "gdp-8697b4f-full-lifecycle-01",
+          "unchanged": true
+        },
+        {
+          "entries_verified": 1311,
+          "package": "gdp-8697b4f-full-lifecycle-01-context",
+          "unchanged": true
+        }
+      ],
+      "old_checkpoint_worker_candidate_sha256": "ae38e44e8b8ec0930d3c2c534e095cb00261aa07f46e99b69bced64656536899",
+      "old_evidence_mutated": false,
+      "source_scope": "extracted user handoff; internal original SHA256SUMS rechecked after all experiments; no original files rewritten"
+    },
+    "msrv": "Rust 1.85.0 data-plane all-targets clippy -D warnings pass",
+    "python": {
+      "environment_skips": 8,
+      "failures": 0,
+      "ran": 544
+    },
+    "rust_production_line_coverage": {
+      "found": 19814,
+      "hit": 19623,
+      "percent": 99.036
+    },
+    "rust_workspace_and_external": "pass",
+    "trace_actual_kernel": {
+      "events": 988,
+      "loss_counters_complete": true,
+      "lost_events": 0,
+      "output_buffer_bytes": 262144,
+      "paired_fsync": 60,
+      "ring_kib_per_cpu": 1024,
+      "scope": "trace contract only, not recording acceptance"
+    }
+  },
+  "data_retained_at": "/private/tmp/gdp-batch-fix-20261107",
+  "date": "2026-11-07",
+  "environment_failure": {
+    "cause": "backing ENOSPC; invalid performance evidence; some ext4 directories unreadable in ro,noload export",
+    "image_logical_bytes": 257698037760,
+    "image_retained": true,
+    "large_loop_image_plan_accepted": false,
+    "no_repair_attempted": true,
+    "warning": "Most transient backing allocation was released on unmount before sparse reclamation. Reclaimed zero extents preserve full logical SHA; not a claim that all raw data remain readable.",
+    "zero_reclaim_proof": {
+      "allocated_after": 380649472,
+      "allocated_before": 1446068224,
+      "elapsed_seconds": 643.5034009581432,
+      "logical_bytes": 257698037760,
+      "path": "/private/tmp/gdp-batch-fix-20261107/batch-policy-new-240g.ext4",
+      "scope": "own new image only; no loop associations before scan; only exact read-confirmed all-zero ranges deallocated; logical bytes and full SHA256 preserved",
+      "sha256_after": "43770c6f976b10a9bde8144011b424be4f30509bdb9afb1efd8a09e943b26cf3",
+      "sha256_before": "43770c6f976b10a9bde8144011b424be4f30509bdb9afb1efd8a09e943b26cf3",
+      "zero_bytes_punched": 256112590848
+    }
+  },
+  "experiments": {
+    "first_normal_completed_pair_only": [
+      {
+        "append_p99_ns_per_writer": [
+          70355432,
+          61351060,
+          56555830
+        ],
+        "checkpoints_per_writer": [
+          86,
+          86,
+          86
+        ],
+        "cpu_seconds_per_writer": [
+          10.833059319,
+          10.460341574,
+          10.527393024
+        ],
+        "fsync_samples_per_writer": [
+          436,
+          436,
+          436
+        ],
+        "native_verification_ns_per_writer": [
+          "9032270182",
+          "8942868171",
+          "9022120893"
+        ],
+        "pairs_per_writer": 600,
+        "peak_rss_kib_per_writer": [
+          16016,
+          16608,
+          19852
+        ],
+        "policy": "half-credit",
+        "repeat": 0,
+        "seconds_requested": 20
+      },
+      {
+        "append_p99_ns_per_writer": [
+          55137865,
+          57551043,
+          56646247
+        ],
+        "checkpoints_per_writer": [
+          43,
+          43,
+          43
+        ],
+        "cpu_seconds_per_writer": [
+          9.07601337,
+          8.895550391,
+          8.935566692
+        ],
+        "fsync_samples_per_writer": [
+          221,
+          221,
+          221
+        ],
+        "native_verification_ns_per_writer": [
+          "2360787714",
+          "2301239372",
+          "2293653043"
+        ],
+        "pairs_per_writer": 600,
+        "peak_rss_kib_per_writer": [
+          10852,
+          15792,
+          12196
+        ],
+        "policy": "full-credit",
+        "repeat": 0,
+        "seconds_requested": 20
+      }
+    ],
+    "performance_conclusion": "No stable reliability benefit; compare CPU/P99 only in complete matched horizons, never aggregate truncated failure metrics. Default rejected. Shared VM and APFS/virtiofs, no hardware attribution.",
+    "repeats": 3,
+    "rows": [
+      {
+        "complete_groups": 1,
+        "delay_ms_per_payload_sync": 0,
+        "groups": 3,
+        "policy": "half-credit",
+        "written_pairs_per_writer": [
+          [
+            600,
+            600,
+            600
+          ],
+          [
+            334,
+            333,
+            333
+          ],
+          [
+            43,
+            43,
+            40
+          ]
+        ]
+      },
+      {
+        "complete_groups": 1,
+        "delay_ms_per_payload_sync": 0,
+        "groups": 3,
+        "policy": "full-credit",
+        "written_pairs_per_writer": [
+          [
+            600,
+            600,
+            600
+          ],
+          [
+            141,
+            141,
+            141
+          ],
+          [
+            15,
+            15,
+            15
+          ]
+        ]
+      },
+      {
+        "complete_groups": 0,
+        "delay_ms_per_payload_sync": 300,
+        "groups": 3,
+        "policy": "half-credit",
+        "written_pairs_per_writer": [
+          [
+            36,
+            36,
+            36
+          ],
+          [
+            36,
+            36,
+            36
+          ],
+          [
+            36,
+            36,
+            36
+          ]
+        ]
+      },
+      {
+        "complete_groups": 1,
+        "delay_ms_per_payload_sync": 300,
+        "groups": 3,
+        "policy": "full-credit",
+        "written_pairs_per_writer": [
+          [
+            57,
+            71,
+            71
+          ],
+          [
+            57,
+            57,
+            57
+          ],
+          [
+            600,
+            600,
+            600
+          ]
+        ]
+      },
+      {
+        "complete_groups": 0,
+        "delay_ms_per_payload_sync": 900,
+        "groups": 3,
+        "policy": "half-credit",
+        "written_pairs_per_writer": [
+          [
+            15,
+            15,
+            15
+          ],
+          [
+            15,
+            15,
+            15
+          ],
+          [
+            15,
+            15,
+            15
+          ]
+        ]
+      },
+      {
+        "complete_groups": 0,
+        "delay_ms_per_payload_sync": 900,
+        "groups": 3,
+        "policy": "full-credit",
+        "written_pairs_per_writer": [
+          [
+            15,
+            15,
+            15
+          ],
+          [
+            15,
+            15,
+            15
+          ],
+          [
+            15,
+            15,
+            15
+          ]
+        ]
+      }
+    ],
+    "same_release_binary_sha256": "910f1bc56aef4f2944150a302a63339e757763ba87328dae083ab571cf47a033",
+    "seconds_requested_per_group": 20,
+    "writers_per_group": 3
+  },
+  "final_source_sha256": {
+    "crates/capture-probe/src/raw_recording.rs": "7ca49a177504b110f64ba44541c1d9336ec7164f4c4d3c53b6c1d1a28310eb0b",
+    "crates/capture-probe/tests/support/writer_contention.rs": "2eff7752957a4996f4cfe8e8f26dfaf5a3fc0c519a0c31779429b5e12fcf76ee",
+    "crates/offline-depth/src/recording.rs": "e4e8ce05a0690c49338caf0e900c475e68d3c694140317c548b19f38f065bcbe",
+    "crates/offline-depth/src/recording/chunked.rs": "926c3a90489f1ed3cb7b99372f4f504535951b331976a2266f8ebf5a027a7b80",
+    "crates/offline-depth/tests/chunked_recording.rs": "ed0ae77520f2bbf943394268c145ff94cea5c777a9d4eda8259f1a1472e7118d",
+    "crates/offline-depth/tests/writer_contention_benchmark.rs": "8c3c22187e81a4b608ebd963802dd78154f324a67ece69181498f5a19f477356",
+    "experiments/sdk-2.10.6-diagnostics/hardware.py": "2d29461ea484b96ec0fdb2455b2aa24396256f0c90e6f94b6832a9c2c7555e71",
+    "experiments/sdk-2.10.6-diagnostics/run_ab.py": "3b65b3b29fb56d0c5c70436e6b95acb363a4bd31cb2d2b488d2bab857c14a4cf",
+    "experiments/sdk-2.10.6-diagnostics/run_hardware.py": "367fa1f781f025e766a0fa0dbf5182870bb6167c8ecfefcec7d3ffcfd0c35276",
+    "experiments/sdk-2.10.6-diagnostics/run_retest.py": "09f2d1b71fde3d776665cb4006b658f7f24985d35b894cec635ee496cbd6c9fa",
+    "scripts/validation/writer_long_run.py": "17ca16fa6956912c5d7db2732c4891b47ec25543e91d99d65c26d06b63d81995",
+    "scripts/validation/writer_syscall_trace.py": "968f89f28f0a6769024a97fcf0e7df5450ab3bbfa10cb44fff202cc845ecb106",
+    "tests/test_sdk_one_click.py": "034311e8f82a6dc52a6bbc155c5542301d9d9319692410ea69a7520c86e5d9c2",
+    "tests/test_sdk_retest.py": "ab0e50178062f51d68677aa62c61e31c1cc2342aa863e376424362dbbda5abda",
+    "tests/test_writer_long_run.py": "92714341f1b60e8c55a49dc5e287164be986b4b57505801390d8eca788bd4a6c",
+    "tests/test_writer_syscall_trace.py": "f732abe4a7e3f1b2476d15010ee973d2e3b97290768f2b894afae5a702ac9b0b"
+  },
+  "full_credit_available_only_by_explicit_opt_in": true,
+  "full_credit_candidate_approved_for_default": false,
+  "long_plan": {
+    "elapsed_seconds_approx": [
+      1.04,
+      1.08,
+      1.09
+    ],
+    "formal_recovery_executed": false,
+    "historical_loss_count_warning": "pre-v2 incomplete traces may show lost_events=0 without final counters; never treat that as verified zero loss. Original outputs unchanged.",
+    "raw_reason": "RAW_QUEUE_OVERFLOW",
+    "seconds_requested": 600,
+    "source": "host-long-full-credit-600",
+    "status_off_failed": true,
+    "status_on_executed": false,
+    "trace_complete": false
+  },
+  "production_default_changed": false,
+  "source_fidelity": "final and captured snapshots retained; early uncontrolled prototypes have binary/report identities but not every intermediate worktree, and are not accepted performance comparisons",
+  "vm_limitations": {
+    "active_vm": "5 CPUs, about 6 GB, shared other services, 93 GiB VM disk",
+    "alternate_vm_separate_disk_verified": true,
+    "alternate_vm_start_rejected": "Podman only one VM active; no unrelated services stopped",
+    "minipc_ssh": "connection closed for handoff username; designated authorized credential path absent on host/current VM; no credentials printed or published"
+  }
+}

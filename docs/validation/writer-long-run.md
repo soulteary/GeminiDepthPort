@@ -12,6 +12,8 @@ off 模式只关闭实验适配器中的生产状态写入，不修改生产配�
 
 FIFO 是合成输入使用的非阻塞有界模型：16 个排队帧对加一个 inflight，满时失败而非反压相机。它不替代生产 `RawRecorder` 的 SDK 采集覆盖。未确认预算仍为 32 对／16 MiB；真实图像受字节预算约束，每半块通常七对。原有五道同步屏障、checkpoint 增量实际读回、结束整段第二轮实际读回、逐帧哈希、严格 device/global 校验及 partial 恢复均不改变。
 
+后续工具增加 `--checkpoint-batching full-credit|half-credit`，默认实验完整额度模式，真实图像通常每块约 14 对；生产仍保留半额度默认，候选需显式启用。两种模式使用同一驱动分别建新目录，详见[部署验收与候选边界](recording-readiness.md)。另持续保存每 writer 最多 16 MiB 的 `checkpoint-events.jsonl`，缺口或尾部丢失使诊断失败；不要将最后 64 条内存历史当作完整时间线。
+
 正常完成后另运行两个独立 reader，比较每帧、IMU 与元数据哈希。off/on 必须使用相同输入，五个关键原生文件的 SHA256 也须一致。之后分别在两个状态模式下进行独立 SIGKILL：确认非空 checkpoint，on 另需状态关键确认，再仅终止本次自有子进程；普通 reader 拒绝 partial、两轮恢复 reader 返回确认前缀、输入树哈希不变、无 COMPLETE。该实验验证进程崩溃，不模拟物理掉电。
 
 该存储隔离适配器没有完整复刻 `RawRecorder` 的持锁提交守卫及 SDK/ROS supervisor。已完成原生提交之后发生的状态错误，可能保留经过读回校验的原生 COMPLETE；整体实验仍必须失败。不能用原生目录存在 COMPLETE 推断状态后台或整组通过，生产提交守卫保持原样。
@@ -53,7 +55,7 @@ sudo bash scripts/validation/run_writer_long_test.sh \
 
 没有预构建驱动时，启动脚本会运行 `cargo +1.90.0 test --locked --release -p capture-probe --lib --no-run --message-format=json`，从编译结果选取唯一的 libtest ELF，然后启动同一控制器。以已具备工具链和 tracefs 权限的账户执行；不要为了构建在已保留的数据目录里创建项目。
 
-`--output` 必须不存在，且位于实际录制盘；`--disk` 必须事先核实为整盘设备名。启动前检查三 writer 数据、状态文件及 trace 的整体预算和可用空间。默认六组含最大 trace 预算预计约 402 GB，并非只预留一组约 61 GB；512 GiB 是总输出上限，不是磁盘配额。目录每秒检查一次，意外增长仍可能跨过阈值，实际超量会保留并导致失败。不要在运行中迁移旧数据、drop caches、调文件系统参数或增大队列来制造通过。
+`--output` 必须不存在，且位于实际录制盘；`--disk` 必须事先核实为整盘设备名。启动前检查三 writer 数据、状态文件及 trace 的整体预算和可用空间。默认六组含最大 trace 预算预计约 404 GB，并非只预留一组约 61 GB；512 GiB 是总输出上限，不是磁盘配额。目录每秒检查一次，意外增长仍可能跨过阈值，实际超量会保留并导致失败。不要在运行中迁移旧数据、drop caches、调文件系统参数或增大队列来制造通过。
 
 组内观测覆盖三 writer 共同起点到进程退出，包含收尾与独立 reader。初始状态目录/bootstrap 与进程启动早于 trace 挂接，不在连续内核追踪窗口内，另保留 ready 和首个关键确认信息。正常采样周期与完整输出大小都有上限；缩短为 `--seconds 3 --repeats 1 --smoke` 仅供快速验证，不能充当 600 秒验收。
 

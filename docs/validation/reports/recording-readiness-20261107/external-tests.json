@@ -1,0 +1,41 @@
+{
+  "passed": true,
+  "suites": [
+    {
+      "suite": "management",
+      "tests": 46,
+      "skipped": 0,
+      "errors": 0,
+      "failures": 0,
+      "instrumented_profiles_changed": true,
+      "passed": true
+    },
+    {
+      "suite": "native_gate",
+      "tests": 7,
+      "skipped": 0,
+      "errors": 0,
+      "failures": 0,
+      "instrumented_profiles_changed": true,
+      "passed": true
+    },
+    {
+      "suite": "sdk_grid",
+      "tests": 5,
+      "skipped": 0,
+      "errors": 0,
+      "failures": 0,
+      "instrumented_profiles_changed": true,
+      "passed": true
+    },
+    {
+      "suite": "recording",
+      "tests": 5,
+      "skipped": 0,
+      "errors": 0,
+      "failures": 0,
+      "instrumented_profiles_changed": true,
+      "passed": true
+    }
+  ]
+}

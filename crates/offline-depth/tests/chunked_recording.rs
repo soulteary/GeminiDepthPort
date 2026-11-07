@@ -340,12 +340,17 @@ fn checkpoint_child() {
         RawRecordingDiagnostics::with_checkpoint_observation(true),
     )
     .unwrap();
+    let full = std::env::var("GDP_FULL_CREDITS").as_deref() == Ok("1");
+    if full {
+        writer.enable_checkpoint_batching().unwrap();
+    }
     for n in 1..=32 {
         append(&mut writer, &pair, &pixels, n);
     }
+    writer.checkpoint().unwrap();
     assert_eq!(writer.diagnostics().report()["durable_pairs"], 32);
     fs::write(root.join("armed"), b"1").unwrap();
-    let result = writer.append(
+    let mut result = writer.append(
         &pair_at(&pair, 33),
         &[1, 2, 3, 4],
         &pixels,
@@ -358,6 +363,19 @@ fn checkpoint_child() {
             std::thread::sleep(std::time::Duration::from_secs(1));
         }
     }
+    if full && result.is_ok() {
+        for n in 34..=64 {
+            result = writer.append(
+                &pair_at(&pair, n),
+                &[1, 2, 3, 4],
+                &pixels,
+                StorageEndian::Little,
+            );
+            if result.is_err() {
+                break;
+            }
+        }
+    }
     assert!(result.and_then(|_| writer.checkpoint()).is_err());
     let report = writer.diagnostics().report();
     assert_eq!(report["durable_pairs"], 32);
@@ -368,93 +386,105 @@ fn checkpoint_child() {
 #[test]
 fn sigkill_preserves_the_last_checkpoint_without_running_drop() {
     use std::time::{Duration, Instant};
-    let root = tempfile::tempdir().unwrap();
-    let mut child = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "checkpoint_child", "--ignored"])
-        .env("GDP_CHUNK_ROOT", root.path())
-        .env("GDP_CHUNK_KILL", "1")
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    let start = Instant::now();
-    while !root.path().join("ready").exists() {
-        assert!(start.elapsed() < Duration::from_secs(5));
-        assert!(child.try_wait().unwrap().is_none());
-        std::thread::sleep(Duration::from_millis(5));
+    for full in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "checkpoint_child", "--ignored"])
+            .env("GDP_CHUNK_ROOT", root.path())
+            .env("GDP_CHUNK_KILL", "1")
+            .env("GDP_FULL_CREDITS", if full { "1" } else { "" })
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        while !root.path().join("ready").exists() {
+            assert!(start.elapsed() < Duration::from_secs(5));
+            assert!(child.try_wait().unwrap().is_none());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        child.kill().unwrap();
+        assert!(!child.wait().unwrap().success());
+        let stage = root.path().join("capture.partial");
+        assert_eq!(read_all(&stage, true).len(), 32);
+        assert!(!stage.join("INTERRUPTED.json").exists());
+        assert!(!stage.join("COMPLETE").exists());
     }
-    child.kill().unwrap();
-    assert!(!child.wait().unwrap().success());
-    let stage = root.path().join("capture.partial");
-    assert_eq!(read_all(&stage, true).len(), 32);
-    assert!(!stage.join("INTERRUPTED.json").exists());
-    assert!(!stage.join("COMPLETE").exists());
 }
 #[cfg(target_os = "linux")]
 #[test]
 fn checkpoint_write_sync_and_rename_failures_never_promote_an_unverified_prefix() {
-    for (op, suffix, nth, expected) in [
-        ("writev", "/payload-00000000000000000002.bin", "1", 32),
-        ("writev", "/payload-00000000000000000002.bin", "2", 32),
-        ("write", "/records.jsonl", "1", 32),
-        ("write", "/records.jsonl", "2", 32),
-        ("fsync", "/payload-00000000000000000002.bin", "1", 32),
-        ("fsync", "/records.jsonl", "1", 32),
-        ("fsync", "/.checkpoint.tmp", "1", 32),
-        ("fsync", "/capture.partial", "1", 32),
-        ("rename", "/checkpoint.json", "1", 32),
-        ("fsync", "/capture.partial", "2", 33),
-    ] {
-        let root = tempfile::tempdir().unwrap();
-        let library = io_faults::compile(root.path());
-        let marker = root.path().join("injected");
-        let mut command = Command::new(std::env::current_exe().unwrap());
-        command
-            .args(["--exact", "checkpoint_child", "--ignored", "--nocapture"])
-            .env("GDP_CHUNK_ROOT", root.path())
-            .env("GDP_IO_ARMED", root.path().join("armed"))
-            .env("GDP_IO_FAIL_NTH", nth);
-        if op == "writev" && nth == "2" {
-            command.env("GDP_IO_WRITEV_MAX_BYTES", "7");
-        }
-        if op == "write" && nth == "2" {
-            command.env("GDP_IO_WRITE_MAX_BYTES", "7");
-        }
-        io_faults::inject(&mut command, &library, op, suffix, &marker);
-        let output = command.output().unwrap();
-        assert!(
-            output.status.success(),
-            "{op} {suffix}: {}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        io_faults::assert_injected(&marker, op);
-        if op != "writev" {
-            let phase = match (op, suffix, nth) {
-                ("write", _, _) => "index_flush",
-                ("fsync", "/payload-00000000000000000002.bin", _) => "payload_sync",
-                ("fsync", "/records.jsonl", _) => "index_sync",
-                ("fsync", "/.checkpoint.tmp", _) => "checkpoint_write",
-                ("rename", _, _) => "checkpoint_rename",
-                (_, _, "2") => "checkpoint_directory_sync",
-                _ => "directory_sync",
-            };
-            let report: Value =
-                serde_json::from_slice(&fs::read(root.path().join("observation.json")).unwrap())
-                    .unwrap();
-            let obs = &report["checkpoint_observation"];
-            assert_eq!(obs["stages"][phase]["errors"], 1, "{phase}: {obs}");
+    for full in [false, true] {
+        for (op, suffix, nth, expected) in [
+            ("writev", "/payload-00000000000000000002.bin", "1", 32),
+            ("writev", "/payload-00000000000000000002.bin", "2", 32),
+            ("write", "/records.jsonl", "1", 32),
+            ("write", "/records.jsonl", "2", 32),
+            ("fsync", "/payload-00000000000000000002.bin", "1", 32),
+            ("fsync", "/records.jsonl", "1", 32),
+            ("fsync", "/.checkpoint.tmp", "1", 32),
+            ("fsync", "/capture.partial", "1", 32),
+            ("rename", "/checkpoint.json", "1", 32),
+            ("fsync", "/capture.partial", "2", 33),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let library = io_faults::compile(root.path());
+            let marker = root.path().join("injected");
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", "checkpoint_child", "--ignored", "--nocapture"])
+                .env("GDP_CHUNK_ROOT", root.path())
+                .env("GDP_IO_ARMED", root.path().join("armed"))
+                .env("GDP_IO_FAIL_NTH", nth);
+            if full {
+                command.env("GDP_FULL_CREDITS", "1");
+            }
+            if op == "writev" && nth == "2" {
+                command.env("GDP_IO_WRITEV_MAX_BYTES", "7");
+            }
+            if op == "write" && nth == "2" {
+                command.env("GDP_IO_WRITE_MAX_BYTES", "7");
+            }
+            io_faults::inject(&mut command, &library, op, suffix, &marker);
+            let output = command.output().unwrap();
             assert!(
-                obs["events"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|e| e["phase"] == phase && e["ok"] == false)
+                output.status.success(),
+                "{op} {suffix}: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
             );
+            io_faults::assert_injected(&marker, op);
+            if op != "writev" {
+                let phase = match (op, suffix, nth) {
+                    ("write", _, _) => "index_flush",
+                    ("fsync", "/payload-00000000000000000002.bin", _) => "payload_sync",
+                    ("fsync", "/records.jsonl", _) => "index_sync",
+                    ("fsync", "/.checkpoint.tmp", _) => "checkpoint_write",
+                    ("rename", _, _) => "checkpoint_rename",
+                    (_, _, "2") => "checkpoint_directory_sync",
+                    _ => "directory_sync",
+                };
+                let report: Value = serde_json::from_slice(
+                    &fs::read(root.path().join("observation.json")).unwrap(),
+                )
+                .unwrap();
+                let obs = &report["checkpoint_observation"];
+                assert_eq!(obs["stages"][phase]["errors"], 1, "{phase}: {obs}");
+                assert!(
+                    obs["events"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|e| e["phase"] == phase && e["ok"] == false)
+                );
+            }
+            let stage = root.path().join("capture.partial");
+            let expected = if full && expected == 33 { 64 } else { expected };
+            for _ in 0..2 {
+                assert_eq!(read_all(&stage, true).len(), expected, "{op} {suffix}");
+            }
+            assert!(!stage.join("COMPLETE").exists());
+            assert!(!root.path().join("capture").exists());
         }
-        let stage = root.path().join("capture.partial");
-        assert_eq!(read_all(&stage, true).len(), expected, "{op} {suffix}");
-        assert!(!stage.join("COMPLETE").exists());
-        assert!(!root.path().join("capture").exists());
     }
 }
 
@@ -1023,6 +1053,65 @@ fn pipeline_readback_child() {
         assert!(!root.join("capture/COMPLETE").exists());
     }
 }
+
+#[test]
+fn full_credit_batches_reduce_transactions_without_increasing_recovery_exposure() {
+    let (snapshot, pair, pixels) = fixture();
+    let root = tempfile::tempdir().unwrap();
+    let mut v2 = RawRecordingWriter::begin(root.path(), "v2", snapshot.clone()).unwrap();
+    assert!(v2.enable_checkpoint_batching().is_err());
+    let mut reports = Vec::new();
+    for full in [false, true] {
+        let mut writer = RawRecordingWriter::begin_chunked_with_diagnostics(
+            root.path(),
+            if full { "full" } else { "half" },
+            snapshot.clone(),
+            1_000_000,
+            RawRecordingDiagnostics::with_checkpoint_observation(true),
+        )
+        .unwrap();
+        if full {
+            writer.enable_checkpoint_batching().unwrap();
+            writer.enable_checkpoint_pipeline().unwrap();
+            assert_eq!(
+                writer.diagnostics().report()["checkpoint_batching"],
+                "half-credit"
+            );
+            writer.enable_checkpoint_batching().unwrap();
+        } else {
+            writer.enable_checkpoint_pipeline().unwrap();
+        }
+        let diagnostics = writer.diagnostics();
+        for n in 1..=65 {
+            append(&mut writer, &pair, &pixels, n);
+        }
+        assert!(writer.enable_checkpoint_batching().is_err());
+        writer.checkpoint().unwrap();
+        let partial = root
+            .path()
+            .join(if full { "full.partial" } else { "half.partial" });
+        assert_eq!(read_all(&partial, true).len(), 65);
+        assert!(RecordingDirectorySource::open(&partial).is_err());
+        let path = writer.finish().unwrap();
+        for _ in 0..2 {
+            let frames = read_all(&path, false);
+            assert_eq!(frames.len(), 65);
+            assert!(frames.iter().all(|f| f.depth == pixels));
+        }
+        let r = diagnostics.report();
+        assert_eq!(r["validation_image_bytes"], 65 * (4 + pixels.len()) * 2);
+        assert!(r["uncommitted_pairs_peak"].as_u64().unwrap() <= 32);
+        assert!(r["uncommitted_payload_bytes_peak"].as_u64().unwrap() <= 16 * 1024 * 1024);
+        reports.push(r);
+    }
+    assert_eq!(reports[0]["checkpoints"], 5);
+    assert_eq!(reports[1]["checkpoints"], 3);
+    assert_eq!(reports[1]["checkpoint_batching"], "full-credit");
+    assert!(
+        reports[1]["fsync"]["samples"].as_u64().unwrap()
+            < reports[0]["fsync"]["samples"].as_u64().unwrap()
+    );
+}
 #[cfg(target_os = "linux")]
 #[test]
 fn pipeline_overlaps_sync_readback_and_commit_and_retains_prefix_on_fault_or_sigkill() {
@@ -1284,7 +1373,7 @@ fn imu_samples(n: u64) -> Vec<capture_contract::imu::ImuSample> {
 }
 #[test]
 fn imu_equal_system_metadata_survives_v2_v3_and_checkpoint_readback() {
-    for mode in ["v2", "v3", "pipeline"] {
+    for mode in ["v2", "v3", "pipeline", "batched"] {
         let (snapshot, pair, pixels, _) = imu_fixture();
         let root = tempfile::tempdir().unwrap();
         let mut writer = if mode == "v2" {
@@ -1294,6 +1383,8 @@ fn imu_equal_system_metadata_survives_v2_v3_and_checkpoint_readback() {
         };
         if mode == "pipeline" {
             writer.enable_checkpoint_pipeline().unwrap();
+        } else if mode == "batched" {
+            writer.enable_checkpoint_batching().unwrap();
         }
         let diagnostics = writer.diagnostics();
         let mut expected = Vec::new();
@@ -1343,13 +1434,15 @@ fn imu_equal_system_metadata_survives_v2_v3_and_checkpoint_readback() {
 
 #[test]
 fn imu_batches_are_hashed_verified_twice_and_recovered_with_both_v3_checkpoint_modes() {
-    for pipeline in [false, true] {
+    for policy in ["sync", "pipeline", "batched"] {
         let (snapshot, pair, pixels, _) = imu_fixture();
         let root = tempfile::tempdir().unwrap();
         let mut w =
             RawRecordingWriter::begin_chunked(root.path(), "capture", snapshot, 2_000_000).unwrap();
-        if pipeline {
+        if policy == "pipeline" {
             w.enable_checkpoint_pipeline().unwrap();
+        } else if policy == "batched" {
+            w.enable_checkpoint_batching().unwrap();
         }
         let diagnostics = w.diagnostics();
         for n in 1..=35 {
@@ -1642,7 +1735,8 @@ fn borrowed_shared_imu_batches_keep_index_bytes_and_readback_hashes_identical() 
 
 #[test]
 fn checkpoint_observation_preserves_artifacts_and_both_readbacks() {
-    for pipeline in [false, true] {
+    for policy in ["sync", "pipeline", "batched"] {
+        let pipeline = policy != "sync";
         let (snapshot, pair, pixels) = fixture();
         let dir = tempfile::tempdir().unwrap();
         let mut artifacts = Vec::new();
@@ -1656,8 +1750,10 @@ fn checkpoint_observation_preserves_artifacts_and_both_readbacks() {
                 diagnostics.clone(),
             )
             .unwrap();
-            if pipeline {
+            if policy == "pipeline" {
                 writer.enable_checkpoint_pipeline().unwrap();
+            } else if policy == "batched" {
+                writer.enable_checkpoint_batching().unwrap();
             }
             for n in 1..=33 {
                 append(&mut writer, &pair, &pixels, n);

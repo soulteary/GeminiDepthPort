@@ -290,6 +290,14 @@ class SamplingAcceptanceTests(unittest.TestCase):
                                'recovered':False,'pairs':runner.a.pairs}})
             path=runner.a.run_dir/'dds-native-comparison.json';cli.atomic(path,report)
             runner.acceptance();self.assertFalse(runner.result['source_gap_free']);self.assertFalse(runner.result['crash_recovery_verified'])
+            runner.a.source_gap_policy='reject'
+            with self.assertRaisesRegex(ValueError,'SOURCE_SEQUENCE_GAP'):runner.acceptance()
+            for camera in report['cameras']:camera['zero_source_gaps']=True;camera['sequence_gaps']={}
+            cli.atomic(path,report);runner.acceptance()
+            self.assertTrue(runner.result['source_gap_free'])
+            report['cameras'][0]['zero_source_gaps']='true';cli.atomic(path,report)
+            with self.assertRaisesRegex(ValueError,'BOOLEAN'):runner.acceptance()
+            report['cameras'][0]['zero_source_gaps']=True
             report['cameras'][0]['summary']['independent_audit_passes']=1;cli.atomic(path,report)
             with self.assertRaisesRegex(ValueError,'TWO_READ'):runner.acceptance()
 
