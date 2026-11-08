@@ -15,6 +15,7 @@
 #include <sys/wait.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#include <time.h>
 static _Atomic unsigned count;
 static int fail(const char *op, const char *path) {
     const char *armed=getenv("GDP_IO_ARMED");
@@ -135,7 +136,46 @@ __attribute__((destructor)) static void save_sync_counts(void) {
     int fd=open(path,O_WRONLY|O_CREAT|O_TRUNC,0600);
     if(fd>=0){ssize_t (*real)(int,const void*,size_t)=dlsym(RTLD_NEXT,"write");(void)real(fd,raw,(size_t)used);close(fd);}
 }
+/* Bounded replay of bf7690f long tails, only in explicitly armed children.
+ * Delay before the REAL fsync: no durability barrier is skipped or faked. */
+static _Atomic unsigned tail_payloads,tail_after_rename;
+static unsigned long long tail_ns(void) {
+    struct timespec t;if(clock_gettime(CLOCK_MONOTONIC,&t)!=0)return 0;
+    return (unsigned long long)t.tv_sec*1000000000ULL+(unsigned long long)t.tv_nsec;
+}
+static void tail_delay(const char *phase,unsigned delay) {
+    unsigned long long start=tail_ns();struct timespec requested={0,(long)delay*1000000L},remaining;
+    while(nanosleep(&requested,&remaining)!=0&&errno==EINTR)requested=remaining;
+    const char *log=getenv("GDP_IO_SYNC_TAIL_LOG");
+    if(log){char row[256];int len=snprintf(row,sizeof(row),"{\"phase\":\"%s\",\"delay_ms\":%u,\"start_ns\":%llu,\"end_ns\":%llu}\n",phase,delay,start,tail_ns());
+        int output=open(log,O_WRONLY|O_CREAT|O_APPEND|O_NOFOLLOW,0600);
+        if(output>=0){ssize_t (*write_real)(int,const void*,size_t)=dlsym(RTLD_NEXT,"write");(void)write_real(output,row,(size_t)len);close(output);}}
+}
+static void sync_tail(int fd) {
+    const char *model=getenv("GDP_IO_SYNC_TAIL_MODEL"),*root=getenv("GDP_IO_SYNC_TAIL_ROOT"),*armed=getenv("GDP_IO_SYNC_TAIL_ARM");
+    if(!model||!root||!armed||access(armed,F_OK)!=0)return;
+    int half=!strcmp(model,"half-serial"),full=!strcmp(model,"full-repeated");
+    if(!half&&!full)return;
+    char link[64],path[4096];snprintf(link,sizeof(link),"/proc/self/fd/%d",fd);
+    ssize_t n=readlink(link,path,sizeof(path)-1);if(n<0)return;path[n]=0;
+    size_t size=strlen(root);if(strncmp(path,root,size)||path[size]!='/')return;
+    const char *relative=path+size+1,*phase=NULL;unsigned delay=0;
+    if(!strncmp(relative,"capture.partial/payload-",24)) {
+        unsigned index=atomic_fetch_add(&tail_payloads,1);
+        atomic_store(&tail_after_rename,0);
+        /* Separate explicit seed models pre-existing backlog; not real-device time. */
+        if(index==0&&getenv("GDP_IO_SYNC_TAIL_PRELOAD"))tail_delay("backlog_precondition",200);
+        if(index<5){phase="payload_sync";delay=half?331:458;}
+    } else if(full&&!strcmp(relative,"capture.partial/records.jsonl")&&atomic_load(&tail_payloads)>0&&atomic_load(&tail_payloads)<=5) {
+        phase="index_sync";delay=20;
+    } else if(half&&!strcmp(relative,"capture.partial")&&atomic_exchange(&tail_after_rename,0)&&atomic_load(&tail_payloads)<=5) {
+        phase="checkpoint_directory_sync";delay=327;
+    }
+    if(!delay)return;
+    tail_delay(phase,delay);
+}
 int fsync(int fd) {
+    sync_tail(fd);
     int injected=fail_fd("fsync",fd),result=-1;
     if(!injected){int (*real)(int)=dlsym(RTLD_NEXT,"fsync");result=real(fd);}
     int saved=errno;count_sync(fd,result,injected);errno=saved;return result;
@@ -203,5 +243,9 @@ int mkdir(const char *path,mode_t mode) {
 int rename(const char *oldpath,const char *newpath) {
     if(fail("rename",newpath))return -1;
     int (*real)(const char*,const char*)=dlsym(RTLD_NEXT,"rename");
-    return real(oldpath,newpath);
+    int result=real(oldpath,newpath);
+    const char *model=getenv("GDP_IO_SYNC_TAIL_MODEL");
+    size_t size=strlen(newpath);
+    if(result==0&&model&&size>=16&&!strcmp(newpath+size-16,"/checkpoint.json"))atomic_store(&tail_after_rename,1);
+    return result;
 }

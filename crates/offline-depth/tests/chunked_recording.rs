@@ -2155,3 +2155,162 @@ fn pending_checkpoint_does_not_enter_delayed_index_write() {
         "a future index write raced the held checkpoint"
     );
 }
+
+#[test]
+#[ignore = "owned subprocess for bounded bf7690f sync-tail replay"]
+fn continuous_sync_tail_child() {
+    let Some(root) = std::env::var_os("GDP_SYNC_TAIL_CHILD") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    let full = std::env::var("GDP_IO_SYNC_TAIL_MODEL").unwrap() == "full-repeated";
+    let (snapshot, pair, pixels) = fixture();
+    let mut writer = RawRecordingWriter::begin_chunked_with_diagnostics(
+        &root,
+        "capture",
+        snapshot,
+        8_000_000,
+        RawRecordingDiagnostics::with_checkpoint_observation(true),
+    )
+    .unwrap();
+    if full {
+        writer.enable_checkpoint_batching().unwrap();
+    } else {
+        writer.enable_checkpoint_pipeline().unwrap();
+    }
+    for n in 1..=32 {
+        append(&mut writer, &pair, &pixels, n);
+    }
+    writer.checkpoint().unwrap();
+    assert_eq!(writer.diagnostics().report()["durable_pairs"], 32);
+    fs::write(root.join("tail-armed"), b"1").unwrap();
+    for n in 33..=192 {
+        append(&mut writer, &pair, &pixels, n);
+    }
+    writer.checkpoint().unwrap();
+    let diagnostics = writer.diagnostics();
+    let report = diagnostics.report();
+    assert!(report["uncommitted_pairs_peak"].as_u64().unwrap() <= 32);
+    assert!(report["uncommitted_payload_bytes_peak"].as_u64().unwrap() <= 16 * 1024 * 1024);
+    fs::write(
+        root.join("tail-report.json"),
+        serde_json::to_vec_pretty(&report).unwrap(),
+    )
+    .unwrap();
+    if std::env::var_os("GDP_SYNC_TAIL_KILL").is_some() {
+        fs::write(root.join("tail-ready"), b"1").unwrap();
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    let path = writer.finish().unwrap();
+    for _ in 0..2 {
+        assert_eq!(read_all(&path, false).len(), 192);
+    }
+    assert_eq!(
+        diagnostics.report()["validation_image_bytes"],
+        192 * (4 + pixels.len()) * 2
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn continuous_sync_tails_keep_credit_limits_real_barriers_hashes_and_crash_prefix() {
+    for model in ["half-serial", "full-repeated"] {
+        for kill in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let library = io_faults::compile(root.path());
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "continuous_sync_tail_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("GDP_SYNC_TAIL_CHILD", root.path())
+                .env("LD_PRELOAD", library)
+                .env("GDP_IO_SYNC_TAIL_ROOT", root.path())
+                .env("GDP_IO_SYNC_TAIL_ARM", root.path().join("tail-armed"))
+                .env("GDP_IO_SYNC_TAIL_LOG", root.path().join("tail-log.jsonl"))
+                .env("GDP_IO_SYNC_TAIL_MODEL", model);
+            if kill {
+                command.env("GDP_SYNC_TAIL_KILL", "1");
+            }
+            let mut child = command.spawn().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let mut killed = false;
+            while child.try_wait().unwrap().is_none() {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("sync-tail child exceeded bound");
+                }
+                if kill && root.path().join("tail-ready").exists() {
+                    child.kill().unwrap();
+                    killed = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let exit = child.wait().unwrap();
+            assert_eq!(exit.success(), !kill);
+            if kill {
+                use std::os::unix::process::ExitStatusExt as _;
+                assert!(killed);
+                assert_eq!(exit.signal(), Some(libc::SIGKILL));
+            }
+            let lines = fs::read_to_string(root.path().join("tail-log.jsonl")).unwrap();
+            let events: Vec<Value> = lines
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(events.len(), 10, "{model}: {events:?}");
+            for event in &events {
+                assert!(
+                    event["end_ns"].as_u64().unwrap() - event["start_ns"].as_u64().unwrap()
+                        >= event["delay_ms"].as_u64().unwrap() * 1_000_000
+                );
+            }
+            for pair in events.chunks_exact(2) {
+                assert_eq!(pair[0]["phase"], "payload_sync");
+                assert_eq!(
+                    pair[1]["phase"],
+                    if model == "half-serial" {
+                        "checkpoint_directory_sync"
+                    } else {
+                        "index_sync"
+                    }
+                );
+                assert!(
+                    pair[1]["start_ns"].as_u64().unwrap() >= pair[0]["end_ns"].as_u64().unwrap()
+                );
+            }
+            let report: Value =
+                serde_json::from_slice(&fs::read(root.path().join("tail-report.json")).unwrap())
+                    .unwrap();
+            assert!(
+                report["fsync"]["total_ns"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<u128>()
+                    .unwrap()
+                    >= if model == "half-serial" {
+                        3_290_000_000
+                    } else {
+                        2_390_000_000
+                    }
+            );
+            if kill {
+                let partial = root.path().join("capture.partial");
+                assert!(!partial.join("COMPLETE").exists());
+                assert!(RecordingDirectorySource::open(&partial).is_err());
+                for _ in 0..2 {
+                    assert_eq!(read_all(&partial, true).len(), 192);
+                }
+            } else {
+                assert!(root.path().join("capture/COMPLETE").exists());
+            }
+        }
+    }
+}
