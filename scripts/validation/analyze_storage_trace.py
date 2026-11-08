@@ -5,6 +5,7 @@ No merging of block requests by sector, no guessed request IDs or unique SSD
 causality. Kernel event overlaps and file evidence are reported separately.
 """
 import argparse
+import bisect
 import hashlib
 import json
 import os
@@ -83,6 +84,12 @@ def correlate(syscalls,events,start,end):
     journals=[r for r in events if r['kind']=='jbd2_end_commit' and 'entry_monotonic_ns' in r]
     blocks=[r for r in events if r['kind'].startswith('block_')]
     require(len(syncs)<=4096 and len(journals)<=4096,'STORAGE_CORRELATION_STATE_BOUND')
+    block_times={}
+    for row in blocks:block_times.setdefault(row['kind'],[]).append(row['monotonic_ns'])
+    for times in block_times.values():times.sort()
+    flush_times=sorted(r['monotonic_ns'] for r in blocks if r.get('flush') is True)
+    fua_times=sorted(r['monotonic_ns'] for r in blocks if r.get('fua') is True)
+    def during(times,a,b):return bisect.bisect_right(times,b)-bisect.bisect_left(times,a)
     output=[];deadline=time.monotonic()+10
     for call in syscalls:
         if call.get('syscall') not in ('fsync','fdatasync') or 'duration_ns' not in call:continue
@@ -97,6 +104,9 @@ def correlate(syscalls,events,start,end):
         output.append({'tid':call['tid'],'entry_monotonic_ns':a,'exit_monotonic_ns':b,'syscall':call['syscall'],
                        'fd':call['fd'],'return_value':call.get('return_value'),'duration_ns':call['duration_ns'],'ext4_syncs':nested,
                        'file_role':sample.get('role') if verified else None,'file_role_kernel_inode_matched':verified,
+                       'block_event_overlap_counts':{kind:during(times,a,b) for kind,times in block_times.items()},
+                       'flush_flag_event_overlap_count':during(flush_times,a,b),'fua_flag_event_overlap_count':during(fua_times,a,b),
+                       'block_association':'selected-device event timestamps inside syscall interval; not unique requests, causal IO, or additive across concurrent calls',
                        'journal_overlap_count':len(overlaps),'journal_overlap_transactions':[j['transaction'] for j in overlaps[:32]],
                        'journal_association':'temporal/device overlap only; not an fsync-to-transaction causal ID'})
     counts={}

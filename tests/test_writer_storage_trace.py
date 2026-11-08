@@ -110,6 +110,8 @@ class AttributionTests(unittest.TestCase):
         result=analysis.correlate([call],events,9990000000,10400000000)
         self.assertEqual(result['fsync_correlations'][0]['file_role'],'payload');self.assertFalse(result['hardware_cause_verified'])
         self.assertEqual(result['fsync_correlations'][0]['journal_overlap_transactions'],[4])
+        self.assertEqual(result['fsync_correlations'][0]['block_event_overlap_counts'],{'block_rq_issue':1,'block_rq_complete':1})
+        self.assertEqual(result['fsync_correlations'][0]['flush_flag_event_overlap_count'],2)
         call['fd_sample']['sample_finished_monotonic_ns']=10400000000
         self.assertIsNone(analysis.correlate([call],events,9990000000,10400000000)['fsync_correlations'][0]['file_role'])
         call['fd_sample']['sample_finished_monotonic_ns']=10060000000;call['fd_sample']['inode']=43

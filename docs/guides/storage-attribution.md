@@ -73,7 +73,7 @@ python3 scripts/validation/analyze_storage_trace.py \
 
 文件角色只有在以下证据同时满足时才标为匹配：FD 观测始末均在配对 syscall 内，且同 TID 的嵌套 ext4_sync_file 事件具有相同 dev/inode。FD 读取发生于排空 trace 时，不一定等于 syscall entry；采样太晚、FD 已关闭／复用或 inode 不符时保留未知。syscall 与 ext4 的时长相互重叠，不相加。
 
-jbd2 使用设备／transaction ID 还原提交区间，与 fsync 的关联仍是时间／设备重叠，不是唯一因果 ID。普通 block tracepoint 没有稳定 request ID，扇区可能重复、请求会合并、重排或部分完成，flush 的 sector 常为 0；工具保留这些事件，**不按相同 sector 元组拼造请求延迟，也不把重叠直接归因于 SSD**。
+jbd2 使用设备／transaction ID 还原提交区间，与 fsync 的关联仍是时间／设备重叠，不是唯一因果 ID。普通 block tracepoint 没有稳定 request ID，扇区可能重复、请求会合并、重排或部分完成，flush 的 sector 常为 0；工具保留这些事件，并按 syscall 区间列出各类块事件及 flush/FUA 标记事件的重叠计数。并行 syscall 的计数会重叠，不能相加。**不按相同 sector 元组拼造请求延迟，也不把重叠直接归因于 SSD**。
 
 ## 确定性长尾回归
 
