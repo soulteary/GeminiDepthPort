@@ -688,16 +688,32 @@ fn queue_overflow_stays_at_sixteen_and_discards_pending_pairs() {
 }
 
 #[cfg(target_os = "linux")]
-#[path = "../../../tests/support/io_faults.rs"]
-#[allow(dead_code)] // shared test utility; this fixture needs only its C compiler
-mod tail_io_faults;
-
-#[cfg(target_os = "linux")]
 #[test]
 fn sync_tail_replay_reports_real_fifo_overflow_without_relaxing_capture_or_recovery() {
     for policy in ["half-credit", "full-credit"] {
         let root = tempfile::tempdir().unwrap();
-        let library = tail_io_faults::compile(root.path());
+        // This file is also included by capture-probe's libtest, which already
+        // loads the shared Rust IO helper. Compile the same C fixture directly
+        // here instead of defining that module twice in one test binary.
+        let mut source = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        while !source.join("tests/support/io_faults.c").is_file() {
+            source = source.parent().unwrap().to_path_buf();
+        }
+        let library = root.path().join("sync-tail.so");
+        let built = std::process::Command::new("cc")
+            .args([
+                "-shared", "-fPIC", "-std=c11", "-Wall", "-Wextra", "-Werror",
+            ])
+            .arg(source.join("tests/support/io_faults.c"))
+            .args(["-ldl", "-o"])
+            .arg(&library)
+            .output()
+            .unwrap();
+        assert!(
+            built.status.success(),
+            "{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
         let barrier = root.path().join("start.json");
         fs::write(root.path().join("tail-armed"), b"1").unwrap();
         let prefix = module_path!()
