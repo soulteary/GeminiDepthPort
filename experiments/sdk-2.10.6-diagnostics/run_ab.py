@@ -13,6 +13,7 @@ import ab_metrics as metrics
 import experiment_runtime as rt
 import hardware as hw
 import run_hardware as one
+import retention
 
 HERE=Path(__file__).resolve().parent
 
@@ -119,7 +120,7 @@ def execute(a):
     (a.root/'controller').mkdir(mode=0o700)
     controller=one.Runner(argparse.Namespace(root=a.root/'controller',poll_seconds=a.poll_seconds));controller.save()
     result={'version':1,'ok':False,'uid':os.getuid(),'gid':os.getgid(),'run_token':controller.token,'groups':[],
-            'planned_groups':groups,'production_changed':False,'rollback_argv':[sys.executable,str(HERE/'run_ab.py'),'rollback','--root',str(a.root)]}
+            'planned_groups':groups,'production_changed':False,'retention_policy':getattr(a,'retention','all'),'rollback_argv':[sys.executable,str(HERE/'run_ab.py'),'rollback','--root',str(a.root)]}
     def save():one.atomic(a.root/'result.json',result)
     save();manifest=None
     def cancelled(sig,_frame):raise one.Cancelled('SIGNAL:'+str(sig))
@@ -151,6 +152,8 @@ def execute(a):
             # Require every owned capture stopped before starting another group.
             child=hw.load_run(a.root/group['name']/'capture',verify=False)
             rt.require(all(not hw.own_container(child,c)['State']['Running'] for c in child['cameras']),'PREVIOUS_GROUP_STILL_RUNNING')
+            if getattr(a,'retention','all')=='verified-window':
+                entry['retention']=retention.release(a.root/group['name'],a.pairs,stopped=True);save()
             if group!=groups[-1]:time.sleep(a.cooldown_seconds)
         check_frozen(a.root,manifest)
         result['ok']=True
@@ -170,6 +173,8 @@ def execute(a):
         try:
             report=metrics.aggregate(result['groups'],a.rounds)
             report['batch_ok']=result['ok']
+            report['retention_policy']=getattr(a,'retention','all')
+            report['successful_raw_payloads_retained']=report['retention_policy']=='all'
             if not result['ok']:report.update(complete=False,comparison=None)
             render(a.root,report)
         except Exception as error:result.update(ok=False,summary_error=str(error))
@@ -188,6 +193,7 @@ def main():
     r.add_argument('--audit-timeout',type=int,default=3600);r.add_argument('--build-timeout',type=int,default=3600)
     r.add_argument('--poll-seconds',type=float,default=5);r.add_argument('--trim-seconds',type=float,default=5)
     r.add_argument('--cooldown-seconds',type=float,default=30);r.add_argument('--disk',action='append',default=[])
+    r.add_argument('--retention',choices=retention.POLICIES,default='all')
     r.add_argument('--observe-lifecycle',action='store_true')
     r.add_argument('--source-gap-policy',choices=('reject','report'),default='report')
     r.add_argument('--perf',action='store_true');r.add_argument('--execute',action='store_true')

@@ -61,11 +61,11 @@ def batch_args(a, image):
                  'trim_seconds', 'cooldown_seconds'):
         argv += ['--'+name.replace('_', '-'), str(getattr(a, name))]
     for disk in a.disk: argv += ['--disk', disk]
-    argv += ['--source-gap-policy', getattr(a,'source_gap_policy','reject')]
+    argv += ['--source-gap-policy', getattr(a,'source_gap_policy','reject'), '--retention', getattr(a,'retention','all')]
     return argv
 
 
-def storage_preflight(a):
+def storage_preflight(a, write=True):
     """Conservative retained-data estimate; no deletion or filesystem tuning.
 
     Covers all normal groups plus a full native crash run. The DDS observer
@@ -74,7 +74,8 @@ def storage_preflight(a):
     This is an estimate, not a quota or a guarantee against another writer.
     """
     cameras = rt.read_json(a.plan)['cameras']
-    native = 0; wire = hw.DDS_DATABASE_MAX_MIB * 1024**2
+    import retention
+    native = 0; metadata = 0; wire = hw.DDS_DATABASE_MAX_MIB * 1024**2
     for camera in cameras:
         config = rt.read_json(camera['capture_config'])
         sizes = {}
@@ -84,17 +85,25 @@ def storage_preflight(a):
                 rt.require(type(profile.get(key)) is int and profile[key] > 0, 'STORAGE_PROFILE_INTEGER')
             sizes[stream] = profile['width'] * profile['height']
         native += a.pairs * (2*sizes['color'] + 2*sizes['depth'] + 65536)
+        metadata += a.pairs * 65536
     groups = a.rounds * 2
-    estimate = ((groups+1)*native + groups*2*wire)*5//4 + 1024**3
-    fs = os.statvfs(a.root)
+    proof = retention.capacity(native, metadata, groups, wire, getattr(a,'retention','all'))
+    path=a.root
+    if not write:
+        while not path.exists():path=path.parent
+    fs = os.statvfs(path)
     available = fs.f_bavail * fs.f_frsize
-    proof = {'estimated_required_bytes':estimate,'available_bytes':available,
-             'normal_groups':groups,'native_bytes_per_group':native,'dds_bytes_per_group':wire,
-             'source_gap_policy':getattr(a,'source_gap_policy','reject'),
-             'scope':'retained native + 4096 MiB DDS hash/metadata database and equal DELETE journal per group + crash budget, 25% + 1 GiB headroom; estimate, not quota; no old data deleted'}
-    one.atomic(a.root/'storage-preflight.json',proof)
-    rt.require(available >= estimate, 'INSUFFICIENT_RETEST_STORAGE')
+    total = getattr(fs,'f_blocks',fs.f_bavail) * fs.f_frsize
+    proof.update(filesystem_probe_path=str(path),available_bytes=available,filesystem_total_bytes=total,
+                 capacity_exceeds_filesystem=proof['estimated_required_bytes']>total,
+                 capacity_sufficient=available>=proof['estimated_required_bytes'],
+                 missing_bytes=max(0,proof['estimated_required_bytes']-available),
+                 source_gap_policy=getattr(a,'source_gap_policy','reject'))
+    if write:
+        one.atomic(a.root/'storage-preflight.json',proof)
+        rt.require(proof['capacity_sufficient'], 'INSUFFICIENT_RETEST_STORAGE')
     return proof
+
 
 
 def crash_binding(run, expected_hashes, image, runtime):
@@ -228,7 +237,7 @@ def execute(a):
     (a.root/'controller').mkdir(mode=0o700)
     controller = one.Runner(argparse.Namespace(root=a.root/'controller', poll_seconds=a.poll_seconds)); controller.save()
     result = {'version': 1, 'ok': False, 'uid': os.getuid(), 'gid': os.getgid(), 'run_token': controller.token,
-              'stage': 'prepare', 'audit_container': 'gdp-retest-'+controller.token+'-audit', 'production_changed': False, 'rollback_argv':
+              'stage': 'prepare', 'audit_container': 'gdp-retest-'+controller.token+'-audit', 'production_changed': False, 'retention_policy':getattr(a,'retention','all'), 'rollback_argv':
               [sys.executable, str(HERE/'run_retest.py'), 'rollback', '--root', str(a.root)]}
     lifecycle = None
     def save(): one.atomic(a.root/'result.json', result)
@@ -318,6 +327,8 @@ def execute(a):
         result['finished_unix_ns'] = time.time_ns(); save()
         report = {'ok': result['ok'], 'ab': result.get('ab'), 'recovery': result.get('recovery'),
                   'error': result.get('error'), 'cleanup': result.get('cleanup'), 'rollback_argv': result['rollback_argv']}
+        report['retention_policy'] = getattr(a,'retention','all')
+        report['successful_raw_payloads_retained'] = report['retention_policy']=='all'
         report['source_gap_policy'] = getattr(a,'source_gap_policy','reject')
         report['strict_600s_acceptance_passed'] = (result['ok'] is True and a.seconds >= 600
             and a.rounds >= 3 and report['source_gap_policy'] == 'reject')
@@ -342,7 +353,7 @@ def execute(a):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__); sub = p.add_subparsers(dest='action', required=True)
-    r = sub.add_parser('run'); r.add_argument('--plan', type=Path, required=True); r.add_argument('--image', required=True)
+    r = sub.add_parser('run', aliases=['capacity']); r.add_argument('--plan', type=Path, required=True); r.add_argument('--image', required=True)
     r.add_argument('--rounds', type=int, default=3); r.add_argument('--first', choices=('on', 'off'), default='on')
     r.add_argument('--camera', default='b'); r.add_argument('--build', action='store_true')
     r.add_argument('--platform', choices=('linux/amd64', 'linux/arm64'), default='linux/amd64')
@@ -355,15 +366,20 @@ def parser():
     r.add_argument('--execute', action='store_true'); sub.add_parser('rollback')
     r.add_argument('--source-gap-policy', choices=('reject','report'), default='reject',
                    help='formal retest rejects source gaps by default; report retains a limited recording-only result')
+    r.add_argument('--retention',choices=('all','verified-window'),default='all',help='opt-in release of NEW accepted stopped groups after two audits; failures/old roots retained')
     r.add_argument('--checkpoint-batching',choices=('half-credit','full-credit'),default='half-credit',
                    help='full-credit is an explicit experimental rollout; credits and durability barriers stay fixed')
-    for command in sub.choices.values(): command.add_argument('--root', type=Path, required=True)
+    for command in {id(v):v for v in sub.choices.values()}.values(): command.add_argument('--root', type=Path, required=True)
     return p
 
 
 def main():
     os.umask(0o077); a = parser().parse_args(); a.root = a.root.absolute()
     try:
+        if a.action == 'capacity':
+            batch.schedule(a.rounds,a.first); one.settings(a)
+            proof=storage_preflight(a,write=False)
+            print(json.dumps(proof,indent=2)); return 0 if proof['capacity_sufficient'] else 1
         one.local_rootful(require_compose=a.action == 'run')
         if a.action == 'rollback':
             value = rollback(a); print(json.dumps(value, indent=2)); return 0 if value['ok'] else 1

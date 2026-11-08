@@ -188,6 +188,7 @@ def pack(args):
                 with tarfile.open(fileobj=compressed, mode='w|', format=tarfile.PAX_FORMAT) as archive:
                     bundle = Bundle(archive, args)
                     if sdk_warning: bundle.warnings.append(sdk_warning)
+                    if result.get('retention_policy')=='verified-window':bundle.warnings.append('verified-window: accepted pixels/DDS databases intentionally released after audits; raw replay unavailable; consult per-group payload-retention receipts')
                     if not result.get('finished_unix_ns'): bundle.warnings.append('run has no finished marker; rollback/stop before packaging')
                     for source, fd in sources.items(): bundle.walk(fd, source)
                     rt.require(any(r['source'] == 'retest' and r['path'] == 'result.json' and r['signature'] == result_signature for r in bundle.files), 'RESULT_METADATA_CHANGED_OR_EXCLUDED')
@@ -199,6 +200,7 @@ def pack(args):
                     sums += bundle.generated('PACKAGE.json', {'version': 1, 'kind': 'gdp-retest-evidence', 'created_unix_ns': time.time_ns(),
                         'source_root': str(root), 'run_token': token, 'run_ok': result.get('ok'),
                         'image_id': result.get('image_id'), 'runtime_sha256': result.get('runtime_sha256'),
+                        'retention_policy':result.get('retention_policy','all'),
                         'source_files': len(bundle.files), 'source_bytes': bundle.used, 'warnings': bundle.warnings,
                         'limits': {'max_file_mib': args.max_file_mib, 'max_total_mib': args.max_total_mib, 'max_files': args.max_files},
                         'scope': 'evidence snapshot, not hardware acceptance; raw recordings and wire databases excluded; SHA256SUMS excludes itself; outer archive hash is a sidecar'})

@@ -404,3 +404,66 @@ class LongProcessTests(unittest.TestCase):
                     pid=json.loads(ready.read_text())['pid']-(1 if behavior=='wrong-pid' else 0)
                     with self.assertRaises(ProcessLookupError):os.kill(pid,0)
                 if behavior=='wrong-pid':self.assertFalse((a.output/'round-00-status-off/start.json').exists())
+
+
+class ResourceLifecycleTests(unittest.TestCase):
+    def test_sampling_continues_across_cleanup_and_trace_finish_with_final_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);a=args(root,root/'binary')
+            children=[object(),object(),object()]
+            process={'pid':123,'rss_bytes':4096}
+            with patch.object(long.ab,'owned_process_sample',return_value=process),patch.object(long.ab,'process_sample',return_value=process),patch.object(long.ab,'disk_sample',return_value={'synthetic':{}}):
+                sampler=long.ResourceSampler(root,children,a,.005);sampler.thread.start()
+                def observed(phase):
+                    deadline=time.monotonic()+2
+                    while True:
+                        path=root/'resources.jsonl'
+                        if path.exists() and any(json.loads(line)['phase']==phase for line in path.read_text().splitlines()):return
+                        self.assertLess(time.monotonic(),deadline,'resource phase not observed: '+phase)
+                        time.sleep(.005)
+                observed('recording');sampler.phase='cleanup';observed('cleanup')
+                sampler.phase='trace-drain';observed('trace-drain');end=time.monotonic_ns()
+                summary=sampler.finish()
+            rows=[json.loads(line) for line in (root/'resources.jsonl').read_text().splitlines()]
+            self.assertTrue(summary['resource_diagnostic_complete'])
+            self.assertTrue(rows[-1]['final']);self.assertGreaterEqual(rows[-1]['monotonic_ns'],end)
+            self.assertEqual({r['phase'] for r in rows},{'recording','cleanup','trace-drain'})
+            self.assertEqual(summary['simultaneous_rss_peak_bytes'],12288)
+            self.assertEqual(summary['resource_samples'],len(rows))
+            self.assertEqual(summary['resource_log_bytes'],(root/'resources.jsonl').stat().st_size)
+
+    def test_sampler_byte_limit_is_terminal_and_does_not_write_over_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);a=args(root,root/'binary')
+            with patch.object(long.ab,'owned_process_sample',return_value={'terminal':True,'error':'EXITED'}),patch.object(long.ab,'process_sample',return_value={'rss_bytes':1}),patch.object(long.ab,'disk_sample',return_value={'synthetic':{}}):
+                sampler=long.ResourceSampler(root,[object()]*3,a,.005);sampler.limit=1
+                sampler.thread.start();sampler.thread.join(timeout=2)
+                with self.assertRaisesRegex(RuntimeError,'BYTE_LIMIT_BEFORE_WRITE'):sampler.finish()
+            self.assertEqual((root/'resources.jsonl').stat().st_size,0)
+
+
+@unittest.skipUnless(sys.platform=='linux','real owned subprocess cleanup and /proc sampling')
+class ResourceFailureLifecycleTests(unittest.TestCase):
+    def test_native_failure_keeps_sampling_through_slow_cleanup_trace_and_terminal_row(self):
+        class SlowFinishTrace(CompleteTrace):
+            finished_ns=0
+            def finish(self):
+                deadline=time.monotonic()+2
+                while not any(json.loads(line)['phase']=='trace-drain' for line in (self.output.parent/'resources.jsonl').read_text().splitlines()):
+                    if time.monotonic()>=deadline:raise AssertionError('cleanup was not sampled')
+                    time.sleep(.005)
+                time.sleep(.05)
+                result=super().finish();type(self).finished_ns=time.monotonic_ns();return result
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);a=args(root,fake_binary(root/'driver','early-failed-one'));a.output.mkdir()
+            with self.assertRaisesRegex(ValueError,'RAW_QUEUE_OVERFLOW'):
+                long.run_batch(a.binary,a.output/'failed',30,False,a,time.monotonic()+10,SlowFinishTrace,.01)
+            failure=json.loads((a.output/'failed/batch-failure.json').read_text())
+            self.assertIn('RAW_QUEUE_OVERFLOW',failure['first_failure'])
+            self.assertEqual(failure['cleanup_errors'],[])
+            rows=[json.loads(line) for line in (a.output/'failed/resources.jsonl').read_text().splitlines()]
+            self.assertTrue(rows[-1]['final'])
+            self.assertGreaterEqual(rows[-1]['monotonic_ns'],SlowFinishTrace.finished_ns)
+            self.assertIn('trace-drain',{row['phase'] for row in rows})
+            self.assertTrue(all(p['terminal'] for p in rows[-1]['processes']))
+            self.assertEqual(failure['resources']['resource_finished_monotonic_ns'],rows[-1]['monotonic_ns'])

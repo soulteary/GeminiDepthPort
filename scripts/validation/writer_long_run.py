@@ -18,6 +18,7 @@ import signal
 import subprocess
 import sys
 import time
+import threading
 
 
 def sibling(name):
@@ -315,13 +316,79 @@ def trace_unavailable(result):
     return result.get('state') == 'unavailable' and result.get('ok') is not True
 
 
+class ResourceSampler:
+    """One bounded observer covering the barrier through owned cleanup/trace drain."""
+    def __init__(self, root, children, args, interval):
+        self.root, self.children, self.args, self.interval = root, children, args, interval
+        self.stop_event = threading.Event()
+        self.error = None
+        self.samples = self.used = self.max_gap = 0
+        self.rss_peak = self.observer_peak = self.last_ns = None
+        self.gaps = {}
+        self.limit = max(8 * MIB, args.seconds * 65536)
+        self.phase = 'recording'
+        self.next_disk = 0
+        self.thread = threading.Thread(target=self.run, name='writer-resources', daemon=True)
+    def sample(self, log, final=False):
+        now = time.monotonic_ns()
+        processes = [ab.owned_process_sample(child) for child in self.children]
+        valid = [p for p in processes if 'error' not in p]
+        observer = ab.process_sample(os.getpid())
+        if 'error' not in observer:
+            self.observer_peak = max(self.observer_peak or 0, observer['rss_bytes'])
+        else:
+            key = 'observer:' + observer['error']; self.gaps[key] = self.gaps.get(key, 0) + 1
+        row = {'monotonic_ns':now, 'unix_ns':time.time_ns(), 'processes':processes,
+               'simultaneous_rss_bytes':sum(p['rss_bytes'] for p in valid),
+               'all_children_live':len(valid)==WRITERS, 'observer':observer,
+               'phase':self.phase, 'final':final}
+        if final or now>=self.next_disk:
+            row['disks']=ab.disk_sample();self.next_disk=now+1_000_000_000
+            if not row['disks'] or 'error' in row['disks']:
+                self.gaps['diskstats'] = self.gaps.get('diskstats', 0) + 1
+            if self.args.disk and self.args.disk not in row['disks']:
+                self.gaps['requested-disk-missing'] = self.gaps.get('requested-disk-missing', 0) + 1
+        for process in processes:
+            if process.get('terminal') is True: continue
+            for kind in ('error', 'io_error'):
+                if kind in process:
+                    key = kind + ':' + process[kind]; self.gaps[key] = self.gaps.get(key, 0) + 1
+        encoded = json.dumps(row, separators=(',', ':')) + '\n'
+        size = len(encoded.encode())
+        if self.used + size > self.limit: raise RuntimeError('RESOURCE_LOG_BYTE_LIMIT_BEFORE_WRITE')
+        log.write(encoded); self.used += size; self.samples += 1
+        if len(valid)==WRITERS:self.rss_peak = max(self.rss_peak or 0, row['simultaneous_rss_bytes'])
+        if self.last_ns is not None:self.max_gap = max(self.max_gap, now-self.last_ns)
+        self.last_ns = now
+    def run(self):
+        try:
+            with (self.root/'resources.jsonl').open('x', buffering=1) as log:
+                while True:
+                    self.sample(log)
+                    if self.stop_event.wait(self.interval):break
+                self.sample(log, final=True)
+        except BaseException as failure:
+            self.error = type(failure).__name__+':'+str(failure)
+    def check(self):
+        if self.error:raise RuntimeError('RESOURCE_SAMPLER_FAILED:'+self.error)
+    def finish(self):
+        self.stop_event.set(); self.thread.join(timeout=10)
+        if self.thread.is_alive():raise RuntimeError('RESOURCE_SAMPLER_STOP_TIMEOUT')
+        self.check()
+        return {'resource_samples':self.samples,'resource_log_bytes':self.used,
+                'resource_gap_max_ns':self.max_gap,'resource_log_limit_bytes':self.limit,
+                'resource_gaps':self.gaps,'simultaneous_rss_peak_bytes':self.rss_peak,
+                'resource_finished_monotonic_ns':self.last_ns,
+                'resource_diagnostic_complete':self.rss_peak is not None and not self.gaps,
+                'resource_scope':'barrier through owned child cleanup and trace final drain; terminal RSS unavailable, never zero-filled'}
+
+
 def run_batch(binary, root, pairs, status_on, args, deadline, trace_factory=None, sample_interval=.2):
     root.mkdir()
     observer_started = resource.getrusage(resource.RUSAGE_SELF)
     observer_rss_peak = None
     children = []; child_roots = []; trace = None; trace_result = None
-    samples = 0; rss_peak = None; last_ns = None; max_gap = 0; gaps = {}; resource_bytes = 0
-    resource_limit = max(8 * MIB, args.seconds * 65536)
+    sampler = None;resource_summary = None
     result = None;first_failure = None;first_child_failure=None;finished_results={};finished_heartbeats={}
     try:
         for index in range(WRITERS):
@@ -342,73 +409,44 @@ def run_batch(binary, root, pairs, status_on, args, deadline, trace_factory=None
         target = time.monotonic_ns() + 200_000_000
         ab.write_json(root / 'start.tmp', {'start_monotonic_ns': target, 'start_unix_ns': time.time_ns() + 200_000_000})
         (root / 'start.tmp').rename(root / 'start.json')
-        with (root / 'resources.jsonl').open('x') as log:
-            next_disk = 0; next_budget = 0
-            while True:
-                now = time.monotonic_ns()
-                # Inspect owned exits before trace/health work: a later
-                # diagnostic/cleanup failure must not hide a known native cause.
-                for index,(process,child_root) in enumerate(zip(children,child_roots)):
-                    if process.poll() is None or index in finished_results:continue
-                    try:child_result=read_result(child_root/'result.json')
-                    except Exception as failure:
-                        first_child_failure=child_failure_brief(index,process,child_root,error=type(failure).__name__+':'+str(failure))
-                        raise RuntimeError('CHILD_FAILED:'+child_root.name+':'+str(process.returncode)+':'+str(first_child_failure['result_error'])) from failure
-                    if process.returncode!=0:
-                        first_child_failure=child_failure_brief(index,process,child_root,child_result)
-                        raise RuntimeError('CHILD_FAILED:'+child_root.name+':'+str(process.returncode)+':'+str(child_result.get('reason') or child_result.get('writer_error')))
-                    try:validate_result(child_result,pairs,status_on,source_hashes(),args.seconds)
-                    except Exception:
-                        first_child_failure=child_failure_brief(index,process,child_root,child_result)
-                        raise
-                    finished_results[index]=child_result
-                    if status_on:
-                        # A dead writer no longer owes a live heartbeat. Freeze
-                        # its final identity/version once; never age it while
-                        # slower peers finish their independent readers.
-                        finished_heartbeats[index]=status_monitors[index].sample(require_fresh=False)
-                if not missing_trace:
-                    trace.poll()
-                    if trace.failure:
-                        raise RuntimeError('TRACE_RUNTIME_FAILURE:' + str(trace.failure))
-                processes = [ab.owned_process_sample(child) for child in children]
-                for index,monitor in enumerate(status_monitors):
-                    if children[index].poll() is None and not processes[index].get('terminal'):
-                        processes[index]['status_heartbeat']=monitor.sample()
-                valid = [p for p in processes if 'error' not in p]
-                observer_process = ab.process_sample(os.getpid())
-                if 'error' not in observer_process:
-                    observer_rss_peak = max(observer_rss_peak or 0, observer_process['rss_bytes'])
-                else:
-                    key = 'observer:' + observer_process['error'];gaps[key] = gaps.get(key, 0) + 1
-                row = {'monotonic_ns': now, 'unix_ns': time.time_ns(), 'processes': processes,
-                       'simultaneous_rss_bytes': sum(p['rss_bytes'] for p in valid),
-                       'all_children_live': len(valid) == WRITERS, 'observer':observer_process}
-                if now >= next_disk:
-                    row['disks'] = ab.disk_sample()
-                    if not row['disks'] or 'error' in row['disks']:
-                        key = 'diskstats:' + str(row['disks'].get('error', 'EMPTY'));gaps[key] = gaps.get(key, 0) + 1
-                    if args.disk and args.disk not in row['disks']:
-                        gaps['requested-disk-missing'] = gaps.get('requested-disk-missing', 0) + 1
-                    next_disk = now + 1_000_000_000
-                for p in processes:
-                    terminal = p.get('terminal') is True
-                    for kind, error in (('process', p.get('error')), ('process_io', p.get('io_error'))):
-                        if error is not None and not terminal:
-                            key = kind + ':' + error;gaps[key] = gaps.get(key, 0) + 1
-                encoded = json.dumps(row, separators=(',', ':')) + '\n'
-                encoded_bytes = len(encoded.encode())
-                if resource_bytes + encoded_bytes > resource_limit:
-                    raise RuntimeError('RESOURCE_LOG_BYTE_LIMIT_BEFORE_WRITE')
-                log.write(encoded);resource_bytes += encoded_bytes;samples += 1
-                if len(valid) == WRITERS:rss_peak = max(rss_peak or 0, row['simultaneous_rss_bytes'])
-                if last_ns is not None:max_gap = max(max_gap, now - last_ns)
-                last_ns = now
-                if now >= next_budget:
-                    storage_guard(args, deadline);next_budget = now + 1_000_000_000
-                if time.monotonic() >= deadline:raise RuntimeError('WALL_TIME_LIMIT')
-                if all(p.poll() is not None for p in children):break
-                time.sleep(sample_interval)
+        sampler = ResourceSampler(root, children, args, sample_interval)
+        sampler.thread.start()
+        next_budget = 0
+        while True:
+            now = time.monotonic_ns()
+            # Inspect owned exits before trace/health work: a later
+            # diagnostic/cleanup failure must not hide a known native cause.
+            for index,(process,child_root) in enumerate(zip(children,child_roots)):
+                if process.poll() is None or index in finished_results:continue
+                try:child_result=read_result(child_root/'result.json')
+                except Exception as failure:
+                    first_child_failure=child_failure_brief(index,process,child_root,error=type(failure).__name__+':'+str(failure))
+                    raise RuntimeError('CHILD_FAILED:'+child_root.name+':'+str(process.returncode)+':'+str(first_child_failure['result_error'])) from failure
+                if process.returncode!=0:
+                    first_child_failure=child_failure_brief(index,process,child_root,child_result)
+                    raise RuntimeError('CHILD_FAILED:'+child_root.name+':'+str(process.returncode)+':'+str(child_result.get('reason') or child_result.get('writer_error')))
+                try:validate_result(child_result,pairs,status_on,source_hashes(),args.seconds)
+                except Exception:
+                    first_child_failure=child_failure_brief(index,process,child_root,child_result)
+                    raise
+                finished_results[index]=child_result
+                if status_on:
+                    # A dead writer no longer owes a live heartbeat. Freeze
+                    # its final identity/version once; never age it while
+                    # slower peers finish their independent readers.
+                    finished_heartbeats[index]=status_monitors[index].sample(require_fresh=False)
+            sampler.check()
+            for index,monitor in enumerate(status_monitors):
+                if children[index].poll() is None and not ab.owned_process_sample(children[index]).get('terminal'):monitor.sample()
+            if not missing_trace:
+                trace.poll()
+                if trace.failure:
+                    raise RuntimeError('TRACE_RUNTIME_FAILURE:' + str(trace.failure))
+            if now >= next_budget:
+                storage_guard(args, deadline);next_budget = now + 1_000_000_000
+            if time.monotonic() >= deadline:raise RuntimeError('WALL_TIME_LIMIT')
+            if all(p.poll() is not None for p in children):break
+            time.sleep(sample_interval)
         writers = [];final_heartbeats=[]
         for index,(process, child_root) in enumerate(zip(children, child_roots)):
             if process.returncode != 0:raise RuntimeError('CHILD_FAILED:' + child_root.name + ':' + str(process.returncode))
@@ -419,10 +457,6 @@ def run_batch(binary, root, pairs, status_on, args, deadline, trace_factory=None
                     raise ValueError('CHECKPOINT_BATCH_POLICY_MISMATCH')
                 validate_child_files(child_root, writers[-1], status_on, args.output.stat().st_dev)
         result = {'writers': writers, 'status_background_load': status_on,'final_status_heartbeats':final_heartbeats,
-                  'simultaneous_rss_peak_bytes': rss_peak, 'resource_samples': samples,
-                  'resource_gap_max_ns': max_gap, 'resource_log_bytes': resource_bytes,
-                  'resource_log_limit_bytes': resource_limit, 'resource_gaps': gaps,
-                  'resource_diagnostic_complete': rss_peak is not None and not gaps,
                   'start_skew_ns': max(r['actual_start_monotonic_ns'] for r in writers) - min(r['actual_start_monotonic_ns'] for r in writers)}
     except BaseException as failure:
         first_failure = type(failure).__name__ + ':' + str(failure)
@@ -430,21 +464,28 @@ def run_batch(binary, root, pairs, status_on, args, deadline, trace_factory=None
     finally:
         # Never mask an original writer/trace failure with secondary cleanup.
         cleanup_errors = []
+        if sampler is not None:sampler.phase = 'cleanup'
         for process in children:
             try:ab.stop_group(process)
             except Exception as failure:cleanup_errors.append('child:' + type(failure).__name__ + ':' + str(failure))
+        if sampler is not None:sampler.phase = 'trace-drain'
         if trace is not None:
             try:trace_result = trace.finish()
             except Exception as failure:
                 cleanup_errors.append('trace:' + type(failure).__name__ + ':' + str(failure))
                 trace_result = {'ok':False,'state':'finish-failed','error':cleanup_errors[-1]}
+        if sampler is not None:
+            sampler.phase = 'final'
+            try:resource_summary = sampler.finish()
+            except Exception as failure:cleanup_errors.append('resource:' + type(failure).__name__ + ':' + str(failure))
         if result is not None:
+            if resource_summary is not None:result.update(resource_summary)
             result['trace'] = trace_result
             observer_ended = resource.getrusage(resource.RUSAGE_SELF)
             result['observer'] = {
                 'cpu_seconds': (observer_ended.ru_utime + observer_ended.ru_stime)
                     - (observer_started.ru_utime + observer_started.ru_stime),
-                'rss_peak_bytes_sampled':observer_rss_peak,
+                'rss_peak_bytes_sampled':sampler.observer_peak if sampler is not None else observer_rss_peak,
                 'maxrss_process_lifetime_kib_start':observer_started.ru_maxrss,
                 'maxrss_process_lifetime_kib_end':observer_ended.ru_maxrss,
                 'scope':'controller+in-process syscall/trace parsing, setup and finish CPU; sampled group RSS and cumulative process-lifetime HWM are separate; excludes writer processes and kernel tracing overhead'}
@@ -452,7 +493,7 @@ def run_batch(binary, root, pairs, status_on, args, deadline, trace_factory=None
             try:
                 ab.write_json(root / 'batch-failure.json', {'first_failure':first_failure,
                     'first_child_failure':first_child_failure,'cleanup_errors':cleanup_errors,'trace':trace_result,
-                    'child_returncodes':[p.returncode for p in children]})
+                    'child_returncodes':[p.returncode for p in children],'resources':resource_summary})
             except Exception as failure:
                 cleanup_errors.append('sidecar:' + type(failure).__name__ + ':' + str(failure))
         if first_failure is None and cleanup_errors:raise RuntimeError('OWNED_CLEANUP_FAILED:' + ';'.join(cleanup_errors))

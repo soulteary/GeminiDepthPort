@@ -180,4 +180,18 @@ raise SystemExit(p.main())
             self.assertFalse(list(root.glob('.gdp-evidence-*')))
 
 
-if __name__ == '__main__': unittest.main()
+
+
+class RollingPackageTests(unittest.TestCase):
+    def test_released_payload_receipts_are_included_and_raw_replay_limit_is_explicit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            a,shm=fixture(Path(tmp))
+            path=a.root/'result.json';value=json.loads(path.read_text());value['retention_policy']='verified-window';write(a.root,'result.json',value)
+            write(a.root,'ab/on-01/payload-retention.json',{'state':'released','files':[{'path':'synthetic/payload.bin','sha256':'a'*64}]})
+            with patch.object(pack,'SDK_PARENT',shm):pack.pack(a)
+            files=archive_files(a.output);metadata=json.loads(files['PACKAGE.json'])
+            self.assertEqual(metadata['retention_policy'],'verified-window')
+            self.assertTrue(any('raw replay unavailable' in warning for warning in metadata['warnings']))
+            self.assertIn('retest/ab/on-01/payload-retention.json',files)
+
+if __name__ == "__main__": unittest.main()
