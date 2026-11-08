@@ -4210,8 +4210,20 @@ fn invalid_imu_timestamps_during_a_critical_fence_remain_terminal() {
         .env("GDP_IO_HOLD_RELEASE", &release_reader)
         .env("GDP_MOCK_FAULT_ARMED", &marker)
         .env("GDP_MOCK_IMU_REGRESS", "1");
+    let diagnostic = f.root.join("critical-worker.stderr");
+    command.stderr(fs::File::create(&diagnostic).unwrap());
     let mut child = command.spawn().unwrap();
-    await_fault_marker(&marker, &mut child);
+    let injection_start = Instant::now();
+    while !marker.exists() {
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "worker exited before injection: status={:?}; stderr={:?}",
+            fs::read_to_string(&f.status),
+            fs::read_to_string(&diagnostic)
+        );
+        assert!(injection_start.elapsed() < Duration::from_secs(8));
+        thread::sleep(Duration::from_millis(5));
+    }
     thread::sleep(Duration::from_millis(800));
     fs::write(&release, b"1").unwrap();
     let failed = wait_status(&f, &mut child, |v| {
