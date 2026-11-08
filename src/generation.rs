@@ -299,6 +299,11 @@ pub fn create(ctl: &Controller, d: &Value, draft: bool) -> Result<Value> {
         env.as_object_mut().unwrap().extend(json!({"CAMERA_ROLE":name,"CAMERA_NAME":c["frame_prefix"],"CAMERA_NAMESPACE":c["namespace"],"CAMERA_SCHEMA":d["schema_version"].to_string(),"CAMERA_MODEL":c["model"],"CAMERA_LAUNCH":c["launch_file"],"HOME":"/tmp","ROS_HOME":"/tmp/ros"}).as_object().unwrap().clone());
         let mut spec = camera_service(ctl, d, env, &dest.join("config").join(name))?;
         if rust_backend {
+            if c.get("raw_recording").is_some() {
+                let recordings = ctl.root.join("state/native-recordings").join(name);
+                private_dir(&recordings)?;
+                spec["volumes"].as_array_mut().unwrap().push(json!({"type":"bind","source":recordings,"target":"/native-recordings","read_only":false}));
+            }
             let gate = ctl.root.join("state/recording-gates").join(name);
             private_dir(&gate)?;
             spec["volumes"]

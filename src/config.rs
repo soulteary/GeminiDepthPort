@@ -155,6 +155,7 @@ fn v2(d: &Value, draft: bool) -> Result<()> {
                     let mut camera = c.clone();
                     if let Some(fields) = camera.as_object_mut() {
                         fields.remove("imu");
+                        fields.remove("raw_recording");
                     }
                     camera
                 },
@@ -172,6 +173,7 @@ fn v2(d: &Value, draft: bool) -> Result<()> {
                 "Native IMU requires explicit Rust backend",
             )?;
         }
+        validate_native_recording(d, c)?;
         let name = text(&c["name"]);
         require(
             matches(r"^[a-z][a-z0-9_]{0,31}$", name) && names.insert(name),
@@ -653,4 +655,60 @@ pub fn migrate(data: &Value, bindings: &Value) -> Result<Value> {
     }
     validate(&out, true)?;
     Ok(out)
+}
+
+/// Managed recording uses a fixed private per-camera mount, never a client path.
+pub fn validate_native_recording(d: &Value, c: &Value) -> Result<()> {
+    let Some(raw) = c.get("raw_recording") else {
+        return Ok(());
+    };
+    require(
+        crate::capture_backend::selected(d) == "rust",
+        "RAW_BACKEND",
+        "Native recording requires Rust backend",
+    )?;
+    require(
+        fields(
+            raw,
+            "storage_format name queue_capacity max_pairs max_bytes checkpoint_pipeline checkpoint_batching checkpoint_observation",
+        ),
+        "RAW_FIELDS",
+        "Explicit native recording settings required",
+    )?;
+    require(
+        (raw["storage_format"] == "files-v2" || raw["storage_format"] == "chunked-v3")
+            && matches(r"^[a-zA-Z0-9_-]{1,64}$", text(&raw["name"]))
+            && raw["queue_capacity"]
+                .as_u64()
+                .is_some_and(|v| (1..=16).contains(&v))
+            && ["max_pairs", "max_bytes"].iter().all(|k| {
+                raw[k]
+                    .as_u64()
+                    .is_some_and(|v| v > 0 && v <= 9_007_199_254_740_991)
+            })
+            && raw["checkpoint_pipeline"].is_boolean()
+            && raw["checkpoint_observation"].is_boolean()
+            && (raw["checkpoint_batching"] == "half-credit"
+                || raw["checkpoint_batching"] == "full-credit"),
+        "RAW_POLICY",
+        "Invalid native recording limits or format",
+    )?;
+    require(
+        raw["checkpoint_pipeline"] != true || raw["storage_format"] == "chunked-v3",
+        "RAW_PIPELINE",
+        "Checkpoint pipeline requires chunked-v3",
+    )?;
+    require(
+        raw["checkpoint_pipeline"] == true || raw["checkpoint_batching"] == "half-credit",
+        "RAW_PIPELINE",
+        "Full credit requires checkpoint pipeline",
+    )?;
+    require(
+        !matches!(
+            text(&d["rust_capture"]["acquisition"]["preset"]),
+            "complete" | "hardware-sync"
+        ),
+        "RAW_ACQUISITION",
+        "Native recording requires complete frame pairs, not complete acquisition",
+    )
 }

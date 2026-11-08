@@ -7,7 +7,7 @@
 
 首次启用前，从[公开示例](../../examples/README.md)选择后端，在部署根目录准备 `inventory.json`，
 使槽位的 `profile` 与实际设备型号一致。也可在 Web 中选择后端、镜像标签及各槽位型号，
-再绑定匹配的序列号。IMU 配置仍需编辑文件。切换操作与参数移除确认见[Web 指南](web.md#切换型号或后端)。
+再绑定匹配的序列号。Rust 后端可在 Web 按槽位配置 IMU 和原生录制。切换操作与参数移除确认见[Web 指南](web.md#切换型号或后端)。
 
 已有部署先结束录制、释放保护并停止采集和预览，再备份并修改配置。修改后按当前 inventory
 重新生成、预览确认并启动；确认结果由实际检查产生，保留未确认状态直到检查通过。不要手填
@@ -112,5 +112,12 @@ geminidepthport validate --file inventory.v2.example.json --draft
 ## Rust 相机 IMU
 
 可在单台 `cameras[].imu` 显式配置加速度计/陀螺仪的采样率、量程、坐标系和有界队列。
-省略则关闭；启用会查询实际设备能力，不对所有型号承诺支持。配置、ROS 话题、录制
+可使用 Web 配置表单或编辑 inventory；省略则关闭。启用会查询实际设备能力，不对所有型号承诺支持。配置、ROS 话题、录制
 完整性与验证命令见 [IMU 契约](../contracts/camera-imu-v1.md)。
+
+
+## 管理器原生录制配置
+
+可在 Rust 后端的单台 `cameras[].raw_recording` 设置 `storage_format`、`name`、`queue_capacity`、`max_pairs`、`max_bytes`、`checkpoint_pipeline`、`checkpoint_batching` 和 `checkpoint_observation`；Web 会填写完整字段，省略整个对象关闭。此 inventory 对象不含 `directory`，由管理器生成固定私有挂载，不能直接复制独立 capture-service 的配置。
+
+队列容量为 1–16 帧对，帧对数和字节数必须为正的安全整数；流水线要求 chunked-v3，full-credit 要求流水线。原生录制与 complete 采集预设不兼容，服务会再次校验。使用步骤和未完成的实机验收见[Web 指南](web.md#imu-与原生录制)与[录制指南](recording.md)。

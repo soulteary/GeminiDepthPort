@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const markup = fs.readFileSync('web/index.html','utf8');
-for (const id of ['backend-fields','capture-backend','capture-image','camera-profile']) assert.ok(markup.includes(`id="${id}"`),`missing actual form control ${id}`);
+for (const id of ['backend-fields','capture-backend','capture-image','camera-profile','imu-enabled','imu-queue_capacity','raw-enabled','raw-storage_format','raw-max_bytes']) assert.ok(markup.includes(`id="${id}"`),`missing actual form control ${id}`);
 const source = fs.readFileSync('web/app.js', 'utf8').split("$('camera-form').addEventListener")[0];
 async function check(backend) {
   const elements = new Map();
@@ -133,6 +133,32 @@ async function checkSelection() {
   assert.equal(vm.runInContext('draft.capture_backend',context),'rust');assert.equal(vm.runInContext('draft.cameras[0].imu.enabled',context),true);
   delete rust.cameras[0].imu;rust.cameras[0].profile='gemini_305';reset(rust);get('capture-backend').value='official';vm.runInContext('changeBackend()',context);
   assert.equal(vm.runInContext('draft.capture_backend',context),'rust');
+  // Real form handlers preserve settings across slots, submit explicit removals,
+  // and never turn a save or preview into a recording start.
+  rust.cameras[0].profile='gemini_335l';reset(rust);
+  assert.equal(get('imu-fields').hidden,false);assert.equal(get('raw-fields').hidden,false);
+  get('imu-enabled').checked=true;get('imu-accel_rate_hz').value='100';
+  vm.runInContext("readForm({target:{id:'imu-enabled'}})",context);
+  assert.equal(vm.runInContext('draft.cameras[0].imu.accel_rate_hz',context),100);
+  assert.equal(vm.runInContext('draft.cameras[0].profiles_verified',context),false);
+  assert.equal(vm.runInContext('draft.cameras[1].profiles_verified',context),true);
+  get('raw-enabled').checked=true;get('raw-queue_capacity').value='8';
+  vm.runInContext("readForm({target:{id:'raw-enabled'}})",context);
+  assert.equal(vm.runInContext('draft.cameras[0].raw_recording.queue_capacity',context),8);
+  assert.equal(vm.runInContext('draft.rust_capture.service.heartbeat_timeout_ms',context),12000);
+  vm.runInContext("role=draft.cameras[1].name;showRole()",context);
+  assert.equal(get('imu-enabled').checked,false);assert.equal(get('raw-enabled').checked,false);
+  vm.runInContext("role=draft.cameras[0].name;showRole()",context);
+  assert.equal(get('imu-enabled').checked,true);assert.equal(get('raw-queue_capacity').value,8);
+  await vm.runInContext('saveConfig()',context);
+  assert.equal(saved.cameras[0].imu.accel_rate_hz,100);assert.equal(saved.cameras[0].raw_recording.queue_capacity,8);
+  assert.equal(saved.cameras[1].imu,null);assert.equal(saved.cameras[1].raw_recording,null);
+  const withRaw=structuredClone(rust);withRaw.cameras[0].raw_recording=saved.cameras[0].raw_recording;
+  reset(withRaw);get('capture-backend').value='official';vm.runInContext('changeBackend()',context);
+  assert.equal(vm.runInContext('draft.capture_backend',context),'rust');
+  get('raw-enabled').checked=false;vm.runInContext("readForm({target:{id:'raw-enabled'}})",context);
+  await vm.runInContext('saveConfig()',context);assert.equal(saved.cameras[0].raw_recording,null);
+  reset(original);assert.equal(get('imu-fields').hidden,true);assert.equal(get('raw-fields').hidden,true);
   const clocked=structuredClone(rust);clocked.cameras[0].profile='gemini_335l';
   clocked.rust_capture.acquisition={preset:'complete'};
   for(const c of clocked.cameras)c.timestamp_source='global';

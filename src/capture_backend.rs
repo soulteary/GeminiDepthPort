@@ -348,6 +348,14 @@ pub fn service_config(d: &Value, c: &Value, generation: &str, runtime: &Value) -
         "max_zero_fraction":1.0,
         "action":"report-only"
     });
+    if let Some(raw) = c.get("raw_recording") {
+        let mut raw = raw.clone();
+        raw["directory"] = "/native-recordings".into();
+        if raw["checkpoint_pipeline"] != true {
+            raw.as_object_mut().unwrap().remove("checkpoint_batching");
+        }
+        value["raw_recording"] = raw;
+    }
     if let Some(imu) = c.get("imu") {
         value["imu"] = imu.clone();
     }

@@ -49,8 +49,8 @@ function changeBackend() {
   const backend = $('capture-backend').value;
   if (backend === (draft.capture_backend || 'official')) return;
   const catalog = selectionOptions().profiles || {};
-  if (backend === 'official' && draft.cameras.some(c => c.imu?.enabled || catalog[c.profile]?.capture_backend === 'rust')) {
-    notify('当前有已启用的 IMU 或 Rust 专用型号。请先关闭 IMU 配置或更换相机型号，再切换官方后端。','error');
+  if (backend === 'official' && draft.cameras.some(c => c.imu?.enabled || c.raw_recording || catalog[c.profile]?.capture_backend === 'rust')) {
+    notify('当前有已启用的 IMU、原生录制或 Rust 专用型号。请先关闭 IMU 和原生录制配置或更换相机型号，再切换官方后端。','error');
     showRole(); return;
   }
   if (backend === 'rust' && draft.cameras.some(c => !c.parameters.enable_color || !c.parameters.enable_depth)) {
@@ -98,6 +98,40 @@ function changeProfile() {
   c.serial_number = ''; c.enabled = false; c.calibration_revision = ''; clearConfirmation(c);
   setDirty(true); showRole(); updateButtons();
   notify('型号已更新，尚未保存。请重新绑定设备、核对流档位并启用，再预览确认。');
+}
+const imuNumbers = ['accel_rate_hz','gyro_rate_hz','accel_range_g','gyro_range_dps','queue_capacity','stale_timeout_ms'];
+const imuFrames = ['accel_frame_id','gyro_frame_id'];
+const rawNumbers = ['queue_capacity','max_pairs','max_bytes'];
+const rawStrings = ['storage_format','name','checkpoint_batching'];
+const rawBools = ['checkpoint_pipeline','checkpoint_observation'];
+function showExtensions() {
+  const c = camera(), rust = draft.schema_version === 2 && draft.capture_backend === 'rust';
+  $('imu-fields').hidden = $('raw-fields').hidden = !rust;
+  const imu = c.imu || {enabled:false,accel_rate_hz:200,gyro_rate_hz:200,accel_range_g:4,gyro_range_dps:1000,queue_capacity:128,stale_timeout_ms:500,accel_frame_id:`${c.frame_prefix || c.name}_accel_frame`,gyro_frame_id:`${c.frame_prefix || c.name}_gyro_frame`};
+  $('imu-enabled').checked = imu.enabled;
+  for (const k of [...imuNumbers,...imuFrames]) $('imu-'+k).value = imu[k];
+  const raw = c.raw_recording || {storage_format:'chunked-v3',name:'capture',queue_capacity:4,max_pairs:18000,max_bytes:100000000000,checkpoint_pipeline:false,checkpoint_batching:'half-credit',checkpoint_observation:false};
+  $('raw-enabled').checked = Boolean(c.raw_recording);
+  for (const k of [...rawNumbers,...rawStrings]) $('raw-'+k).value = raw[k];
+  for (const k of rawBools) $('raw-'+k).checked = raw[k];
+  $('raw-directory').textContent = `保存目录：部署目录/state/native-recordings/${c.name}（持久化，每次启动创建新会话）`;
+}
+function readExtensions(event) {
+  const id = event?.target?.id || '';
+  if (!id.startsWith('imu-') && !id.startsWith('raw-')) return false;
+  if (draft.schema_version !== 2 || draft.capture_backend !== 'rust') return true;
+  const c = camera();
+  if (id.startsWith('imu-')) {
+    if ($('imu-enabled').checked || c.imu) c.imu = {enabled:$('imu-enabled').checked,
+      ...Object.fromEntries(imuNumbers.map(k=>[k,Number($('imu-'+k).value)])),
+      ...Object.fromEntries(imuFrames.map(k=>[k,$('imu-'+k).value]))};
+  } else if ($('raw-enabled').checked) {
+    c.raw_recording = {...Object.fromEntries(rawNumbers.map(k=>[k,Number($('raw-'+k).value)])),
+      ...Object.fromEntries(rawStrings.map(k=>[k,$('raw-'+k).value])),
+      ...Object.fromEntries(rawBools.map(k=>[k,$('raw-'+k).checked]))};
+  } else delete c.raw_recording;
+  clearConfirmation(c); setDirty(true); updateRoleTabs(); updateButtons();
+  return true;
 }
 function showAcquisition() {
   const rust = draft.capture_backend === 'rust';
@@ -186,10 +220,12 @@ function showRole() {
   $('profile-note').textContent = '尺寸、帧率与时间来源需按实机填写；出帧确认不替代标定及语义验收。';
   for (const stream of ['color','depth']) for (const key of ['width','height','fps']) $(stream+'_'+key).required = c.enabled && c.parameters['enable_'+stream];
   showAcquisition();
-  updatePreview();
+  showExtensions();
+  updateButtons();
 }
 function readForm(event) {
   if (!draft) return;
+  if (readExtensions(event)) return;
   if (event?.target?.id === 'capture-backend') { changeBackend(); return; }
   if (event?.target?.id === 'camera-profile') { changeProfile(); return; }
   if (event?.target?.id === 'capture-image') { draft.image = $('capture-image').value; draft.cameras.forEach(clearConfirmation); }
@@ -230,7 +266,7 @@ function updatePreview() {
 async function saveConfig() {
   if (!draft) return;
   const cameras = draft.cameras.map(c => ({name:c.name,serial_number:c.serial_number,...(draft.schema_version === 2 && c.profile ? {profile:c.profile} : {}),
-    ...(draft.schema_version === 2 ? Object.fromEntries(['enabled','namespace','frame_prefix','timestamp_source','calibration_revision','health'].map(k=>[k,c[k]])) : {}),
+    ...(draft.schema_version === 2 ? {...Object.fromEntries(['enabled','namespace','frame_prefix','timestamp_source','calibration_revision','health'].map(k=>[k,c[k]])),imu:c.imu || null,raw_recording:c.raw_recording || null} : {}),
     parameters:Object.fromEntries([...numeric,...booleans,...formats].filter(k => parameterSupported(k) && k in c.parameters).map(k=>[k,c.parameters[k]]))}));
   const result = await api('/api/config', {revision,cameras,...(draft.schema_version === 2 ? {capture_backend:draft.capture_backend || 'official',image:draft.image,discard_unsupported_parameters:discardUnsupported} : {}),...(draft.capture_backend === 'rust' ? {acquisition:draft.rust_capture?.acquisition || null} : {})});
   const fresh = await api('/api/state'); state = fresh; revision = fresh.revision;
@@ -250,6 +286,12 @@ function updateButtons() {
   document.querySelectorAll('#camera-form input,#camera-form select').forEach(input => input.disabled = pending || jobBusy || !parameterSupported(input.id) || (draft?.schema_version === 2 && formats.includes(input.id)));
   $('capture-backend').disabled ||= !state?.configuration_options;
   $('camera-profile').disabled ||= !state?.configuration_options;
+  const rustExtensions = draft?.schema_version === 2 && draft?.capture_backend === 'rust';
+  for (const prefix of ['imu','raw']) {
+    const enabled = rustExtensions && (prefix === 'imu' ? camera()?.imu?.enabled : camera()?.raw_recording);
+    $(prefix+'-enabled').disabled ||= !rustExtensions;
+    for (const k of prefix === 'imu' ? [...imuNumbers,...imuFrames] : [...rawNumbers,...rawStrings,...rawBools]) $(prefix+'-'+k).disabled ||= !enabled;
+  }
   if (draft?.rust_capture?.acquisition?.preset === 'strict-rgbd') $('acquisition-sync').disabled = true;
   updatePreview();
 }

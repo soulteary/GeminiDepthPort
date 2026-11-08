@@ -8,7 +8,7 @@
 
 **外部 ROSbag2** 保存 ROS 发布的数据。使用 `complete` 时分别订阅彩色、深度及需要的元数据／IMU 话题。ROS 深度是毫米 `16UC1`，不是原生 SDK counts；相关接入及读回步骤见[消费指南](consumer-integration.md)。历史 bag 导入见[录制适配器](../../tools/recording/README.md)。
 
-**原生录制** 由 Rust `capture-service` 的可选 `raw_recording` 配置启用，保存原始 counts、尺度、完整帧对及已启用的 IMU。管理器生成的普通 capture 配置不自动启用它，Web 也没有开关。在已停机的独立测试部署中，使用[原生服务配置契约](../contracts/native-sdk-recording-v1.md)准备独立配置，或按[验收工具](../validation/README.md#录制与恢复验收入口)在独立测试部署中运行；不要修改运行中的 generation。原生录制拒绝 `complete` 预设，需要完整帧对采集策略。
+**原生录制** 由 Rust `capture-service` 的可选 `raw_recording` 配置启用，保存原始 counts、尺度、完整帧对及已启用的 IMU。Web 的 Rust 配置页可按相机显式启用；默认关闭。管理器在正式服务配置中写入录制设置，并将部署目录的 `state/native-recordings/<相机名>` 私有挂载到 `/native-recordings`，不接受浏览器指定任意主机目录。预览始终不录制；关闭配置不删除旧数据。独立服务部署也可使用[原生服务配置契约](../contracts/native-sdk-recording-v1.md)准备配置，或按[验收工具](../validation/README.md#录制与恢复验收入口)在独立测试部署中运行；不要修改运行中的 generation。原生录制拒绝 `complete` 预设，需要完整帧对采集策略。
 
 保护和 `recording-context` 查询不启动录制。它们用于锁定会话及提供调用方上下文；外部 ROSbag2 和原生录制仍需各自启动、停止或达到目标。
 

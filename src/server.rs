@@ -244,9 +244,10 @@ fn save_config(ctl: &Controller, payload: &Value) -> Result<Value> {
     let schema_v2 = d["schema_version"] == 2;
     let rust_backend = crate::capture_backend::selected(&d) == "rust";
     let found = ctl.scan()?;
+    let mut extensions_changed = false;
     let mut changed = vec![];
     for update in updates {
-        require(update.as_object().unwrap().keys().all(|k|"name profile serial_number enabled namespace frame_prefix timestamp_source calibration_revision health parameters".split_whitespace().any(|v|v==k)),"CAMERA_FIELDS","Unsupported editable field")?;
+        require(update.as_object().unwrap().keys().all(|k|"name profile serial_number enabled namespace frame_prefix timestamp_source calibration_revision health parameters imu raw_recording".split_whitespace().any(|v|v==k)),"CAMERA_FIELDS","Unsupported editable field")?;
         let name = text(&update["name"]);
         let old = role(&d, name)?;
         let profile = update.get("profile").unwrap_or(&old["profile"]);
@@ -263,6 +264,25 @@ fn save_config(ctl: &Controller, payload: &Value) -> Result<Value> {
         } else {
             config::resolved(&d, old)["model"].clone()
         };
+        extensions_changed |= ["imu", "raw_recording"].iter().any(|k| {
+            update.get(*k).is_some_and(|v| {
+                if v.is_null() {
+                    old.get(*k).is_some()
+                } else {
+                    old.get(*k) != Some(v)
+                }
+            })
+        });
+        require(
+            schema_v2
+                || !update
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .any(|k| k == "imu" || k == "raw_recording"),
+            "CONFIG_SCHEMA",
+            "IMU/native recording edits require schema v2",
+        )?;
         let before = config::signature(old);
         let p = update.get("parameters").cloned().unwrap_or(json!({}));
         require(p.as_object().is_some_and(|m|m.keys().all(|k|"enable_color color_width color_height color_fps color_format enable_depth depth_width depth_height depth_fps depth_format enable_color_auto_exposure color_exposure color_gain enable_ir_auto_exposure ir_exposure ir_gain".split_whitespace().any(|v|v==k))),"PARAMETER_FIELDS","Unsupported editable parameter")?;
@@ -289,7 +309,9 @@ fn save_config(ctl: &Controller, payload: &Value) -> Result<Value> {
             .find(|c| c["name"] == name)
             .unwrap();
         for (k, v) in update.as_object().unwrap() {
-            if k != "name" && k != "parameters" {
+            if (k == "imu" || k == "raw_recording") && v.is_null() {
+                c.as_object_mut().unwrap().remove(k);
+            } else if k != "name" && k != "parameters" {
                 c[k] = v.clone();
             }
         }
@@ -334,7 +356,7 @@ fn save_config(ctl: &Controller, payload: &Value) -> Result<Value> {
         }
     }
     config::validate(&d, true)?;
-    if backend_changed || profile_changed || d["image"] != old_image {
+    if backend_changed || profile_changed || extensions_changed || d["image"] != old_image {
         ctl.assert_stopped()?;
     }
     // An unchanged save does not touch preview instances or require Docker.
@@ -452,10 +474,13 @@ fn start_preview(ctl: &Controller, name: &str) -> Result<Value> {
         let runtime = crate::capture_backend::runtime(ctl, &d)?;
         atomic_json(&cfg.join("runtime-binding.json"), &runtime)?;
         atomic_json(&cfg.join("runtime.json"), &runtime["manifest"])?;
-        atomic_json(
-            &cfg.join("capture.json"),
-            &crate::capture_backend::service_config(&d, &c, &random(16), &runtime),
-        )?;
+        let mut preview_config =
+            crate::capture_backend::service_config(&d, &c, &random(16), &runtime);
+        preview_config
+            .as_object_mut()
+            .unwrap()
+            .remove("raw_recording");
+        atomic_json(&cfg.join("capture.json"), &preview_config)?;
     }
 
     atomic(

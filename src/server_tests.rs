@@ -1216,3 +1216,267 @@ fn web_unchanged_model_backend_image_preserve_confirmation_without_docker() {
     save_config(&f.ctl, &edit).unwrap();
     assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
 }
+
+fn web_imu() -> Value {
+    json!({"enabled":true,"accel_rate_hz":200,"gyro_rate_hz":200,"accel_range_g":4,"gyro_range_dps":1000,"queue_capacity":128,"stale_timeout_ms":500,"accel_frame_id":"web_accel","gyro_frame_id":"web_gyro"})
+}
+fn web_raw() -> Value {
+    json!({"storage_format":"chunked-v3","name":"capture","queue_capacity":4,"max_pairs":18000,"max_bytes":100000000000_u64,"checkpoint_pipeline":true,"checkpoint_batching":"half-credit","checkpoint_observation":true})
+}
+#[test]
+fn web_imu_and_raw_roundtrip_generate_private_mount_and_reconfirm() {
+    let mut f = Fixture::new(false, 2);
+    f.prepare_host();
+    f.ctl.stop("camera", true).unwrap();
+    let runtime = f.install_rust_runtime();
+    let mut edit = acquisition_edit_payload(&f);
+    edit["acquisition"] = json!({"preset":"strict-rgbd","advanced":{"message_timestamp":"system"}});
+    edit["cameras"][0]["imu"] = web_imu();
+    edit["cameras"][0]["raw_recording"] = web_raw();
+    let (code, _, body) = request(&manager(&f), "POST", "/api/config", &edit.to_string(), &[]);
+    assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
+    let saved = f.ctl.load().unwrap();
+    assert_eq!(saved["cameras"][0]["imu"], web_imu());
+    assert_eq!(saved["cameras"][0]["raw_recording"], web_raw());
+    assert_eq!(saved["cameras"][0]["profiles_verified"], false);
+    let c = config::resolved(&saved, &saved["cameras"][0]);
+    let service = crate::capture_backend::service_config(&saved, &c, "test", &runtime);
+    assert_eq!(service["raw_recording"]["directory"], "/native-recordings");
+    assert_eq!(service["imu"], web_imu());
+    assert_eq!(service["quality_runtime"]["version"], 1);
+    assert!(config::validate(&saved, false).is_err());
+    let generated = generation::create(&f.ctl, &saved, true).unwrap();
+    let folder = f
+        .ctl
+        .root
+        .join("state/generations")
+        .join(text(&generated["generation"]));
+    let compose: Value = read_json(&folder.join("compose.yaml")).unwrap();
+    let name = text(&c["name"]);
+    let mounts = compose["services"][format!("camera_{name}")]["volumes"]
+        .as_array()
+        .unwrap();
+    assert!(mounts.iter().any(|m| {
+        m["target"] == "/native-recordings"
+            && m["source"]
+                == f.ctl
+                    .root
+                    .join("state/native-recordings")
+                    .join(name)
+                    .to_string_lossy()
+                    .as_ref()
+            && m["read_only"] == false
+    }));
+    start_preview(&f.ctl, "camera_a").unwrap();
+    let preview = read_json(
+        &f.ctl
+            .root
+            .join("work/web-preview/camera_a/config/capture.json"),
+    )
+    .unwrap();
+    assert_eq!(preview["imu"], web_imu());
+    assert!(preview.get("raw_recording").is_none());
+    let mut disable = acquisition_edit_payload(&f);
+    disable["cameras"][0]["imu"] = Value::Null;
+    disable["cameras"][0]["raw_recording"] = Value::Null;
+    save_config(&f.ctl, &disable).unwrap();
+    let disabled = f.ctl.load().unwrap();
+    assert!(disabled["cameras"][0].get("imu").is_none());
+    assert!(disabled["cameras"][0].get("raw_recording").is_none());
+    // Disabling never removes recordings or their persistent directory.
+    assert!(
+        f.ctl
+            .root
+            .join("state/native-recordings")
+            .join(name)
+            .is_dir()
+    );
+    let service = crate::capture_backend::service_config(
+        &disabled,
+        &disabled["cameras"][0],
+        "test",
+        &runtime,
+    );
+    assert!(service.get("raw_recording").is_none());
+}
+
+#[test]
+fn web_extensions_reject_invalid_policy_atomically() {
+    for mode in [
+        "clock",
+        "queue",
+        "frame",
+        "rate",
+        "raw-field",
+        "raw-format",
+        "raw-path",
+        "raw-name",
+        "raw-queue",
+        "raw-limit",
+        "raw-boolean",
+        "raw-credit",
+        "pipeline-format",
+        "pipeline-credit",
+        "complete",
+        "official",
+        "official-raw",
+        "null-imu",
+        "null-raw",
+    ] {
+        let f = Fixture::new(false, 2);
+        f.ctl.stop("camera", true).unwrap();
+        let mut edit = acquisition_edit_payload(&f);
+        edit["acquisition"] =
+            json!({"preset":"strict-rgbd","advanced":{"message_timestamp":"system"}});
+        edit["cameras"][0]["imu"] = web_imu();
+        edit["cameras"][0]["raw_recording"] = web_raw();
+        match mode {
+            "clock" => {
+                edit.as_object_mut().unwrap().remove("acquisition");
+            }
+            "queue" => edit["cameras"][0]["imu"]["queue_capacity"] = json!(16),
+            "frame" => edit["cameras"][1]["imu"] = web_imu(),
+            "rate" => edit["cameras"][0]["imu"]["accel_rate_hz"] = json!(123),
+            "raw-field" => {
+                edit["cameras"][0]["raw_recording"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("name");
+            }
+            "raw-format" => edit["cameras"][0]["raw_recording"]["storage_format"] = json!("other"),
+            "raw-path" => edit["cameras"][0]["raw_recording"]["directory"] = json!("/etc"),
+            "raw-name" => edit["cameras"][0]["raw_recording"]["name"] = json!("../escape"),
+            "raw-queue" => edit["cameras"][0]["raw_recording"]["queue_capacity"] = json!(17),
+            "raw-limit" => edit["cameras"][0]["raw_recording"]["max_bytes"] = json!(0),
+            "raw-boolean" => {
+                edit["cameras"][0]["raw_recording"]["checkpoint_observation"] = json!(1)
+            }
+            "raw-credit" => {
+                edit["cameras"][0]["raw_recording"]["checkpoint_batching"] = json!("other")
+            }
+            "pipeline-format" => {
+                edit["cameras"][0]["raw_recording"]["storage_format"] = json!("files-v2")
+            }
+            "pipeline-credit" => {
+                edit["cameras"][0]["raw_recording"]["checkpoint_pipeline"] = json!(false);
+                edit["cameras"][0]["raw_recording"]["checkpoint_batching"] = json!("full-credit");
+            }
+            "complete" => {
+                edit["acquisition"] =
+                    json!({"preset":"complete","advanced":{"message_timestamp":"system"}})
+            }
+            "official" => {
+                edit["capture_backend"] = json!("official");
+                edit["image"] = json!("local/official:web");
+                edit.as_object_mut().unwrap().remove("acquisition");
+            }
+            "official-raw" => {
+                edit["capture_backend"] = json!("official");
+                edit["image"] = json!("local/official:web");
+                edit.as_object_mut().unwrap().remove("acquisition");
+                edit["cameras"][0]["imu"] = Value::Null;
+            }
+            "null-imu" => edit["cameras"][0]["imu"] = json!(false),
+            "null-raw" => edit["cameras"][0]["raw_recording"] = json!(false),
+            _ => unreachable!(),
+        }
+        let before = fs::read(f.ctl.root.join("inventory.json")).unwrap();
+        assert!(save_config(&f.ctl, &edit).is_err(), "{mode}");
+        assert_eq!(
+            fs::read(f.ctl.root.join("inventory.json")).unwrap(),
+            before,
+            "{mode}"
+        );
+    }
+}
+
+#[test]
+fn web_extensions_keep_running_preview_revision_and_recording_interlocks() {
+    for mode in ["running", "preview", "protected", "stale"] {
+        let mut f = Fixture::new(false, 1);
+        f.prepare_host();
+        let mut edit = acquisition_edit_payload(&f);
+        edit["cameras"][0]["raw_recording"] = web_raw();
+        if mode != "running" {
+            f.ctl.stop("camera", true).unwrap();
+        }
+        if mode == "stale" {
+            edit["revision"] = json!("stale");
+        }
+        if mode == "protected" {
+            atomic_json(
+                &f.ctl.root.join("state/recording-guard.json"),
+                &json!({"version":1}),
+            )
+            .unwrap();
+        }
+        if mode == "preview" {
+            let previous = f.ctl.command_runner.clone().unwrap();
+            let id = "f".repeat(64);
+            f.ctl.command_runner = Some(Arc::new(move |args, input| {
+                if args.get(1).is_some_and(|a| a == "ps")
+                    && args.iter().any(|a| a.contains("orbbec.web.preview"))
+                {
+                    return Ok(id.clone());
+                }
+                if args.get(1).is_some_and(|a| a == "inspect") && args.iter().any(|a| a == &id) {
+                    return Ok(json!([{"Id":id,"Config":{"Labels":{"orbbec.web.preview":PROJECT}},"State":{"Running":true}}]).to_string());
+                }
+                previous(args, input)
+            }));
+        }
+        let before = fs::read(f.ctl.root.join("inventory.json")).unwrap();
+        let (code, _, body) = request(&manager(&f), "POST", "/api/config", &edit.to_string(), &[]);
+        assert_eq!(code, 400, "{mode}: {}", String::from_utf8_lossy(&body));
+        let error: Value = serde_json::from_slice(&body).unwrap();
+        let expected = match mode {
+            "running" => "CAMERAS_RUNNING",
+            "preview" => "PREVIEWS_RUNNING",
+            "protected" => "RECORDING_PROTECTED",
+            _ => "INVENTORY_DRIFT",
+        };
+        assert!(
+            text(&error["error"]).starts_with(expected),
+            "{mode}: {error}"
+        );
+        assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
+    }
+}
+
+#[test]
+fn web_raw_files_and_preview_keep_recording_opt_in_and_per_camera_confirmation() {
+    let mut f = Fixture::new(false, 2);
+    f.prepare_host();
+    f.ctl.stop("camera", true).unwrap();
+    let runtime = f.install_rust_runtime();
+    let mut edit = acquisition_edit_payload(&f);
+    let mut raw = web_raw();
+    raw["storage_format"] = json!("files-v2");
+    raw["checkpoint_pipeline"] = json!(false);
+    edit["cameras"][0]["raw_recording"] = raw.clone();
+    save_config(&f.ctl, &edit).unwrap();
+    let saved = f.ctl.load().unwrap();
+    assert_eq!(saved["cameras"][1]["profiles_verified"], true);
+    let service =
+        crate::capture_backend::service_config(&saved, &saved["cameras"][0], "test", &runtime);
+    assert_eq!(service["raw_recording"]["storage_format"], "files-v2");
+    assert!(
+        service["raw_recording"]
+            .get("checkpoint_batching")
+            .is_none()
+    );
+    start_preview(&f.ctl, "camera_a").unwrap();
+    let preview = read_json(
+        &f.ctl
+            .root
+            .join("work/web-preview/camera_a/config/capture.json"),
+    )
+    .unwrap();
+    assert!(preview.get("raw_recording").is_none());
+    assert!(!f.ctl.root.join("state/native-recordings/camera_a").exists());
+    let mut unchanged = acquisition_edit_payload(&f);
+    unchanged["cameras"][0]["raw_recording"] = raw;
+    let before = fs::read(f.ctl.root.join("inventory.json")).unwrap();
+    save_config(&f.ctl, &unchanged).unwrap();
+    assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
+}
