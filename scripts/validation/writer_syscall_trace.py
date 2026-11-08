@@ -270,6 +270,8 @@ TRACE_OUTPUT_BUFFER_BYTES = 256 * 1024
 
 
 class TraceSession:
+    scope = SCOPE
+    requires_owned_syscalls = True
     def __init__(self,output,max_bytes,max_seconds,buffer_kib=256,tracefs=Path('/sys/kernel/tracing'),
                  required=True,max_memory_bytes=64*1024**2,include_reads=False,proc=Path('/proc')):
         require(type(max_bytes) is int and 1024**2<=max_bytes<=8*1024**3,'TRACE_OUTPUT_BOUND')
@@ -284,6 +286,20 @@ class TraceSession:
         self.before={};self.capabilities=None;self.finished=None;self.active=False
 
     def _capability(self):return capability(self.tracefs,self.include_reads)
+
+    def _configure_events(self,tids):
+        self._write('set_event_pid',' '.join(map(str,sorted(tids))))
+        for event in self.capabilities['events']:
+            category,name=event.split(':');self._write(f'events/{category}/{name}/enable','1')
+
+    def _new_decoder(self,tids,comm,owners):
+        return Decoder(tids,self._emit,comm=comm,owners=owners)
+
+    def _decoder_problem(self,decoded):
+        return None
+
+    def _ready_details(self):
+        return {}
 
     def _target_abi(self,pid):
         with (self.proc/str(pid)/'exe').open('rb') as source:header=source.read(64)
@@ -385,14 +401,12 @@ class TraceSession:
                         try:comm[tid]=bounded_text(self.proc/str(target['process'].pid)/'task'/str(tid)/'comm',64).rstrip('\n')
                         except FileNotFoundError:pass
             require(len(tids)<=MAX_THREADS,'TRACE_THREAD_LIMIT')
-            self._write('set_event_pid',' '.join(map(str,sorted(tids))))
-            for event in self.capabilities['events']:
-                category,name=event.split(':');self._write(f'events/{category}/{name}/enable','1')
+            self._configure_events(tids)
             self.before=self._stats()
             require(all(value==0 for counters in self.before.values() for value in counters.values()),'TRACE_DIRTY_INITIAL_COUNTERS')
             self.fd=os.open(self.instance/'trace_pipe',os.O_RDONLY|os.O_NONBLOCK)
             self.stream=(self.output/'trace-events.jsonl').open('xb',buffering=TRACE_OUTPUT_BUFFER_BYTES);os.chmod(self.output/'trace-events.jsonl',0o600)
-            self.decoder=Decoder(tids,self._emit,comm=comm,owners=owners);self._write('tracing_on','1');self.active=True;self.state='running'
+            self.decoder=self._new_decoder(tids,comm,owners);self._write('tracing_on','1');self.active=True;self.state='running'
             ready={'ok':True,'available':True,'state':self.state,'started_monotonic_ns':time.monotonic_ns(),
                 'clock':'mono','initial_tids':sorted(tids),'targets':[{**target['identity'],'abi':target['abi']} for target in self.targets],
                 'monotonic_timens_offset':offsets,
@@ -402,7 +416,7 @@ class TraceSession:
                 'events':self.capabilities['events'],'kernel_ring_buffer_bytes':int(total)*1024,
                 'output_buffer_bytes':TRACE_OUTPUT_BUFFER_BYTES,
                 'max_output_bytes':self.max_bytes,'metadata_reserve_bytes':METADATA_RESERVE,
-                'max_seconds':self.max_seconds,'scope':SCOPE}
+                'max_seconds':self.max_seconds,'scope':self.scope,**self._ready_details()}
             self._json('ready.json',ready);return ready
         except (OSError,ValueError,UnicodeError) as error:
             self.failure='TRACE_SETUP_ERROR:'+type(error).__name__+':'+str(error);self.state='setup-error'
@@ -491,8 +505,9 @@ class TraceSession:
         if decoded.get('stream_lost_events',0):self.failure=self.failure or 'TRACE_STREAM_LOSS'
         if decoded.get('right_censored_calls',0) or decoded.get('open_calls_at_thread_exit',0):
             self.failure=self.failure or 'TRACE_UNPAIRED_SYSCALLS'
-        if self.decoder and not decoded['paired_syscalls']:self.failure=self.failure or 'TRACE_NO_PAIRED_SYSCALLS'
-        if self.decoder and not decoded['scheduler_switches']:self.failure=self.failure or 'TRACE_NO_SCHED_SWITCHES'
+        if self.requires_owned_syscalls and self.decoder and not decoded['paired_syscalls']:self.failure=self.failure or 'TRACE_NO_PAIRED_SYSCALLS'
+        if self.requires_owned_syscalls and self.decoder and not decoded['scheduler_switches']:self.failure=self.failure or 'TRACE_NO_SCHED_SWITCHES'
+        if self.decoder:self.failure=self.failure or self._decoder_problem(decoded)
         terminal={}
         for target in self.targets:
             try:terminal[str(target['identity']['pid'])]=target['process'].poll() is not None
@@ -517,7 +532,7 @@ class TraceSession:
             'decoded':decoded,'event_bytes':self.data_bytes,'max_output_bytes':self.max_bytes,
             'output_buffer_bytes':TRACE_OUTPUT_BUFFER_BYTES,
             'started_monotonic_ns':self.started_ns,'finished_monotonic_ns':time.monotonic_ns(),
-            'scope':SCOPE,'hardware_acceptance_verified':False}
+            'scope':self.scope,'hardware_acceptance_verified':False}
         self.finished['targets_terminal_at_finish']=terminal
         # Metadata is bounded by <=256 CPUs and <=1024 initial TIDs. Do not
         # silently write past the aggregate cap if a future schema grows.

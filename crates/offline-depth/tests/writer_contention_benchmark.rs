@@ -686,3 +686,99 @@ fn queue_overflow_stays_at_sixteen_and_discards_pending_pairs() {
     drop(s);
     assert!(queue.pop().is_none());
 }
+
+#[cfg(target_os = "linux")]
+#[path = "../../../tests/support/io_faults.rs"]
+#[allow(dead_code)] // shared test utility; this fixture needs only its C compiler
+mod tail_io_faults;
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sync_tail_replay_reports_real_fifo_overflow_without_relaxing_capture_or_recovery() {
+    for policy in ["half-credit", "full-credit"] {
+        let root = tempfile::tempdir().unwrap();
+        let library = tail_io_faults::compile(root.path());
+        let barrier = root.path().join("start.json");
+        fs::write(root.path().join("tail-armed"), b"1").unwrap();
+        let prefix = module_path!()
+            .split_once("::")
+            .map_or(String::new(), |(_, rest)| format!("{rest}::"));
+        let child_test = format!("{prefix}writer_contention_child");
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", child_test.as_str(), "--ignored", "--nocapture"])
+            .env("GDP_CONTENTION_ROOT", root.path())
+            .env("GDP_CONTENTION_MODE", "run")
+            .env("GDP_CONTENTION_PAIRS", "120")
+            .env("GDP_CONTENTION_BARRIER", &barrier)
+            .env("GDP_CONTENTION_BATCH_POLICY", policy)
+            .env("LD_PRELOAD", library)
+            .env("GDP_IO_SYNC_TAIL_ROOT", root.path())
+            .env("GDP_IO_SYNC_TAIL_ARM", root.path().join("tail-armed"))
+            .env("GDP_IO_SYNC_TAIL_LOG", root.path().join("tail-log.jsonl"))
+            .env(
+                "GDP_IO_SYNC_TAIL_MODEL",
+                if policy == "half-credit" {
+                    "half-serial"
+                } else {
+                    "full-repeated"
+                },
+            );
+        // A separate bounded 200ms preconditioning hold models existing backlog
+        // before the full-credit tail. It is NOT attributed to the real device.
+        if policy == "full-credit" {
+            command.env("GDP_IO_SYNC_TAIL_PRELOAD", "1");
+        }
+        let mut child = command.spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !root.path().join("ready.json").exists() {
+            assert!(child.try_wait().unwrap().is_none());
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        }
+        fs::write(barrier,serde_json::to_vec(&json!({"start_monotonic_ns":monotonic_ns()+200_000_000,"start_unix_ns":unix_ns()+200_000_000})).unwrap()).unwrap();
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("owned tail replay exceeded bound");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(child.wait().unwrap().success()); // inspect the real result, not exit 0
+        let result: Value =
+            serde_json::from_slice(&fs::read(root.path().join("result.json")).unwrap()).unwrap();
+        assert_eq!(result["reason"], "RAW_QUEUE_OVERFLOW");
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["queue_capacity"], 16);
+        assert_eq!(result["queue_peak"], 16);
+        assert_eq!(result["fps"], 30);
+        assert_eq!(result["imu_hz_per_stream"], 200);
+        assert_eq!(result["credit_pairs"], 32);
+        assert_eq!(result["credit_bytes"], 16 * 1024 * 1024);
+        assert!(
+            result["diagnostics"]["uncommitted_pairs_peak"]
+                .as_u64()
+                .unwrap()
+                <= 32
+        );
+        assert!(
+            result["diagnostics"]["uncommitted_payload_bytes_peak"]
+                .as_u64()
+                .unwrap()
+                <= 16 * 1024 * 1024
+        );
+        assert_eq!(result["independent_readback"], Value::Null);
+        let partial = root.path().join("capture.partial");
+        assert!(!partial.join("COMPLETE").exists());
+        assert!(RecordingDirectorySource::open(&partial).is_err());
+        let checkpoint: Value =
+            serde_json::from_slice(&fs::read(partial.join("checkpoint.json")).unwrap()).unwrap();
+        let confirmed = checkpoint["record_count"].as_u64().unwrap();
+        assert!(confirmed > 0);
+        let proof = verify(&partial, true, confirmed);
+        assert_eq!(proof["passes"], 2);
+        assert_eq!(proof["per_frame_color_depth_evidence_hashes"], true);
+        assert!(root.path().join("tail-log.jsonl").is_file());
+    }
+}

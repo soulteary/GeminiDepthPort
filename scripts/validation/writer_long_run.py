@@ -83,11 +83,16 @@ def plan(args):
         raise ValueError('BOUNDED_TRACE_CAPACITY_REQUIRED')
     if args.disk is not None and not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', args.disk):
         raise ValueError('WHOLE_DEVICE_NAME_REQUIRED')
+    if getattr(args,'storage_trace',False):
+        if not args.disk:raise ValueError('STORAGE_WHOLE_DISK_REQUIRED')
+        if args.allow_unavailable_trace:raise ValueError('STORAGE_TRACE_MUST_BE_REQUIRED')
+        if not MIB<=args.storage_trace_max_bytes<=8*GIB:raise ValueError('STORAGE_TRACE_OUTPUT_BOUND')
     pairs = args.seconds * 30
     per_writer = pairs * (ab.PAIR_BYTES + 32768) + 16 * MIB
     # Replaced status files are bounded individually by the driver; reserve
     # live metadata, resource logs, per-group trace and trace summary/shas.
     group_overhead = max(8 * MIB, args.seconds * 65536) + 3 * 96 * MIB + args.trace_max_bytes + MIB
+    if getattr(args,'storage_trace',False):group_overhead += args.storage_trace_max_bytes + MIB
     recovery = 32 * (ab.PAIR_BYTES + 32768) + 16 * MIB + 16 * MIB
     estimate = args.repeats * 2 * (WRITERS * per_writer + group_overhead) + 2 * recovery + 64 * MIB
     if estimate > args.max_output_bytes:
@@ -99,7 +104,8 @@ def plan(args):
             'writers_per_group': WRITERS, 'planned_upper_bound_bytes': estimate,
             'nominal_capture_seconds_all_groups': args.repeats * 2 * args.seconds,
             'trace_max_bytes_per_group': args.trace_max_bytes,
-            'resource_and_status_reserve_per_group': group_overhead - args.trace_max_bytes}
+            'storage_trace_max_bytes_per_group':args.storage_trace_max_bytes if getattr(args,'storage_trace',False) else 0,
+            'resource_and_status_reserve_per_group': group_overhead - args.trace_max_bytes - (args.storage_trace_max_bytes if getattr(args,'storage_trace',False) else 0)}
 
 
 def launch(binary, root, pairs, mode, status_on, barrier=None, checkpoint_batching='full-credit'):
@@ -397,10 +403,15 @@ def run_batch(binary, root, pairs, status_on, args, deadline, trace_factory=None
             children.append(launch(binary, child_root, pairs, 'run', status_on, root / 'start.json', args.checkpoint_batching))
         wait_ready(children, child_roots, args.output, args.max_output_bytes, deadline)
         status_monitors=[StatusMonitor(path,child.pid) for path,child in zip(child_roots,children)] if status_on else []
-        factory = trace_factory or trace_class()
+        extra={}
+        if getattr(args,'storage_trace',False):
+            if trace_factory is not None:raise ValueError('STORAGE_REAL_TRACE_FACTORY_REQUIRED')
+            factory=sibling('writer_storage_trace').CombinedSession
+            extra={'recording_path':root,'disk':args.disk,'storage_max_bytes':args.storage_trace_max_bytes}
+        else:factory = trace_factory or trace_class()
         trace = factory(root / 'trace', max_bytes=args.trace_max_bytes,
                         max_seconds=max(1., deadline - time.monotonic()), buffer_kib=args.trace_buffer_kib,
-                        tracefs=args.tracefs, required=not args.allow_unavailable_trace)
+                        tracefs=args.tracefs, required=not args.allow_unavailable_trace, **extra)
         initial_trace = trace.start(children)
         missing_trace = trace_unavailable(initial_trace)
         if initial_trace.get('ok') is not True and not (missing_trace and args.allow_unavailable_trace):
@@ -660,10 +671,13 @@ def run(args, trace_factory=None):
         'binary': {'path': str(binary), 'sha256': ab.sha256(binary)}, **hashes,
         'controller_sha256': ab.sha256(__file__),
         'trace_tool_sha256': ab.sha256(Path(__file__).with_name('writer_syscall_trace.py')),
+        'storage_trace_tool_sha256':ab.sha256(Path(__file__).with_name('writer_storage_trace.py')) if getattr(args,'storage_trace',False) else None,
+        'storage_analyzer_sha256':ab.sha256(Path(__file__).with_name('analyze_storage_trace.py')) if getattr(args,'storage_trace',False) else None,
         'seconds_per_recording': args.seconds,
         'repeats': args.repeats, 'status_modes': ['off', 'on'], 'fps': 30, 'imu_hz_per_stream': 200,
         'queue_capacity': 16, 'checkpoint_credit_pairs': 32, 'checkpoint_credit_bytes': 16 * MIB,
         'checkpoint_batching':args.checkpoint_batching,
+        'storage_trace_enabled':getattr(args,'storage_trace',False),'storage_trace_max_bytes_per_group':getattr(args,'storage_trace_max_bytes',0) if getattr(args,'storage_trace',False) else 0,
         'backing_path':str(args.backing_path) if args.backing_path is not None else None,
         'runtime_free_space_reserve_bytes':FREE_SPACE_RESERVE,
         'status_period_ms': 500, 'status_deadline_ms':10000, 'status_backend': 'production ServiceQuality/Persistence in each writer process',
@@ -726,6 +740,8 @@ def parser():
     p.add_argument('--trace-max-bytes', type=int, default=4 * GIB)
     p.add_argument('--trace-buffer-kib', type=int, default=256)
     p.add_argument('--tracefs', type=Path, default=Path('/sys/kernel/tracing'))
+    p.add_argument('--storage-trace',action='store_true',help='required ext4/jbd2/block device-scoped second instance, kernel threads included; direct ext4 device only')
+    p.add_argument('--storage-trace-max-bytes',type=int,default=4*GIB,help='additional bounded device event output PER GROUP; included in capacity plan')
     p.add_argument('--checkpoint-batching', choices=['full-credit','half-credit'], default='full-credit',
                    help='test-only checkpoint policy; credits/barriers unchanged; record both modes in separate fresh roots')
     p.add_argument('--backing-path',type=Path,help='visible host/backing directory for loopback/VM capacity checks; sampled reserve is not a quota')
