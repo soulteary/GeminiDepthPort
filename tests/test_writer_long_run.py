@@ -294,6 +294,47 @@ class LongPolicyTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform=='linux','actual owned subprocess/SIGKILL control')
 class LongProcessTests(unittest.TestCase):
+    def test_runtime_trace_failure_preserves_all_healthy_writer_results_but_stops_next_group(self):
+        class RuntimeLostTrace(LostTrace):
+            def start_draining(self):
+                if (self.output.parent/'start.json').exists():raise AssertionError('drain started after barrier')
+                self.draining=True
+            def poll(self):
+                if not self.draining:raise AssertionError('drain not started')
+                self.failure='controlled readback burst loss'
+            def stop_capture(self):self.draining=False
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);a=args(root,fake_binary(root/'driver'))
+            result=long.run(a,trace_factory=RuntimeLostTrace)
+            self.assertFalse(result['ok']);self.assertIn('TRACE_INCOMPLETE',result['error'])
+            self.assertEqual(result['completed_groups'],1);self.assertEqual(result['recovery'],{})
+            failed=a.output/'round-00-status-off'
+            for n in range(3):
+                row=json.loads((failed/f'writer-{n}/result.json').read_text())
+                self.assertTrue(row['ok']);self.assertEqual(row['independent_readback']['pairs_per_pass'],[30,30])
+            side=json.loads((failed/'batch-failure.json').read_text())
+            self.assertEqual(side['child_returncodes'],[0,0,0]);self.assertEqual(side['cleanup_errors'],[])
+            self.assertEqual(side['trace_failure'],json.loads((failed/'trace-failure.json').read_text()))
+            self.assertIsNone(side['first_child_failure'])
+            self.assertFalse((a.output/'round-00-status-on').exists())
+            self.assertFalse(result['trace_complete']);self.assertFalse(result['hardware_acceptance_verified'])
+
+    def test_trace_failure_does_not_relax_wall_limit_or_mask_native_overflow(self):
+        class RuntimeLostTrace(LostTrace):
+            def poll(self):self.failure='controlled loss before native exit'
+        for behavior,reason in [('hang','WALL_TIME_LIMIT'),('early-failed-one','RAW_QUEUE_OVERFLOW')]:
+            with self.subTest(behavior=behavior),tempfile.TemporaryDirectory() as d:
+                root=Path(d);a=args(root,fake_binary(root/'driver',behavior));a.output.mkdir()
+                began=time.monotonic()
+                with self.assertRaisesRegex(Exception,reason):
+                    long.run_batch(a.binary,a.output/'failed',30,False,a,time.monotonic()+1,RuntimeLostTrace,.01)
+                self.assertLess(time.monotonic()-began,3)
+                side=json.loads((a.output/'failed/batch-failure.json').read_text())
+                self.assertIn(reason,side['first_failure']);self.assertIsNotNone(side['trace_failure'])
+                self.assertEqual(side['cleanup_errors'],[])
+                self.assertTrue(all(code is not None for code in side['child_returncodes']))
+                if behavior=='early-failed-one':self.assertEqual(side['first_child_failure']['reason'],'RAW_QUEUE_OVERFLOW')
+
     def test_successful_first_trace_does_not_certify_an_omitted_failed_group(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);a=args(root,fake_binary(root/'driver','on-overflow'))

@@ -167,6 +167,72 @@ class TraceSessionTests(unittest.TestCase):
         self.assertEqual(report['decoded']['paired_syscalls'],65)
         self.assertEqual(path.stat().st_size,report['event_bytes'])
 
+    def test_independent_reader_preserves_burst_without_controller_poll_and_hashes_timeline(self):
+        session=self.start();session.max_bytes=32*1024**2
+        self.emit_complete();session.start_draining();pid=self.process.pid
+        raw=''.join(line(pid,'sys_enter_fsync','fd=3',f'{101+n}.000000')+
+                    line(pid,'sys_exit_fsync','ret=0',f'{101+n}.000001') for n in range(12000)).encode()
+        sent=0;deadline=time.monotonic()+10
+        # Real nonblocking FIFO backpressure, not a mock of the drain/decoder.
+        # Never call poll(): this models a controller occupied during readback.
+        while sent<len(raw):
+            self.assertLess(time.monotonic(),deadline)
+            try:sent+=os.write(session.pipe_writer,raw[sent:sent+65536])
+            except BlockingIOError:time.sleep(.001)
+        report=session.finish();self.assertTrue(report['ok'],report)
+        self.assertEqual(report['decoded']['paired_syscalls'],12001)
+        self.assertTrue(report['independent_drain_thread']);self.assertFalse(session.drain_thread.is_alive())
+        self.assertGreater(report['drain']['worker_cpu_ns'],0)
+        rows=[json.loads(row) for row in (session.output/'loss-observations.jsonl').read_text().splitlines()]
+        self.assertTrue(rows[-1]['final']);self.assertEqual(sum(r['counter_delta_sum'] for r in rows),0)
+        self.assertLessEqual(report['loss_observation_bytes'],report['loss_observation_limit_bytes'])
+        for row in (session.output/'SHA256SUMS').read_text().splitlines():
+            digest,name=row.split('  ');self.assertEqual(hashlib.sha256((session.output/name).read_bytes()).hexdigest(),digest)
+
+    def test_periodic_loss_is_detected_without_poll_and_retains_per_cpu_bracket(self):
+        session=self.start();self.emit_complete();session.start_draining()
+        deadline=time.monotonic()+3
+        while session.loss_rows==0:
+            self.assertLess(time.monotonic(),deadline);time.sleep(.005)
+        stats=session.instance/'per_cpu/cpu1/stats'
+        stats.write_text(stats.read_text().replace('dropped events: 0','dropped events: 9'))
+        while session.failure is None:
+            self.assertLess(time.monotonic(),deadline);time.sleep(.005)
+        report=session.finish();self.assertFalse(report['ok']);self.assertEqual(report['lost_events'],9)
+        rows=[json.loads(row) for row in (session.output/'loss-observations.jsonl').read_text().splitlines()]
+        loss=next(row for row in rows if row['counter_delta_sum'])
+        self.assertEqual(loss['counter_deltas_by_cpu']['cpu1']['dropped events'],9)
+        self.assertIsNotNone(loss['previous_sample_finished_monotonic_ns'])
+        self.assertTrue(rows[-1]['final']);self.assertFalse(session.drain_thread.is_alive())
+
+    def test_slow_decode_and_output_are_bounded_and_do_not_run_in_health_poll(self):
+        session=self.start();self.emit_complete()
+        real=session.decoder.line
+        def slow(raw):time.sleep(.002);real(raw)
+        session.decoder.line=slow;session.start_draining()
+        raw=''.join(line(self.process.pid,'sys_enter_fsync','fd=3',f'{101+n}.000000')+
+                    line(self.process.pid,'sys_exit_fsync','ret=0',f'{101+n}.000001') for n in range(20)).encode()
+        os.write(session.pipe_writer,raw)
+        began=time.monotonic();session.poll()
+        self.assertLess(time.monotonic()-began,.1)
+        report=session.finish();self.assertTrue(report['ok'],report)
+        self.assertEqual(report['decoded']['paired_syscalls'],21)
+        self.assertGreater(report['drain']['max_read_wall_ns'],20_000_000)
+        self.assertFalse(session.drain_thread.is_alive())
+
+    def test_periodic_counter_schema_and_timeline_budget_fail_closed(self):
+        for mode in ('schema','budget'):
+            session=self.start();self.emit_complete()
+            if mode=='schema':(session.instance/'per_cpu/cpu1/stats').write_text('overrun: 0\n')
+            else:session.loss_limit=1
+            session.start_draining();deadline=time.monotonic()+2
+            while session.failure is None:
+                self.assertLess(time.monotonic(),deadline);time.sleep(.005)
+            report=session.finish();self.assertFalse(report['ok'])
+            self.assertIn('LOSS_COUNTERS' if mode=='schema' else 'TIMELINE_LIMIT',report['error'])
+            self.assertFalse(session.instance.exists());self.session=None
+            session.output.rename(self.root/('done-'+mode))
+
     def test_long_trace_disk_budget_is_explicit_without_allocating_kernel_memory(self):
         with tempfile.TemporaryDirectory() as d:
             out=Path(d)/'new'

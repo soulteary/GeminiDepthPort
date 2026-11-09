@@ -13,6 +13,7 @@ import math
 import os
 from pathlib import Path
 import re
+import select
 import signal
 import sys
 import threading
@@ -284,6 +285,11 @@ class TraceSession:
         self.instance=None;self.fd=None;self.stream=None;self.decoder=None;self.failure=None
         self.state='not-started';self.started_ns=None;self.data_bytes=0;self.fragment=b'';self.targets=[]
         self.before={};self.capabilities=None;self.finished=None;self.active=False
+        self.drain_thread=None;self.drain_stop=threading.Event();self.loss_stream=None
+        self.loss_bytes=0;self.loss_limit=min(8*1024**2,max_bytes//8);self.last_loss=None;self.loss_rows=0
+        self.drain_metrics={'read_calls':0,'raw_bytes':0,'budget_exhaustions':0,'read_wall_ns':0,
+                            'max_read_wall_ns':0,'max_read_gap_ns':0,'max_stats_wall_ns':0}
+        self.last_read_ns=None;self.last_loss_ns=None;self.last_loss_started_ns=None;self.initial_loss_sample=None
 
     def _capability(self):return capability(self.tracefs,self.include_reads)
 
@@ -345,7 +351,7 @@ class TraceSession:
 
     def _emit(self,row):
         data=(json.dumps(row,separators=(',',':'))+'\n').encode()
-        require(self.data_bytes+len(data)<=self.max_bytes-METADATA_RESERVE,'TRACE_OUTPUT_LIMIT')
+        require(self.data_bytes+len(data)<=self.max_bytes-METADATA_RESERVE-(self.loss_limit if self.drain_thread else 0),'TRACE_OUTPUT_LIMIT')
         self.stream.write(data);self.data_bytes+=len(data)
 
     def start(self,processes):
@@ -402,7 +408,9 @@ class TraceSession:
                         except FileNotFoundError:pass
             require(len(tids)<=MAX_THREADS,'TRACE_THREAD_LIMIT')
             self._configure_events(tids)
-            self.before=self._stats()
+            self.last_loss_started_ns=time.monotonic_ns();self.before=self._stats();self.last_loss_ns=time.monotonic_ns()
+            self.initial_loss_sample={'sample_started_monotonic_ns':self.last_loss_started_ns,
+                                      'sample_finished_monotonic_ns':self.last_loss_ns}
             require(all(value==0 for counters in self.before.values() for value in counters.values()),'TRACE_DIRTY_INITIAL_COUNTERS')
             self.fd=os.open(self.instance/'trace_pipe',os.O_RDONLY|os.O_NONBLOCK)
             self.stream=(self.output/'trace-events.jsonl').open('xb',buffering=TRACE_OUTPUT_BUFFER_BYTES);os.chmod(self.output/'trace-events.jsonl',0o600)
@@ -416,7 +424,7 @@ class TraceSession:
                 'events':self.capabilities['events'],'kernel_ring_buffer_bytes':int(total)*1024,
                 'output_buffer_bytes':TRACE_OUTPUT_BUFFER_BYTES,
                 'max_output_bytes':self.max_bytes,'metadata_reserve_bytes':METADATA_RESERVE,
-                'max_seconds':self.max_seconds,'scope':self.scope,**self._ready_details()}
+                'max_seconds':self.max_seconds,'initial_loss_sample':self.initial_loss_sample,'scope':self.scope,**self._ready_details()}
             self._json('ready.json',ready);return ready
         except (OSError,ValueError,UnicodeError) as error:
             self.failure='TRACE_SETUP_ERROR:'+type(error).__name__+':'+str(error);self.state='setup-error'
@@ -427,17 +435,87 @@ class TraceSession:
             os.fchmod(out.fileno(),0o600);json.dump(value,out,indent=2);out.write('\n')
 
     def _read(self,budget=1024**2):
-        total=0;began=time.monotonic_ns()
-        while total<budget and time.monotonic_ns()-began<20_000_000:
-            try:chunk=os.read(self.fd,min(65536,budget-total))
-            except BlockingIOError:return total,True
-            if not chunk:return total,True
-            total+=len(chunk);self.fragment+=chunk
-            while b'\n' in self.fragment:
-                raw,self.fragment=self.fragment.split(b'\n',1);require(len(raw)<=MAX_LINE,'TRACE_LINE_LIMIT')
-                self.decoder.line(raw.decode('utf-8','strict'))
-            require(len(self.fragment)<=MAX_LINE,'TRACE_LINE_LIMIT')
-        return total,False
+        total=0;began=time.monotonic_ns();drained=False;normal=False
+        if self.last_read_ns is not None:
+            self.drain_metrics['max_read_gap_ns']=max(self.drain_metrics['max_read_gap_ns'],began-self.last_read_ns)
+        self.last_read_ns=began
+        try:
+            while total<budget and time.monotonic_ns()-began<20_000_000:
+                try:chunk=os.read(self.fd,min(65536,budget-total))
+                except BlockingIOError:drained=True;break
+                if not chunk:drained=True;break
+                total+=len(chunk)
+                # Split each chunk once, avoiding repeated copies of its tail.
+                lines=(self.fragment+chunk).split(b'\n');self.fragment=lines.pop()
+                for raw in lines:
+                    require(len(raw)<=MAX_LINE,'TRACE_LINE_LIMIT')
+                    self.decoder.line(raw.decode('utf-8','strict'))
+                require(len(self.fragment)<=MAX_LINE,'TRACE_LINE_LIMIT')
+            normal=True;return total,drained
+        finally:
+            elapsed=time.monotonic_ns()-began
+            self.drain_metrics['read_calls']+=1;self.drain_metrics['raw_bytes']+=total
+            self.drain_metrics['read_wall_ns']+=elapsed
+            self.drain_metrics['max_read_wall_ns']=max(self.drain_metrics['max_read_wall_ns'],elapsed)
+            if normal and not drained:self.drain_metrics['budget_exhaustions']+=1
+
+    def _observe_loss(self,final=False):
+        began=time.monotonic_ns();current=self._stats();previous=self.last_loss or self.before
+        require(set(current)==set(previous),'TRACE_CPU_SET_CHANGED')
+        deltas={}
+        for cpu,values in current.items():
+            diff={key:value-previous[cpu][key] for key,value in values.items()}
+            require(all(value>=0 for value in diff.values()),'TRACE_COUNTER_REGRESSION')
+            if any(diff.values()):deltas[cpu]=diff
+        ended=time.monotonic_ns()
+        self.drain_metrics['max_stats_wall_ns']=max(self.drain_metrics['max_stats_wall_ns'],ended-began)
+        row={'sample_started_monotonic_ns':began,'sample_finished_monotonic_ns':ended,
+             'previous_sample_started_monotonic_ns':self.last_loss_started_ns,
+             'previous_sample_finished_monotonic_ns':self.last_loss_ns,'final':final,
+             'counter_observation_bracket_ns':[self.last_loss_started_ns,ended],
+             'counter_deltas_by_cpu':deltas,'counter_delta_sum':sum(sum(v.values()) for v in deltas.values()),
+             'drain':dict(self.drain_metrics),
+             'scope':'non-atomic per-CPU exposed counters; deltas locate observation brackets, not exact lost event times or unique event counts'}
+        raw=(json.dumps(row,separators=(',',':'))+'\n').encode()
+        require(self.loss_bytes+len(raw)<=self.loss_limit,'TRACE_LOSS_TIMELINE_LIMIT')
+        self.loss_stream.write(raw);self.loss_stream.flush();self.loss_bytes+=len(raw);self.loss_rows+=1
+        self.last_loss=current;self.last_loss_ns=ended;self.last_loss_started_ns=began
+        require(not deltas,'TRACE_KERNEL_LOSS')
+
+    def start_draining(self):
+        """One bounded reader/decoder per instance, independent of health polling.
+
+        No raw-event queue: backpressure becomes explicit kernel loss, never an
+        unbounded userspace allocation or a silently discarded decoded record.
+        """
+        require(self.active and self.drain_thread is None,'TRACE_DRAIN_START_STATE')
+        self.loss_stream=(self.output/'loss-observations.jsonl').open('xb',buffering=8192)
+        os.chmod(self.output/'loss-observations.jsonl',0o600)
+        self.drain_thread=threading.Thread(target=self._drain_loop,name='gdp-trace-drain',daemon=True)
+        try:self.drain_thread.start()
+        except RuntimeError:
+            self.drain_thread=None;self.loss_stream.close();self.loss_stream=None;raise
+
+    def _drain_loop(self):
+        next_stats=0;cpu_started=time.thread_time_ns()
+        try:
+            while not self.drain_stop.is_set():
+                now=time.monotonic_ns()
+                require((now-self.started_ns)/1e9<=self.max_seconds,'TRACE_WALL_LIMIT')
+                if now>=next_stats:
+                    self._observe_loss();next_stats=time.monotonic_ns()+1_000_000_000
+                _,empty=self._read()
+                if empty:
+                    # select wakes on new data; the stop event is checked at
+                    # least every 20 ms, with no 200 ms controller sleep.
+                    select.select([self.fd],[],[],.02)
+        except Exception as error:
+            self.failure=self.failure or 'TRACE_RUNTIME_ERROR:'+type(error).__name__+':'+str(error)
+            self.state='incomplete';self._stop()
+        finally:self.drain_metrics['worker_cpu_ns']=time.thread_time_ns()-cpu_started
+
+    def stop_capture(self):
+        self._stop();self.drain_stop.set()
 
     def poll(self):
         if not self.active:return
@@ -451,7 +529,7 @@ class TraceSession:
                         exit_adjacent=isinstance(error,FileNotFoundError) or str(error)=='TRACE_TARGET_NOT_LIVE'
                         if not exit_adjacent or target['process'].poll() is None:raise
                     else:require(current==target['identity'],'TRACE_TARGET_IDENTITY_CHANGED')
-            self._read()
+            if self.drain_thread is None:self._read()
         except (OSError,ValueError,UnicodeError) as error:
             self.failure='TRACE_RUNTIME_ERROR:'+type(error).__name__+':'+str(error);self.state='incomplete';self._stop()
 
@@ -468,7 +546,11 @@ class TraceSession:
     def finish(self):
         if self.finished is not None:return self.finished
         require(self.state!='not-started','TRACE_NOT_STARTED')
-        self._stop();after={};stats_error=None;drain_error=None
+        self.stop_capture();after={};stats_error=None;drain_error=None
+        if self.drain_thread is not None:
+            self.drain_thread.join(timeout=3)
+            # Never close/reuse descriptors underneath a stuck drain thread.
+            require(not self.drain_thread.is_alive(),'TRACE_DRAIN_THREAD_STOP_TIMEOUT')
         if self.fd is not None:
             try:
                 # Bounded final drain after tracing is disabled. An exhausted
@@ -488,6 +570,11 @@ class TraceSession:
                 except (OSError,ValueError) as error:
                     stats_error=type(error).__name__+':'+str(error)
                     self.failure=self.failure or 'TRACE_STATS_ERROR:'+stats_error
+                if self.loss_stream is not None:
+                    try:self._observe_loss(final=True)
+                    except (OSError,ValueError) as error:
+                        self.failure=self.failure or 'TRACE_PERIODIC_STATS_ERROR:'+type(error).__name__+':'+str(error)
+                    self.loss_stream.close();self.loss_stream=None
                 os.close(self.fd);self.fd=None
         if self.stream is not None:self.stream.close();self.stream=None
         lost=0
@@ -528,9 +615,13 @@ class TraceSession:
             'capabilities':self.capabilities,'lost_events':lost+decoded.get('stream_lost_events',0) if counters_complete else None,
             'loss_counters_complete':counters_complete,'final_drain_error':drain_error,
             'kernel_loss_counters_before':self.before,'kernel_loss_counters_after':after,'stats_error':stats_error,
+            'initial_loss_sample':self.initial_loss_sample,
             'loss_count_scope':'sum of complete exposed counter deltas and stream annotations; null when counters unavailable/regressed; categories may overlap, not a unique event count; any loss rejects completeness',
             'decoded':decoded,'event_bytes':self.data_bytes,'max_output_bytes':self.max_bytes,
             'output_buffer_bytes':TRACE_OUTPUT_BUFFER_BYTES,
+            'drain':dict(self.drain_metrics),'loss_observation_rows':self.loss_rows,
+            'loss_observation_bytes':self.loss_bytes,'loss_observation_limit_bytes':self.loss_limit,
+            'independent_drain_thread':self.drain_thread is not None,
             'started_monotonic_ns':self.started_ns,'finished_monotonic_ns':time.monotonic_ns(),
             'scope':self.scope,'hardware_acceptance_verified':False}
         self.finished['targets_terminal_at_finish']=terminal
@@ -599,6 +690,7 @@ def main():
     old={number:signal.signal(number,stop) for number in (signal.SIGINT,signal.SIGTERM)}
     try:
         session.start(processes)
+        if session.active:session.start_draining()
         while session.active and not interrupted:
             session.poll()
             if all(process.poll() is not None for process in processes):break

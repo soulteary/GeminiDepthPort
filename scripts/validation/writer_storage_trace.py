@@ -171,12 +171,17 @@ class StorageSession(syscalls.TraceSession):
 
 class FileSession(syscalls.TraceSession):
     """Best-effort FD role samples, never interpreted as an entry-time binding."""
-    def __init__(self,*args,**kwargs):super().__init__(*args,**kwargs);self.fd_samples={}
+    def __init__(self,*args,**kwargs):super().__init__(*args,**kwargs);self.fd_samples={};self.next_fd_sample_ns=0
     def _emit(self,row):
         if row.get('kind') in ('sys_enter_fsync','sys_enter_fdatasync'):
             key=(row['tid'],row['tid_generation']);sample={'available':False,'observed_monotonic_ns':time.monotonic_ns(),
                 'scope':'FD sampled while draining trace, NOT syscall-entry identity; match dev/inode to nested ext4 event before attributing'}
             try:
+                # Best-effort lookup is capped globally at 100 attempts/s. Late
+                # and skipped samples remain unknown, never guessed bindings.
+                now=time.monotonic_ns()
+                require(now>=self.next_fd_sample_ns,'STORAGE_FD_SAMPLE_RATE_LIMIT')
+                self.next_fd_sample_ns=now+10_000_000
                 root=row['root_pid'];target=next(t for t in self.targets if t['identity']['pid']==root)
                 require(target['process'].poll() is None and syscalls.proc_identity(root,self.proc)==target['identity'],'STORAGE_FD_PROCESS_EXITED')
                 task=syscalls.proc_identity(row['tid'],self.proc)
@@ -187,7 +192,7 @@ class FileSession(syscalls.TraceSession):
                 role='payload' if re.fullmatch(r'payload-\d{20}\.bin',name) else 'index' if name=='records.jsonl' else 'checkpoint' if name in ('.checkpoint.tmp','checkpoint.json') else 'directory' if stat.S_ISDIR(after.st_mode) else 'other'
                 sample.update(available=True,role=role,dev=[os.major(after.st_dev),os.minor(after.st_dev)],inode=after.st_ino,
                               sampled_tid_start_ticks=task['start_ticks'],sample_finished_monotonic_ns=time.monotonic_ns())
-            except (OSError,ValueError,StopIteration) as error:sample['reason']=type(error).__name__
+            except (OSError,ValueError,StopIteration) as error:sample['reason']=str(error) if str(error)=='STORAGE_FD_SAMPLE_RATE_LIMIT' else type(error).__name__
             require(len(self.fd_samples)<syscalls.MAX_THREADS or key in self.fd_samples,'STORAGE_FD_STATE_LIMIT')
             self.fd_samples[key]=sample;row={**row,'fd_sample':sample}
         elif row.get('kind') in ('sys_exit_fsync','sys_exit_fdatasync'):
@@ -214,6 +219,13 @@ class CombinedSession:
         second=self.storage.start(processes)
         if second.get('ok') is not True:self.failure=self.storage.failure or 'STORAGE_TRACE_UNAVAILABLE'
         return {**first,'ok':first.get('ok') is True and second.get('ok') is True,'storage':second}
+    def start_draining(self):
+        self.file.start_draining()
+        try:self.storage.start_draining()
+        except Exception:
+            self.stop_capture();raise
+    def stop_capture(self):
+        self.file.stop_capture();self.storage.stop_capture()
     def poll(self):
         self.file.poll();self.storage.poll();self.failure=self.failure or self.file.failure or self.storage.failure
     def finish(self):
