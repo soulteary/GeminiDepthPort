@@ -1048,7 +1048,16 @@ fn device_setting_failure_never_publishes_or_commits_native_capture() {
         assert!(!exit.success());
         let terminal = status(&f).unwrap();
         assert_eq!(terminal["ready"], false);
-        assert!(terminal.to_string().contains(reason), "{terminal}");
+        assert_eq!(terminal["worker_reason"], "SESSION_FAILED");
+        let diagnostic = f.status.parent().unwrap().join(format!(
+            "failure-{}.json",
+            terminal["session_id"].as_str().unwrap()
+        ));
+        let detail: Value = serde_json::from_slice(&fs::read(diagnostic).unwrap()).unwrap();
+        assert!(
+            detail["error_chain"].as_str().unwrap().contains(reason),
+            "{detail}"
+        );
         assert_eq!(terminal["pairs_published"], 0);
         assert!(!f.root.join("raw/session/COMPLETE").exists());
         let events = fs::read_to_string(&f.events).unwrap();
