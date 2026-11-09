@@ -448,6 +448,7 @@ version = "0.1.0"
 dependencies = [
  "capture-contract",
  "orbbec-sys",
+ "serde",
  "serde_json",
 ]
 

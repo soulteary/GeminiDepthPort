@@ -30,6 +30,7 @@ fn model(source: &StreamCalibration, frame: &str) -> Result<CameraModel> {
     Ok(m)
 }
 pub(crate) struct RuntimeBinding<'a> {
+    pub device_capabilities: Option<&'a orbbec_safe::DeviceReport>,
     pub generation: &'a str,
     pub session: &'a str,
     pub instance: &'a str,
@@ -48,6 +49,7 @@ pub(crate) fn build(
         instance,
         runtime_sha,
         runtime_contract,
+        device_capabilities,
     } = binding;
     let session = SessionId::parse(session)?;
     let instance = InstanceId::parse(instance)?;
@@ -94,7 +96,7 @@ pub(crate) fn build(
         physical_accuracy_verified: false,
         legacy_source_sha256: None,
     };
-    let configuration = json!({"capture":config.configuration,"runtime_config_sha256":runtime_sha,"runtime_artifacts":runtime_contract,"actual_color_profile":{"width":c.profile.width,"height":c.profile.height,"fps":c.profile.fps},"actual_depth_profile":{"width":d.profile.width,"height":d.profile.height,"fps":d.profile.fps},"source_depth_scale_mm":source_depth_scale_mm,"timestamp_mapping":config.message_timestamp().ros_stamp_source(),"acquisition_effective":config.acquisition,"sync_mode":"sdk_frameset_association_only"});
+    let configuration = json!({"capture":config.configuration,"device_capabilities":device_capabilities,"runtime_config_sha256":runtime_sha,"runtime_artifacts":runtime_contract,"actual_color_profile":{"width":c.profile.width,"height":c.profile.height,"fps":c.profile.fps},"actual_depth_profile":{"width":d.profile.width,"height":d.profile.height,"fps":d.profile.fps},"source_depth_scale_mm":source_depth_scale_mm,"timestamp_mapping":config.message_timestamp().ros_stamp_source(),"acquisition_effective":config.acquisition,"sync_mode":"sdk_frameset_association_only"});
     let configuration_id = ConfigurationId::parse(content_digest(
         ContentKind::Configuration,
         &serde_json::to_vec(&configuration)?,
@@ -134,6 +136,7 @@ mod tests {
             fps: 30,
         };
         Config {
+            device_controls: Default::default(),
             imu: None,
             sdk_library: "/capture/lib/libOrbbecSDK.so".into(),
             serial: "observed_device".into(),
@@ -199,6 +202,7 @@ mod tests {
         let session = "b".repeat(32);
         let instance = "c".repeat(64);
         let binding = || RuntimeBinding {
+            device_capabilities: None,
             generation: &generation,
             session: &session,
             instance: &instance,

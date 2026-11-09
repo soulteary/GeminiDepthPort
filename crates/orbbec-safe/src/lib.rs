@@ -1,9 +1,12 @@
 //! Thread-confined video polling and optional bounded IMU callback adapter.
 //! SDK objects and frames retain their loaded library. No Send/Sync is asserted.
 //! Software aggregation and global timestamp mapping are explicit opt-ins. This
-//! adapter does not configure exposure, hardware synchronization, or depth filters.
+//! adapter supports startup exposure/gain controls; hardware synchronization and
+//! depth filters are not configured.
 use orbbec_sys as sys;
 mod calibration;
+mod device;
+pub use device::{DeviceInfo, DeviceReport, PropertyRange, PropertyReport};
 mod imu;
 pub use calibration::{Extrinsics, SessionCalibration, StreamCalibration};
 pub use imu::{ImuCapture, ImuFailureObservation};
@@ -189,6 +192,27 @@ impl Sdk {
         depth: Option<VideoProfile>,
         options: CaptureOptions,
     ) -> Result<Pipeline> {
+        self.open_internal(serial, color, depth, options, None)
+    }
+    pub fn open_with_controls(
+        &self,
+        serial: &str,
+        color: Option<VideoProfile>,
+        depth: Option<VideoProfile>,
+        options: CaptureOptions,
+        controls: &capture_contract::device::DeviceControls,
+    ) -> Result<Pipeline> {
+        controls.validate().map_err(|e| Error(e.to_string()))?;
+        self.open_internal(serial, color, depth, options, Some(controls))
+    }
+    fn open_internal(
+        &self,
+        serial: &str,
+        color: Option<VideoProfile>,
+        depth: Option<VideoProfile>,
+        options: CaptureOptions,
+        controls: Option<&capture_contract::device::DeviceControls>,
+    ) -> Result<Pipeline> {
         if serial.trim().is_empty() {
             return Err(Error("explicit device serial is required".into()));
         }
@@ -295,7 +319,8 @@ impl Sdk {
             unsafe { apply(pipeline.raw(), &mut e) };
             check(a, e)?;
         }
-        let session = Rc::new(Session {
+        let mut session = Rc::new(Session {
+            device_report: None,
             pipeline,
             config,
             device,
@@ -314,12 +339,19 @@ impl Sdk {
         // Stop even a partially started pipeline when start reports an error.
         session.active.set(true);
         check(a, e)?;
+        if let Some(controls) = controls {
+            let report = device::configure(a, session.device.raw(), controls)?;
+            Rc::get_mut(&mut session)
+                .expect("new unique session")
+                .device_report = Some(report);
+        }
         Ok(Pipeline { session })
     }
 }
 // Field order retains all parent resources until child handles are deleted.
 #[allow(dead_code)]
 struct Session {
+    device_report: Option<DeviceReport>,
     pipeline: Handle,
     config: Handle,
     device: Handle,
@@ -357,6 +389,10 @@ pub struct Pipeline {
     session: Rc<Session>,
 }
 impl Pipeline {
+    pub fn device_report(&self) -> Option<&DeviceReport> {
+        self.session.device_report.as_ref()
+    }
+
     pub fn wait(&mut self, timeout_ms: u32) -> Result<Option<FrameSet>> {
         if timeout_ms == 0 || timeout_ms > 60_000 {
             return Err(Error("poll timeout must be 1..60000 ms".into()));

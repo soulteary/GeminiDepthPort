@@ -4,8 +4,8 @@ const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'
 const csrf = document.querySelector('meta[name="csrf-token"]').content;
 const numeric = ['color_width','color_height','color_fps','depth_width','depth_height','depth_fps','color_exposure','color_gain','ir_exposure','ir_gain'];
 const booleans = ['enable_color','enable_depth','enable_color_auto_exposure','enable_ir_auto_exposure'];
-const officialOnly = ['color_exposure','color_gain','ir_exposure','ir_gain','enable_color_auto_exposure','enable_ir_auto_exposure'];
-const parameterSupported = key => draft?.capture_backend !== 'rust' || !officialOnly.includes(key);
+const deviceControlParameters = ['color_exposure','color_gain','ir_exposure','ir_gain','enable_color_auto_exposure','enable_ir_auto_exposure'];
+const parameterSupported = key => !deviceControlParameters.includes(key) || (draft?.capture_backend !== 'rust' || selectionOptions().rust_parameters?.includes(key));
 const formats = ['color_format','depth_format'];
 let state, draft, revision, role = null, dirty = false, pending = false, jobBusy = false, polling = false, logMode = 'job';
 let saving = false, discardUnsupported = false;
@@ -207,7 +207,12 @@ function showRole() {
   const catalog = selectionOptions().profiles || Object.fromEntries(Object.entries(profiles).map(([key,model])=>[key,{model}]));
   $('camera-profile').innerHTML = Object.entries(catalog).map(([key,p])=>`<option value="${escapeHTML(key)}" ${p.capture_backend && p.capture_backend !== (draft.capture_backend || 'official') ? 'disabled' : ''}>${escapeHTML(p.model)}${p.capture_backend === 'rust' ? ' · Rust' : ''}</option>`).join('');
   $('camera-profile').value = c.profile || '';
-  $('color_exposure').closest('details').hidden = draft.capture_backend === 'rust';
+  $('color_exposure').closest('details').hidden = false;
+  for (const [stream,key] of [['color','enable_color_auto_exposure'],['ir','enable_ir_auto_exposure']]) {
+    const rust=draft.capture_backend==='rust';
+    $(stream+'-auto-policy-field').hidden=!rust;$(key).closest('label').hidden=rust;
+    $(stream+'-auto-policy').value=c.parameters[key]===undefined?'keep':c.parameters[key]?'on':'off';
+  }
   numeric.forEach(key => $(key).value = c.parameters[key] ?? (key.endsWith('exposure') || key.endsWith('gain') ? -1 : ''));
   $('v2-fields').hidden = draft.schema_version !== 2;
   $('camera-enabled').checked = c.enabled;
@@ -238,7 +243,11 @@ function readForm(event) {
     for (const key of healthKeys) if ($('health-'+key).value !== '') c.health[key] = Number($('health-'+key).value);
     c.verification = null;
   }
-  booleans.filter(parameterSupported).forEach(key => c.parameters[key] = $(key).checked);
+  booleans.filter(parameterSupported).filter(key=>draft.capture_backend!=='rust'||!key.endsWith('_auto_exposure')).forEach(key => c.parameters[key] = $(key).checked);
+  if (draft.capture_backend==='rust') for (const [stream,key] of [['color','enable_color_auto_exposure'],['ir','enable_ir_auto_exposure']]) {
+    const mode=$(stream+'-auto-policy').value;
+    if (mode==='on'||mode==='off') c.parameters[key]=mode==='on';else delete c.parameters[key];
+  }
   formats.forEach(key => c.parameters[key] = $(key).value);
   for (const stream of ['color','depth']) for (const key of ['width','height','fps']) $(stream+'_'+key).required = c.enabled && c.parameters['enable_'+stream];
   c.profiles_verified = false; setDirty(true);
@@ -261,6 +270,20 @@ function updatePreview() {
     $(stream+'-empty').textContent = !enabled ? '此流已禁用' : stats.error || (running ? '等待有效画面…' : '预览未启动');
     if (!fresh) $(stream+'-image').removeAttribute('src');
   }
+  const report=preview.streams?.device_capabilities;
+  $('device-capabilities').hidden=draft?.capture_backend!=='rust';
+  const lines=[];
+  if (dirty || !running) lines.push('保存配置并启动预览后读取；修改参数后需重新预览确认。');
+  else if (!report?.available) lines.push(report?.error || '等待设备启动报告…');
+  else {
+    const info=report.info;
+    lines.push(`${info.name} · 固件 ${info.firmware} · 硬件 ${info.hardware} · VID/PID ${info.vid}/${info.pid}`);
+    for(const p of report.properties || []) {
+      const range=p.range?`范围 ${p.range.min}…${p.range.max}，步长 ${p.range.step}，默认 ${p.range.default}`:'范围未知';
+      lines.push(`${p.name}: ${p.readable?'可读':'不可读'} / ${p.writable?'可写':'不可写'}；${range}；启动值 ${p.observed??'未知'}${p.requested!==null&&p.requested!==undefined?`；请求 ${p.requested}，${p.readback_verified?'读回一致':'未验证'}`:''}${p.error?`；${p.error}`:''}`);
+    }
+  }
+  $('device-capabilities-detail').textContent=lines.join('\n');
   if (preview.error) $('preview-status').textContent = '预览进程已退出';
 }
 async function saveConfig() {

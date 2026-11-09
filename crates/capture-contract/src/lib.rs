@@ -6,6 +6,7 @@ use std::{fmt, str::FromStr};
 
 pub mod acquisition;
 pub mod content;
+pub mod device;
 pub use acquisition::{
     AcquisitionOverrides, AcquisitionPolicy, AcquisitionPreset, FrameAggregate, MessageTimestamp,
     ResolvedAcquisition, UnpairedPolicy,

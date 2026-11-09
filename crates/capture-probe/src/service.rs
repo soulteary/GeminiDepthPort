@@ -856,6 +856,7 @@ mod cleanup_observation_tests {
     }
 }
 struct Status<'a> {
+    device_capabilities: Option<orbbec_safe::DeviceReport>,
     config: &'a ServiceConfig,
     session: String,
     instance: String,
@@ -939,6 +940,7 @@ impl Status<'_> {
         persistence["submission_errors"] = json!(self.persistence_errors);
         persistence["coalesced_partial_updates"] = json!(self.coalesced_partial_status);
         let mut value = json!({"version":1,"kind":"capture-service-status","state":state,"ready":state=="ready","reason":reason,"last_failure_reason":self.last_failure,"session_id":self.session,"instance_id":self.instance,"snapshot_id":self.snapshot.as_ref().map(|s|&s.0),"snapshot_path":self.snapshot.as_ref().map(|s|&s.1),"quality":self.quality.as_ref().map(ServiceQuality::references),"usb_recovery":self.usb_recovery,"raw_recording":self.raw.as_ref().map(crate::raw_recording::RawRecorder::status),"generation":self.config.settings.generation,"config_sha256":self.config.hash,"pid":std::process::id(),"heartbeat_sequence":self.heartbeat,"updated_unix_ms":unix_ms(),"uptime_ms":self.started.elapsed().as_millis(),"restart_attempt":self.restarts,"last_pair_age_ms":last_pair.map(|v|v.elapsed().as_millis()),"pairs_accepted":metrics.accepted,"pairs_rejected":metrics.rejected,"rejection_reasons":metrics.reasons,"pairs_published":metrics.published_pairs,"individual_publish_calls":metrics.publish_calls,"unpaired_images_published":metrics.unpaired_images_published,"publish_failures":metrics.publish_failures,"stamp_failures":metrics.stamp_failures,"framesets_observed":metrics.framesets,"missing_pairs":metrics.missing,"skew_rejections":metrics.skew,"monotonic_rejections":metrics.monotonic,"poll_timeouts":metrics.timeouts,"pipeline_timing":metrics.timing_report(),"acquisition_effective":self.config.capture.acquisition,"message_timestamp":self.config.capture.message_timestamp(),"readiness_basis":if self.config.capture.preserve_images() {"both-streams-published"} else {"accepted-rgbd-pairs"},"native_recording_scope":"complete-rgbd-pairs-only","physical_sync_verified":false,"delivery_verified":false});
+        value["device_capabilities"] = json!(self.device_capabilities);
         value["imu"] = metrics
             .imu
             .as_ref()
@@ -1067,6 +1069,7 @@ fn arm_parent_death(expected_parent: u32) -> Result<()> {
 }
 fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
     let mut status = Status {
+        device_capabilities: None,
         config,
         session: random_session()?,
         instance: capture_contract::InstanceId::parse(
@@ -1149,11 +1152,12 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                 return Err(error.into());
             }
         };
-        let mut pipeline = match sdk.open_with_options(
+        let mut pipeline = match sdk.open_with_controls(
             &config.capture.serial,
             Some(config.capture.color.profile),
             Some(config.capture.depth.profile),
             config.capture.sdk_options(),
+            &config.capture.device_controls,
         ) {
             Ok(pipeline) => pipeline,
             Err(error) => {
@@ -1166,6 +1170,7 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                 return Err(error.into());
             }
         };
+        status.device_capabilities = pipeline.device_report().cloned();
         let mut imu = crate::imu::RuntimeImu::open(&config.capture, &pipeline)?;
         let mut ros = None;
         let mut queue = LatestQueue::new(config.capture.capacity)?;
@@ -1463,6 +1468,7 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                                     &config.capture,
                                     &pipeline.calibration()?,
                                     crate::capture_snapshot::RuntimeBinding {
+                                        device_capabilities: status.device_capabilities.as_ref(),
                                         generation: &config.settings.generation,
                                         session: &status.session,
                                         instance: &instance,
@@ -1598,6 +1604,7 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                         &config.capture,
                         &set.calibration()?,
                         crate::capture_snapshot::RuntimeBinding {
+                            device_capabilities: status.device_capabilities.as_ref(),
                             generation: &config.settings.generation,
                             session: &status.session,
                             instance: &instance,
@@ -1753,6 +1760,7 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
                         &config.capture,
                         &set.calibration()?,
                         crate::capture_snapshot::RuntimeBinding {
+                            device_capabilities: status.device_capabilities.as_ref(),
                             generation: &config.settings.generation,
                             session: &status.session,
                             instance: &instance,
@@ -3148,6 +3156,7 @@ mod tests {
         value["service"]["status_path"] = json!(dir.join("status.json"));
         let parsed = ServiceConfig::parse(&value.to_string()).unwrap();
         let mut status = Status {
+            device_capabilities: None,
             config: &parsed,
             session: random_session().unwrap(),
             instance: "c".repeat(64),
@@ -3229,6 +3238,7 @@ mod tests {
         value["service"]["status_path"] = json!(dir.join("status.json").to_str().unwrap());
         let parsed = ServiceConfig::parse(&value.to_string()).unwrap();
         let mut status = Status {
+            device_capabilities: None,
             config: &parsed,
             session: random_session().unwrap(),
             instance: "c".repeat(64),
@@ -3595,6 +3605,7 @@ mod tests {
         )
         .unwrap();
         let mut status = Status {
+            device_capabilities: None,
             config: &parsed,
             session,
             instance,

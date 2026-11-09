@@ -59,6 +59,7 @@ def atomic(path, content):
 
 
 def main():
+    from device_capabilities import startup_report
     role = os.environ['CAMERA_ROLE']; output = Path('/out')
     params = __import__('yaml').safe_load(Path('/config/camera.yaml').read_text())
     stats = {}; subscriptions = []; last_status = 0
@@ -85,6 +86,8 @@ def main():
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.1)
             if time.monotonic()-last_status > 0.5:
+                report = startup_report()
+                if report is not None: stats['device_capabilities'] = report
                 atomic(output/'status.json', json.dumps(stats).encode()); last_status = time.monotonic()
     finally:
         node.destroy_node(); rclpy.shutdown()

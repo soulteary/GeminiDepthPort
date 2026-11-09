@@ -1018,6 +1018,39 @@ fn web_backend_switch_is_atomic_invalidates_all_and_preserves_policy_on_later_ed
 }
 
 #[test]
+fn web_rust_device_controls_roundtrip_reconfirm_and_reject_invalid_changes() {
+    let mut f = Fixture::new(true, 2);
+    f.prepare_host();
+    f.ctl.stop("camera", true).unwrap();
+    let mut edit = acquisition_edit_payload(&f);
+    edit["capture_backend"] = json!("rust");
+    edit["image"] = json!("local/test-rust:controls");
+    edit["cameras"][0]["parameters"] = json!({"enable_color_auto_exposure":false,"color_exposure":104,"color_gain":24,"enable_ir_auto_exposure":false,"ir_exposure":204,"ir_gain":28});
+    let (code, _, body) = request(&manager(&f), "POST", "/api/config", &edit.to_string(), &[]);
+    assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
+    let saved = f.ctl.load().unwrap();
+    for (key, value) in edit["cameras"][0]["parameters"].as_object().unwrap() {
+        assert_eq!(&saved["cameras"][0]["parameters"][key], value);
+    }
+    assert_eq!(saved["cameras"][0]["profiles_verified"], false);
+    assert!(saved["cameras"][0]["verification"].is_null());
+    for bad in [json!(true), json!(null), json!("false")] {
+        let mut invalid = acquisition_edit_payload(&f);
+        invalid["cameras"][0]["parameters"]["enable_color_auto_exposure"] = bad;
+        let before = fs::read(f.ctl.root.join("inventory.json")).unwrap();
+        let (code, _, _) = request(
+            &manager(&f),
+            "POST",
+            "/api/config",
+            &invalid.to_string(),
+            &[],
+        );
+        assert_eq!(code, 400);
+        assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
+    }
+}
+
+#[test]
 fn web_model_change_rechecks_even_retained_serial_and_invalidates_only_changed_slot() {
     let mut f = Fixture::new(true, 2);
     f.prepare_host();
@@ -1066,6 +1099,8 @@ fn web_selection_changes_keep_running_preview_revision_and_recording_interlocks(
         let mut edit = acquisition_edit_payload(&f);
         edit["capture_backend"] = json!("rust");
         edit["image"] = json!("local/test-rust:web");
+        edit["cameras"][0]["parameters"] =
+            json!({"enable_color_auto_exposure":false,"color_exposure":104,"color_gain":24});
         if mode != "running" {
             f.ctl.stop("camera", true).unwrap();
         }
@@ -1117,7 +1152,7 @@ fn web_backend_parameter_removal_requires_consent_and_cannot_bypass_validation()
     let f = Fixture::new(true, 1);
     f.ctl.stop("camera", true).unwrap();
     let mut d = f.ctl.load().unwrap();
-    d["cameras"][0]["parameters"]["color_exposure"] = json!(123);
+    d["cameras"][0]["parameters"]["color_brightness"] = json!(123);
     atomic_json(
         &f.ctl.root.join("inventory.json"),
         &config::invalidate(&f.inventory, &d),
@@ -1135,14 +1170,14 @@ fn web_backend_parameter_removal_requires_consent_and_cannot_bypass_validation()
     );
     assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
     edit["discard_unsupported_parameters"] = json!(true);
-    edit["cameras"][0]["parameters"]["color_exposure"] = json!(456);
+    edit["cameras"][0]["parameters"]["color_brightness"] = json!(456);
     assert!(save_config(&f.ctl, &edit).is_err());
     assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
     edit["cameras"][0]["parameters"] = json!({});
     save_config(&f.ctl, &edit).unwrap();
     assert!(
         f.ctl.load().unwrap()["cameras"][0]["parameters"]
-            .get("color_exposure")
+            .get("color_brightness")
             .is_none()
     );
 }

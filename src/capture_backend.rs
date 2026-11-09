@@ -22,8 +22,33 @@ pub const RUST_PARAMETERS: &[&str] = &[
     "color_camera_info_qos",
     "depth_qos",
     "depth_camera_info_qos",
+    "enable_color_auto_exposure",
+    "color_exposure",
+    "color_gain",
+    "enable_ir_auto_exposure",
+    "ir_exposure",
+    "ir_gain",
 ];
 
+pub fn device_controls(parameters: &Value) -> Result<capture_contract::device::DeviceControls> {
+    let mut fields = serde_json::Map::new();
+    for name in [
+        "enable_color_auto_exposure",
+        "color_exposure",
+        "color_gain",
+        "enable_ir_auto_exposure",
+        "ir_exposure",
+        "ir_gain",
+    ] {
+        if let Some(value) = parameters.get(name) {
+            fields.insert(name.into(), value.clone());
+        }
+    }
+    let controls: capture_contract::device::DeviceControls =
+        serde_json::from_value(Value::Object(fields))?;
+    controls.validate()?;
+    Ok(controls)
+}
 pub fn selected(d: &Value) -> &str {
     d.get("capture_backend")
         .and_then(Value::as_str)
@@ -209,6 +234,7 @@ pub fn validate(d: &Value) -> Result<()> {
     )?;
     for c in d["cameras"].as_array().into_iter().flatten() {
         let parameters = &c["parameters"];
+        device_controls(parameters)?;
         require(
             parameters
                 .as_object()
@@ -324,6 +350,20 @@ pub fn service_config(d: &Value, c: &Value, generation: &str, runtime: &Value) -
     service["generation"] = generation.into();
     let m = &runtime["manifest"];
     let mut value = json!({"version":1,"sdk_library":SDK_PATH,"serial":c["serial_number"],"color":stream("color"),"depth":depth,"pairing":policy["pairing"],"poll_ms":policy["poll_ms"],"capacity":policy["capacity"],"startup_discovery_seconds":policy["startup_discovery_seconds"],"ros":{"bridge":BRIDGE_PATH,"namespace":c["namespace"],"stamp_source":"sdk-system-unix"},"service":service,"runtime_contract":{"sdk_sha256":m["sdk_sha256"],"bridge_sha256":m["bridge_sha256"],"service_sha256":m["service_sha256"]}});
+    let controls: serde_json::Map<String, Value> = [
+        "enable_color_auto_exposure",
+        "color_exposure",
+        "color_gain",
+        "enable_ir_auto_exposure",
+        "ir_exposure",
+        "ir_gain",
+    ]
+    .into_iter()
+    .filter_map(|key| p.get(key).map(|v| (key.into(), v.clone())))
+    .collect();
+    if !controls.is_empty() {
+        value["device_controls"] = Value::Object(controls);
+    }
     if let Some(acquisition) = policy.get("acquisition") {
         value["acquisition"] = acquisition.clone();
         // The service validates this policy again before loading the SDK. Do not
@@ -386,6 +426,33 @@ mod quality_generation_tests {
     fn acquisition_inventory() -> Value {
         json!({"schema_version":2,"capture_backend":"rust","rust_capture":{"depth_unit_policy":"normalize-mm","pairing":{"clock":"device","max_delta_us":20000},"poll_ms":100,"capacity":4,"startup_discovery_seconds":0,"service":{"idle_timeout_ms":3456,"startup_timeout_ms":15000,"heartbeat_ms":500,"heartbeat_timeout_ms":10000,"max_restarts":2,"restart_backoff_ms":1000,"shutdown_timeout_ms":1000,"ready_min_pairs":5}},"cameras":[{"enabled":true,"timestamp_source":"host","parameters":{"enable_color":true,"enable_depth":true}}]})
     }
+    #[test]
+    fn device_control_configuration_is_strict_and_preserved_in_service() {
+        let mut data = acquisition_inventory();
+        data["cameras"][0]["parameters"]["enable_color_auto_exposure"] = json!(false);
+        data["cameras"][0]["parameters"]["color_exposure"] = json!(1200);
+        data["cameras"][0]["parameters"]["color_gain"] = json!(24);
+        validate(&data).unwrap();
+        let runtime =
+            json!({"manifest":{"sdk_sha256":"a","bridge_sha256":"b","service_sha256":"c"}});
+        let generated = service_config(&data, &data["cameras"][0], "test-generation", &runtime);
+        assert_eq!(
+            generated["device_controls"],
+            json!({"enable_color_auto_exposure":false,"color_exposure":1200,"color_gain":24})
+        );
+        for invalid in [json!(true), json!(null), json!("false")] {
+            data["cameras"][0]["parameters"]["enable_color_auto_exposure"] = invalid;
+            assert!(validate(&data).is_err());
+        }
+        let empty = service_config(
+            &acquisition_inventory(),
+            &acquisition_inventory()["cameras"][0],
+            "test-generation",
+            &runtime,
+        );
+        assert!(empty.get("device_controls").is_none());
+    }
+
     #[test]
     fn acquisition_validation_preserves_legacy_and_rejects_inconsistent_clocks() {
         let mut d = acquisition_inventory();
