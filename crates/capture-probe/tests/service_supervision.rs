@@ -1023,6 +1023,13 @@ fn device_setting_failure_never_publishes_or_commits_native_capture() {
         configure_runtime_quality(&f, 3, 1_000_000);
         let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
         config["device_controls"] = json!({"enable_color_auto_exposure":false,"color_gain":24});
+        // This test classifies a property fault, not the supervisor's 500 ms
+        // deadline fixture. Keep host scheduling/fsync delays from winning the
+        // race before the SDK injection is reached. Production budgets and the
+        // dedicated heartbeat deadline tests are unchanged.
+        config["service"]["startup_timeout_ms"] = json!(4000);
+        config["service"]["idle_timeout_ms"] = json!(1500);
+        config["service"]["heartbeat_timeout_ms"] = json!(5000);
         fs::write(&f.config, config.to_string()).unwrap();
         let source = f.root.join("mock-sdk.c");
         let original = fs::read_to_string(&source).unwrap();
@@ -1048,7 +1055,7 @@ fn device_setting_failure_never_publishes_or_commits_native_capture() {
         assert!(!exit.success());
         let terminal = status(&f).unwrap();
         assert_eq!(terminal["ready"], false);
-        assert_eq!(terminal["worker_reason"], "SESSION_FAILED");
+        assert_eq!(terminal["worker_reason"], "SESSION_FAILED", "{terminal}");
         let diagnostic = f.status.parent().unwrap().join(format!(
             "failure-{}.json",
             terminal["session_id"].as_str().unwrap()
