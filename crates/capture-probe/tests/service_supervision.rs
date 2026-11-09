@@ -1014,6 +1014,50 @@ fn quality_bound_worker_commits_native_recording_and_finalizes_observed_quality(
     assert_eq!(summary["summary"]["finalized"], true);
 }
 #[test]
+fn device_setting_failure_never_publishes_or_commits_native_capture() {
+    for (failure, reason) in [
+        (3, "DEVICE_PROPERTY_UNSUPPORTED"),
+        (8, "DEVICE_PROPERTY_READBACK_MISMATCH"),
+    ] {
+        let f = fixture();
+        configure_runtime_quality(&f, 3, 1_000_000);
+        let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+        config["device_controls"] = json!({"enable_color_auto_exposure":false,"color_gain":24});
+        fs::write(&f.config, config.to_string()).unwrap();
+        let source = f.root.join("mock-sdk.c");
+        let original = fs::read_to_string(&source).unwrap();
+        fs::write(
+            &source,
+            format!("#define MOCK_DEVICE_FAILURE {failure}\n{original}"),
+        )
+        .unwrap();
+        compile("cc", &source, &f.root.join("mock-sdk.so"), None);
+        let mut child = launch(&f);
+        let started = Instant::now();
+        let exit = loop {
+            if let Some(exit) = child.try_wait().unwrap() {
+                break exit;
+            }
+            if started.elapsed() > Duration::from_secs(8) {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("property failure not finalized");
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert!(!exit.success());
+        let terminal = status(&f).unwrap();
+        assert_eq!(terminal["ready"], false);
+        assert!(terminal.to_string().contains(reason), "{terminal}");
+        assert_eq!(terminal["pairs_published"], 0);
+        assert!(!f.root.join("raw/session/COMPLETE").exists());
+        let events = fs::read_to_string(&f.events).unwrap();
+        assert!(!events.contains("wait\n"));
+        assert!(!events.contains("publish"));
+    }
+}
+
+#[test]
 fn bounded_raw_storage_failure_is_reported_without_claiming_completed_recording() {
     let f = fixture();
     configure_runtime_quality(&f, 3, 1);

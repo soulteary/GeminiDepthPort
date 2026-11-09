@@ -9,6 +9,9 @@ fn device_startup_controls_probe_preflight_readback_and_restore_real_abi() {
     for case in [
         "ok",
         "probe",
+        "probe-unsupported",
+        "probe-error",
+        "outside",
         "missing",
         "missing-required",
         "unsupported",
@@ -30,7 +33,7 @@ fn device_startup_controls_probe_preflight_readback_and_restore_real_abi() {
         "interference",
     ] {
         let failure = match case {
-            "unsupported" => 3,
+            "unsupported" | "probe-unsupported" => 3,
             "readonly" => 4,
             "range" => 5,
             "step" => 6,
@@ -45,7 +48,7 @@ fn device_startup_controls_probe_preflight_readback_and_restore_real_abi() {
             "pid" => 13,
             "support-error" => 14,
             "range-error" => 15,
-            "get-error" => 16,
+            "get-error" | "probe-error" => 16,
             "interference" => 17,
             _ => 0,
         };
@@ -121,11 +124,17 @@ fn device_controls_child() {
         ir_exposure: Some(204),
         ir_gain: Some(28),
     };
-    if matches!(case.as_str(), "probe" | "missing") {
+    if matches!(
+        case.as_str(),
+        "probe" | "probe-unsupported" | "probe-error" | "missing"
+    ) {
         controls = Default::default();
     }
     if case == "step" {
         controls.color_exposure = Some(103);
+    }
+    if case == "outside" {
+        controls.ir_gain = Some(i32::MAX);
     }
     let profile = VideoProfile {
         width: 2,
@@ -139,7 +148,10 @@ fn device_controls_child() {
         CaptureOptions::default(),
         &controls,
     );
-    if matches!(case.as_str(), "ok" | "probe" | "missing") {
+    if matches!(
+        case.as_str(),
+        "ok" | "probe" | "probe-unsupported" | "probe-error" | "missing"
+    ) {
         let mut pipeline = result.unwrap();
         let report = pipeline.device_report().unwrap();
         if case == "missing" {
@@ -149,7 +161,25 @@ fn device_controls_child() {
             assert!(report.available);
             assert_eq!(report.info.as_ref().unwrap().firmware, "1.4.98");
             assert_eq!(report.properties.len(), 6);
-            assert!(report.properties.iter().all(|p| p.readable && p.writable));
+            if case == "probe-unsupported" {
+                assert!(
+                    report
+                        .properties
+                        .iter()
+                        .all(|p| !p.readable && !p.writable && p.range.is_none())
+                );
+            } else {
+                assert!(report.properties.iter().all(|p| p.readable && p.writable));
+            }
+            if case == "probe-error" {
+                assert!(
+                    report
+                        .properties
+                        .iter()
+                        .filter(|p| p.kind == "int")
+                        .all(|p| p.error.is_some() && p.observed.is_none())
+                );
+            }
             assert!(
                 report
                     .properties
@@ -168,7 +198,7 @@ fn device_controls_child() {
             "missing-required" => "API_UNAVAILABLE",
             "unsupported" | "readonly" | "range" | "support-error" | "range-error"
             | "get-error" => "UNSUPPORTED",
-            "step" => "OUT_OF_RANGE",
+            "step" | "outside" => "OUT_OF_RANGE",
             "readback" | "interference" => "READBACK_MISMATCH",
             "null" => "INFO_NULL",
             "utf8" => "INFO_UTF8",

@@ -44,8 +44,8 @@ fn rust_backend_is_explicit_and_rejects_unapplied_parameters() {
             .starts_with("CAPTURE_BACKEND")
     );
     for (key, value) in [
-        ("color_exposure", json!(100)),
-        ("color_gain", json!(0)),
+        ("color_brightness", json!(100)),
+        ("color_contrast", json!(0)),
         ("sync_mode", json!("standalone")),
         ("enable_point_cloud", json!(false)),
     ] {
