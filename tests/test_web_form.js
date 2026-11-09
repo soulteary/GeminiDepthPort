@@ -4,6 +4,11 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const markup = fs.readFileSync('web/index.html','utf8');
 for (const id of ['backend-fields','capture-backend','capture-image','camera-profile','imu-enabled','imu-queue_capacity','raw-enabled','raw-storage_format','raw-max_bytes']) assert.ok(markup.includes(`id="${id}"`),`missing actual form control ${id}`);
+for (const stream of ['color','ir']) {
+  const select = markup.match(new RegExp(`<select\\b[^>]*id="${stream}-auto-policy"[^>]*>`));
+  assert.ok(select, `missing ${stream} auto exposure selector`);
+  assert.ok(!/\bhidden\b/.test(select[0]), 'selector visibility is controlled by its field');
+}
 const source = fs.readFileSync('web/app.js', 'utf8').split("$('camera-form').addEventListener")[0];
 async function check(backend) {
   const elements = new Map();
