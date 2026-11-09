@@ -65,6 +65,10 @@ else:
     while time.monotonic_ns()<target: time.sleep(.0001)
     if behavior=='hang' or (behavior=='stale-status' and on) or (behavior=='early-failed-one' and root.name!='writer-0') or (behavior=='on-overflow' and on and root.name!='writer-0'):
         while True:time.sleep(.01)
+    if behavior=='late-stale-status' and on:
+        write('state/status.json',{'version':1,'kind':'capture-service-status','pid':os.getpid(),
+            'session_id':'a'*32,'heartbeat_sequence':2,'updated_unix_ms':time.time_ns()//1000000-10001})
+        while True:time.sleep(.01)
     if behavior=='stagger-finish' and on and root.name!='writer-0':
         end=time.monotonic()+10.3;sequence=1
         while time.monotonic()<end:
@@ -334,6 +338,18 @@ class LongProcessTests(unittest.TestCase):
                 self.assertEqual(side['cleanup_errors'],[])
                 self.assertTrue(all(code is not None for code in side['child_returncodes']))
                 if behavior=='early-failed-one':self.assertEqual(side['first_child_failure']['reason'],'RAW_QUEUE_OVERFLOW')
+
+    def test_runtime_trace_failure_still_enforces_status_heartbeat_deadline(self):
+        class RuntimeLostTrace(LostTrace):
+            def poll(self):self.failure='controlled loss before heartbeat stalls'
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);a=args(root,fake_binary(root/'driver','late-stale-status'));a.output.mkdir()
+            with self.assertRaisesRegex(ValueError,'HEARTBEAT_STALE'):
+                long.run_batch(a.binary,a.output/'failed',30,True,a,time.monotonic()+5,RuntimeLostTrace,.01)
+            side=json.loads((a.output/'failed/batch-failure.json').read_text())
+            self.assertIsNotNone(side['trace_failure']);self.assertIn('HEARTBEAT_STALE',side['first_failure'])
+            self.assertEqual(side['cleanup_errors'],[])
+            self.assertTrue(all(code is not None for code in side['child_returncodes']))
 
     def test_successful_first_trace_does_not_certify_an_omitted_failed_group(self):
         with tempfile.TemporaryDirectory() as d:

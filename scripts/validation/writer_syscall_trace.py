@@ -506,8 +506,8 @@ class TraceSession:
                     self._observe_loss();next_stats=time.monotonic_ns()+1_000_000_000
                 _,empty=self._read()
                 if empty:
-                    # select wakes on new data; the stop event is checked at
-                    # least every 20 ms, with no 200 ms controller sleep.
+                    # select wakes on new data; the idle wait is at most
+                    # 20 ms, with no 200 ms controller sleep.
                     select.select([self.fd],[],[],.02)
         except Exception as error:
             self.failure=self.failure or 'TRACE_RUNTIME_ERROR:'+type(error).__name__+':'+str(error)
