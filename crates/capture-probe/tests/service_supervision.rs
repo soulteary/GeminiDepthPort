@@ -958,11 +958,21 @@ fn configure_runtime_quality(f: &Fixture, raw_pairs: u64, max_bytes: u64) {
 fn quality_bound_worker_commits_native_recording_and_finalizes_observed_quality() {
     let f = fixture();
     configure_runtime_quality(&f, 3, 1_000_000);
+    let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    config["device_controls"] = json!({"enable_color_auto_exposure":false,"color_exposure":104,"color_gain":24,"enable_ir_auto_exposure":false,"ir_exposure":204,"ir_gain":28});
+    fs::write(&f.config, config.to_string()).unwrap();
     let mut supervisor = launch(&f);
     let ready = wait_status(&f, &mut supervisor, |v| {
         v["ready"] == true && v["raw_recording"]["state"] == "complete"
     });
     assert_eq!(ready["raw_recording"]["written_pairs"], 3);
+    assert_eq!(ready["device_capabilities"]["info"]["firmware"], "1.4.98");
+    let properties = ready["device_capabilities"]["properties"]
+        .as_array()
+        .unwrap();
+    assert_eq!(properties.len(), 6);
+    assert!(properties.iter().all(|p| p["readback_verified"] == true));
+    assert_eq!(properties[3]["observed"], 24);
     assert_ne!(
         ready["raw_recording"]["native_snapshot_id"],
         ready["raw_recording"]["ros_snapshot_id"]
@@ -978,6 +988,10 @@ fn quality_bound_worker_commits_native_recording_and_finalizes_observed_quality(
     let mut recording = offline_depth::recording::RecordingDirectorySource::open(&job).unwrap();
     assert!(
         matches!(recording.snapshot().content.depth,capture_contract::DepthRepresentation::SdkCounts{scale_mm} if scale_mm==f64::from(0.1f32))
+    );
+    assert_eq!(
+        recording.snapshot().content.configuration["device_capabilities"],
+        ready["device_capabilities"]
     );
     for _ in 0..3 {
         let frame = recording.next_frame().unwrap().unwrap();
@@ -999,6 +1013,59 @@ fn quality_bound_worker_commits_native_recording_and_finalizes_observed_quality(
             .unwrap();
     assert_eq!(summary["summary"]["finalized"], true);
 }
+#[test]
+fn device_setting_failure_never_publishes_or_commits_native_capture() {
+    for (failure, reason) in [
+        (3, "DEVICE_PROPERTY_UNSUPPORTED"),
+        (8, "DEVICE_PROPERTY_READBACK_MISMATCH"),
+    ] {
+        let f = fixture();
+        configure_runtime_quality(&f, 3, 1_000_000);
+        let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+        config["device_controls"] = json!({"enable_color_auto_exposure":false,"color_gain":24});
+        fs::write(&f.config, config.to_string()).unwrap();
+        let source = f.root.join("mock-sdk.c");
+        let original = fs::read_to_string(&source).unwrap();
+        fs::write(
+            &source,
+            format!("#define MOCK_DEVICE_FAILURE {failure}\n{original}"),
+        )
+        .unwrap();
+        compile("cc", &source, &f.root.join("mock-sdk.so"), None);
+        let mut child = launch(&f);
+        let started = Instant::now();
+        let exit = loop {
+            if let Some(exit) = child.try_wait().unwrap() {
+                break exit;
+            }
+            if started.elapsed() > Duration::from_secs(8) {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("property failure not finalized");
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert!(!exit.success());
+        let terminal = status(&f).unwrap();
+        assert_eq!(terminal["ready"], false);
+        assert_eq!(terminal["worker_reason"], "SESSION_FAILED");
+        let diagnostic = f.status.parent().unwrap().join(format!(
+            "failure-{}.json",
+            terminal["session_id"].as_str().unwrap()
+        ));
+        let detail: Value = serde_json::from_slice(&fs::read(diagnostic).unwrap()).unwrap();
+        assert!(
+            detail["error_chain"].as_str().unwrap().contains(reason),
+            "{detail}"
+        );
+        assert_eq!(terminal["pairs_published"], 0);
+        assert!(!f.root.join("raw/session/COMPLETE").exists());
+        let events = fs::read_to_string(&f.events).unwrap();
+        assert!(!events.contains("wait\n"));
+        assert!(!events.contains("publish"));
+    }
+}
+
 #[test]
 fn bounded_raw_storage_failure_is_reported_without_claiming_completed_recording() {
     let f = fixture();

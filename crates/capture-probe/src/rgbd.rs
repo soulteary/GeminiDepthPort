@@ -24,6 +24,7 @@ pub(crate) struct RosConfig {
     pub(crate) namespace: String,
 }
 pub(crate) struct Config {
+    pub(crate) device_controls: capture_contract::device::DeviceControls,
     pub(crate) imu: Option<capture_contract::imu::ImuConfig>,
     pub(crate) sdk_library: String,
     pub(crate) serial: String,
@@ -118,6 +119,7 @@ impl Config {
                 "quality_policy",
                 "acquisition",
                 "imu",
+                "device_controls",
             ],
         )?;
         ensure!(value["version"].as_u64() == Some(1), "config version");
@@ -223,7 +225,14 @@ impl Config {
                 "IMU queue requires two polling periods of headroom"
             );
         }
+        let device_controls = value
+            .get("device_controls")
+            .map(|v| serde_json::from_value::<capture_contract::device::DeviceControls>(v.clone()))
+            .transpose()?
+            .unwrap_or_default();
+        device_controls.validate()?;
         Ok(Self {
+            device_controls,
             imu,
             acquisition,
             quality_policy,
@@ -823,12 +832,14 @@ fn run(config: Config) -> Result<Value> {
     );
     let sdk = orbbec_safe::Sdk::load(&config.sdk_library)?;
     // Both exact profiles are enabled in one Pipeline; no independent device opens.
-    let mut pipeline = sdk.open_with_options(
+    let mut pipeline = sdk.open_with_controls(
         &config.serial,
         Some(config.color.profile),
         Some(config.depth.profile),
         config.sdk_options(),
+        &config.device_controls,
     )?;
+    let device_report = pipeline.device_report().cloned();
     let mut imu = crate::imu::RuntimeImu::open(&config, &pipeline)?;
     let mut ros = None;
     let mut queue = LatestQueue::new(config.capacity)?;
@@ -1116,7 +1127,7 @@ fn run(config: Config) -> Result<Value> {
         Some("PAIR_CONTRACT_REJECTED")
     };
     Ok(
-        json!({"version":1,"kind":"rgbd-probe","ok":ok,"error":error,"sdk_version":sdk.version(),"framesets_observed":metrics.framesets,"pairs_accepted":metrics.accepted,"pairs_rejected":metrics.rejected,"pairs_missing_frames":metrics.missing,"framesets_missing_color":metrics.missing_color,"framesets_missing_depth":metrics.missing_depth,"pairs_skew_rejected":metrics.skew,"pairs_monotonic_rejected":metrics.monotonic,"pairs_processed":metrics.processed,
+        json!({"version":1,"kind":"rgbd-probe","ok":ok,"error":error,"sdk_version":sdk.version(),"device_capabilities":device_report,"framesets_observed":metrics.framesets,"pairs_accepted":metrics.accepted,"pairs_rejected":metrics.rejected,"pairs_missing_frames":metrics.missing,"framesets_missing_color":metrics.missing_color,"framesets_missing_depth":metrics.missing_depth,"pairs_skew_rejected":metrics.skew,"pairs_monotonic_rejected":metrics.monotonic,"pairs_processed":metrics.processed,
         "observed_pair_timing":{"complete_framesets":metrics.complete_observed,"delta_min_us":metrics.delta_min_us,"delta_max_us":metrics.delta_max_us,"delta_mean_us":if metrics.complete_observed>0 {Some(metrics.delta_sum_us as f64/metrics.complete_observed as f64)} else {None},"over_budget":metrics.delta_over_budget,"scope":"all-complete-observed-framesets-including-contract-rejections"},
         "startup_discarded":{"budget_seconds":config.startup_discovery_seconds,"framesets":startup_metrics.framesets,"missing":startup_metrics.missing,"missing_color":startup_metrics.missing_color,"missing_depth":startup_metrics.missing_depth,"skew_rejected":startup_metrics.skew,"accepted_not_published":startup_metrics.accepted,"rejected":startup_metrics.rejected,"rejection_reasons":startup_metrics.reasons,"poll_timeouts":startup_metrics.timeouts,"complete_framesets":startup_metrics.complete_observed,"delta_min_us":startup_metrics.delta_min_us,"delta_max_us":startup_metrics.delta_max_us,"over_budget":startup_metrics.delta_over_budget},"rejection_reasons":metrics.reasons,"poll_timeouts":metrics.timeouts,
         "imu":metrics.imu.as_ref().map(|i|i.report()),"pipeline_timing":metrics.timing_report(),"acquisition":config.acquisition,"message_timestamp":config.message_timestamp(),

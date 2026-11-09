@@ -121,3 +121,7 @@ geminidepthport validate --file inventory.v2.example.json --draft
 可在 Rust 后端的单台 `cameras[].raw_recording` 设置 `storage_format`、`name`、`queue_capacity`、`max_pairs`、`max_bytes`、`checkpoint_pipeline`、`checkpoint_batching` 和 `checkpoint_observation`；Web 会填写完整字段，省略整个对象关闭。此 inventory 对象不含 `directory`，由管理器生成固定私有挂载，不能直接复制独立 capture-service 的配置。
 
 队列容量为 1–16 帧对，帧对数和字节数必须为正的安全整数；流水线要求 chunked-v3，full-credit 要求流水线。原生录制与 complete 采集预设不兼容，服务会再次校验。使用步骤和未完成的实机验收见[Web 指南](web.md#imu-与原生录制)与[录制指南](recording.md)。
+
+## Rust 设备属性
+
+六项曝光／增益控制填写在各相机 `parameters`，不放入 `rust_capture`。省略或手动数值 `-1` 沿用设备设置；手动值要求显式关闭对应自动曝光。范围由实际档位启动后的 SDK 查询决定，保存配置只校验类型与组合。字段、单位、失败回滚和报告位置见[设备能力与曝光／增益](rust-backend.md#设备能力与曝光增益)。

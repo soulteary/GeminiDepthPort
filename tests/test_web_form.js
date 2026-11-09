@@ -4,24 +4,29 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const markup = fs.readFileSync('web/index.html','utf8');
 for (const id of ['backend-fields','capture-backend','capture-image','camera-profile','imu-enabled','imu-queue_capacity','raw-enabled','raw-storage_format','raw-max_bytes']) assert.ok(markup.includes(`id="${id}"`),`missing actual form control ${id}`);
+for (const stream of ['color','ir']) {
+  const select = markup.match(new RegExp(`<select\\b[^>]*id="${stream}-auto-policy"[^>]*>`));
+  assert.ok(select, `missing ${stream} auto exposure selector`);
+  assert.ok(!/\bhidden\b/.test(select[0]), 'selector visibility is controlled by its field');
+}
 const source = fs.readFileSync('web/app.js', 'utf8').split("$('camera-form').addEventListener")[0];
 async function check(backend) {
   const elements = new Map();
   const get = id => {
-    if (!elements.has(id)) elements.set(id, {id,value:'',checked:false,hidden:false,dataset:{},classList:{toggle(){}},removeAttribute(){},closest(){return get('exposure-details');},querySelector(selector){return get(id+selector);}});
+    if (!elements.has(id)) elements.set(id, {id,value:'',checked:false,hidden:false,dataset:{},classList:{toggle(){}},removeAttribute(){},closest(selector){return get(selector==='label'?id+'-label':'exposure-details');},querySelector(selector){return get(id+selector);}});
     return elements.get(id);
   };
   let saved;
   const inventory = {schema_version:2,capture_backend:backend,rust_capture:backend==='rust'?{}:undefined,cameras:[{name:'cam',enabled:true,serial_number:'SYNTHETIC',health:{},parameters:{enable_color:true,enable_depth:true,color_width:640,color_height:480,color_fps:30,depth_width:640,depth_height:480,depth_fps:30,color_format:'YUYV',depth_format:'Y16'}}]};
   const context = vm.createContext({structuredClone,console,document:{getElementById:get,querySelector:()=>({content:'token'}),querySelectorAll:selector=>selector.startsWith('#camera-form')?[...elements.values()]:[]},fetch:async (path,options)=>{
     if(options.body) saved=JSON.parse(options.body);
-    return {ok:true,json:async()=>path==='/api/config'?{message:'saved'}:{inventory,revision:'next',devices:[],previews:{}}};
+    return {ok:true,json:async()=>path==='/api/config'?{message:'saved'}:{inventory,revision:'next',devices:[],previews:{},configuration_options:{rust_parameters:['enable_color_auto_exposure','color_exposure','color_gain','enable_ir_auto_exposure','ir_exposure','ir_gain']}}};
   }});
   vm.runInContext(source,context);
   context.fixture=inventory;
-  vm.runInContext("draft=structuredClone(fixture); state={devices:[],previews:{}}; revision='old'; showRole(); updateButtons();",context);
-  assert.equal(get('exposure-details').hidden,backend==='rust');
-  assert.equal(get('color_gain').disabled,backend==='rust');
+  vm.runInContext("draft=structuredClone(fixture); state={devices:[],previews:{},configuration_options:{rust_parameters:['enable_color_auto_exposure','color_exposure','color_gain','enable_ir_auto_exposure','ir_exposure','ir_gain']}}; revision='old'; showRole(); updateButtons();",context);
+  assert.equal(get('exposure-details').hidden,false);
+  assert.equal(get('color_gain').disabled,false);
   get('serial').value='NEW_SYNTHETIC'; get('color_width').value='1280';
   vm.runInContext('readForm()',context);
   await vm.runInContext('saveConfig()',context);
@@ -64,8 +69,27 @@ async function check(backend) {
     assert.equal(get('acquisition-fields').hidden,true);
     assert.equal(Object.hasOwn(saved,'acquisition'),false);
   }
+  if(backend==='rust') {
+    get('color-auto-policy').value='off';get('color_exposure').value='1200';get('color_gain').value='24';
+    vm.runInContext("readForm({target:{id:'color-auto-policy'}})",context);
+    assert.equal(vm.runInContext('draft.cameras[0].profiles_verified',context),false);
+    await vm.runInContext('saveConfig()',context);
+    assert.equal(saved.cameras[0].parameters.enable_color_auto_exposure,false);
+    assert.equal(saved.cameras[0].parameters.color_exposure,1200);
+    assert.equal(saved.cameras[0].parameters.color_gain,24);
+    get('color-auto-policy').value='keep';get('color_exposure').value='-1';get('color_gain').value='-1';
+    vm.runInContext('readForm()',context);await vm.runInContext('saveConfig()',context);
+    assert.equal(Object.hasOwn(saved.cameras[0].parameters,'enable_color_auto_exposure'),false);
+    context.report={available:true,info:{name:'<unsafe>',firmware:'1.4.98',hardware:'mock',vid:1,pid:2},properties:[{name:'color_gain',readable:true,writable:true,observed:24,requested:24,readback_verified:true,range:{min:0,max:100,step:1,default:10}}]};
+    vm.runInContext("dirty=false;state.previews.cam={running:true,streams:{device_capabilities:report}};updatePreview()",context);
+    assert.ok(get('device-capabilities-detail').textContent.includes('1.4.98'));
+    assert.ok(get('device-capabilities-detail').textContent.includes('读回一致'));
+    assert.ok(get('device-capabilities-detail').textContent.includes('<unsafe>'));
+    vm.runInContext('dirty=true;updatePreview()',context);
+    assert.ok(!get('device-capabilities-detail').textContent.includes('1.4.98'));
+  }
   for(const key of ['color_exposure' ,'color_gain','ir_exposure','ir_gain','enable_color_auto_exposure','enable_ir_auto_exposure']) {
-    assert.equal(Object.hasOwn(saved.cameras[0].parameters,key),backend!=='rust');
+    assert.equal(Object.hasOwn(saved.cameras[0].parameters,key),backend!=='rust'||!key.startsWith('enable_'));
   }
 }
 (async()=>{await check('rust');await check('official');console.log('Web form backend regression passed');})().catch(e=>{console.error(e);process.exitCode=1;});
@@ -74,7 +98,7 @@ async function checkSelection() {
   const catalog = JSON.parse(fs.readFileSync('driver_profiles.json','utf8')).profiles;
   const elements = new Map();
   const get = id => {
-    if(!elements.has(id)) elements.set(id,{id,value:'',checked:false,hidden:false,dataset:{},classList:{toggle(){}},removeAttribute(){},closest(){return get('exposure-details');},querySelector(selector){return get(id+selector);}});
+    if(!elements.has(id)) elements.set(id,{id,value:'',checked:false,hidden:false,dataset:{},classList:{toggle(){}},removeAttribute(){},closest(selector){return get(selector==='label'?id+'-label':'exposure-details');},querySelector(selector){return get(id+selector);}});
     return elements.get(id);
   };
   let inventory = structuredClone(JSON.parse(fs.readFileSync('examples/official-three-camera/inventory.json','utf8')));
@@ -83,9 +107,9 @@ async function checkSelection() {
     c.enabled=true;c.serial_number='SYNTHETIC_'+i;c.timestamp_source='host';c.calibration_revision='old';c.profiles_verified=true;c.verification={configuration_digest:'synthetic'};
     Object.assign(c.parameters,{color_width:640,color_height:480,color_fps:30,depth_width:640,depth_height:480,depth_fps:30});
   }
-  inventory.cameras[0].parameters.color_gain=12;
+  inventory.cameras[0].parameters.color_brightness=12;
   const defaults = {depth_unit_policy:'normalize-mm',pairing:{clock:'device',max_delta_us:20000},poll_ms:100,capacity:4,startup_discovery_seconds:2,service:{heartbeat_timeout_ms:10000}};
-  const options = {profiles:catalog,rust_capture:defaults,default_images:{rust:'local/test-rust:web',official:'local/test-official:web'},rust_parameters:['enable_color','enable_depth','color_format','depth_format','depth_registration','color_width','color_height','color_fps','depth_width','depth_height','depth_fps','color_qos','depth_qos','color_camera_info_qos','depth_camera_info_qos']};
+  const options = {profiles:catalog,rust_capture:defaults,default_images:{rust:'local/test-rust:web',official:'local/test-official:web'},rust_parameters:['enable_color','enable_depth','color_format','depth_format','depth_registration','color_width','color_height','color_fps','depth_width','depth_height','depth_fps','color_qos','depth_qos','color_camera_info_qos','depth_camera_info_qos','enable_color_auto_exposure','color_exposure','color_gain','enable_ir_auto_exposure','ir_exposure','ir_gain']};
   let approved=true,saved,calls=[];const prompts=[];
   const tabs=inventory.cameras.map(c=>({dataset:{role:c.name},classList:{toggle(){}},querySelector:selector=>get('tab-'+c.name+'-'+selector)}));
   const context=vm.createContext({structuredClone,console,window:{confirm:message=>{prompts.push(message);return approved;}},document:{getElementById:get,querySelector:()=>({content:'token'}),querySelectorAll:selector=>selector.startsWith('#camera-form')?[...elements.values()]:(selector==='.role-tab'?tabs:[])},fetch:async(path,opts)=>{
@@ -104,7 +128,7 @@ async function checkSelection() {
   assert.equal(vm.runInContext("draft.capture_backend || 'official'",context),'official');
   assert.equal(get('capture-image').value,original.image);assert.equal(vm.runInContext('dirty',context),false);
   approved=true;get('capture-backend').value='rust';vm.runInContext("readForm({target:{id:'capture-backend'}})",context);
-  assert.match(prompts.at(-1),/color_gain/);
+  assert.match(prompts.at(-1),/color_brightness/);
   assert.equal(get('capture-image').value,options.default_images.rust);
   assert.equal(vm.runInContext('draft.cameras.every(c=>!c.profiles_verified && c.verification===null)',context),true);
   assert.equal(vm.runInContext('draft.rust_capture.service.heartbeat_timeout_ms',context),10000);
@@ -113,7 +137,7 @@ async function checkSelection() {
   for(const c of inventory.cameras)assert.equal(get('tab-'+c.name+'-b').textContent,'待验证');
   await vm.runInContext('saveConfig()',context);
   assert.equal(saved.capture_backend,'rust');assert.equal(saved.discard_unsupported_parameters,true);assert.equal(saved.image,options.default_images.rust);
-  assert.equal(Object.hasOwn(saved.cameras[0].parameters,'color_gain'),false);
+  assert.equal(Object.hasOwn(saved.cameras[0].parameters,'color_brightness'),false);
   reset(original);get('camera-profile').value='gemini_2';vm.runInContext("readForm({target:{id:'camera-profile'}})",context);
   assert.equal(get('serial').value,'');assert.equal(get('camera-enabled').checked,false);
   assert.equal(get('tab-camera_a-small').textContent,'Gemini 2');
@@ -123,8 +147,8 @@ async function checkSelection() {
   reset(original);get('camera-profile').value='gemini_305';vm.runInContext("readForm({target:{id:'camera-profile'}})",context);
   assert.equal(vm.runInContext('draft.cameras[0].profile',context),'gemini_335l');
   reset(original);get('capture-backend').value='rust';vm.runInContext("changeBackend()",context);get('capture-backend').value='official';vm.runInContext('changeBackend()',context);
-  assert.equal(vm.runInContext('draft.image',context),original.image);assert.equal(vm.runInContext('draft.cameras[0].parameters.color_gain',context),12);
-  const rust=structuredClone(original);rust.capture_backend='rust';rust.image='local/custom-rust:kept';rust.rust_capture=structuredClone(defaults);rust.rust_capture.service.heartbeat_timeout_ms=12000;delete rust.cameras[0].parameters.color_gain;
+  assert.equal(vm.runInContext('draft.image',context),original.image);assert.equal(vm.runInContext('draft.cameras[0].parameters.color_brightness',context),12);
+  const rust=structuredClone(original);rust.capture_backend='rust';rust.image='local/custom-rust:kept';rust.rust_capture=structuredClone(defaults);rust.rust_capture.service.heartbeat_timeout_ms=12000;delete rust.cameras[0].parameters.color_brightness;
   reset(rust);get('capture-backend').value='official';vm.runInContext('changeBackend()',context);get('capture-backend').value='rust';vm.runInContext('changeBackend()',context);
   assert.equal(vm.runInContext('draft.rust_capture.service.heartbeat_timeout_ms',context),12000);
   assert.equal(vm.runInContext('draft.image',context),rust.image);
@@ -166,7 +190,7 @@ async function checkSelection() {
   get('capture-backend').value='official';vm.runInContext('changeBackend()',context);
   assert.equal(get('camera-timestamp-source').readOnly,false);assert.equal(get('color_gain').disabled,false);
   get('capture-backend').value='rust';vm.runInContext('changeBackend()',context);
-  assert.equal(get('camera-timestamp-source').readOnly,true);assert.equal(get('color_gain').disabled,true);
+  assert.equal(get('camera-timestamp-source').readOnly,true);assert.equal(get('color_gain').disabled,false);
   assert.equal(get('camera-timestamp-source').value,'global');
   console.log('Web model/backend selection regression passed');
 }
