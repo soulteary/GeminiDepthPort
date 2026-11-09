@@ -195,7 +195,8 @@ property_bool_range ob_device_get_bool_property_range(const obj *d,int id,error 
 int32_t ob_device_get_int_property(const obj *d,int id,error **e){(void)d;property_event("get",id,0);if(MOCK_DEVICE_FAILURE==16)*e=(error*)1;return property_values[property_slot(id)];}
 _Bool ob_device_get_bool_property(const obj *d,int id,error **e){(void)d;(void)e;property_event("get",id,0);return property_values[property_slot(id)]!=0;}
 static void property_set(int id,int value,error **e){
- if(!active)abort();property_event("write",id,value);property_writes++;
+ if(!active){abort();}
+ property_event("write",id,value);property_writes++;
  if(((MOCK_DEVICE_FAILURE==7&&value==24)||MOCK_DEVICE_FAILURE==9)&&id==2002){*e=(error*)1;return;}
  if(MOCK_DEVICE_FAILURE==9&&property_writes>2){*e=(error*)1;return;}
  if(MOCK_DEVICE_FAILURE==8&&id==2002)return;

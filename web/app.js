@@ -274,7 +274,7 @@ function updatePreview() {
   $('device-capabilities').hidden=draft?.capture_backend!=='rust';
   const lines=[];
   if (dirty || !running) lines.push('保存配置并启动预览后读取；修改参数后需重新预览确认。');
-  else if (!report?.available) lines.push(report?.error || '等待设备启动报告…');
+  else if (!report?.available || !report.info || !Array.isArray(report.properties)) lines.push(report?.error || '等待设备启动报告…');
   else {
     const info=report.info;
     lines.push(`${info.name} · 固件 ${info.firmware} · 硬件 ${info.hardware} · VID/PID ${info.vid}/${info.pid}`);
