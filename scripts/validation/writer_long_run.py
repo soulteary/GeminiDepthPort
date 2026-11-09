@@ -395,7 +395,7 @@ def run_batch(binary, root, pairs, status_on, args, deadline, trace_factory=None
     observer_rss_peak = None
     children = []; child_roots = []; trace = None; trace_result = None
     sampler = None;resource_summary = None
-    result = None;first_failure = None;first_child_failure=None;finished_results={};finished_heartbeats={};trace_failure=None
+    result = None;first_failure = None;first_child_failure=None;finished_results={};finished_heartbeats={};trace_failure=None;first_failure_monotonic_ns=None
     try:
         for index in range(WRITERS):
             child_root = root / ('writer-' + str(index));child_root.mkdir()
@@ -478,6 +478,7 @@ def run_batch(binary, root, pairs, status_on, args, deadline, trace_factory=None
         result = {'writers': writers, 'status_background_load': status_on,'final_status_heartbeats':final_heartbeats,
                   'start_skew_ns': max(r['actual_start_monotonic_ns'] for r in writers) - min(r['actual_start_monotonic_ns'] for r in writers)}
     except BaseException as failure:
+        first_failure_monotonic_ns=time.monotonic_ns()
         first_failure = type(failure).__name__ + ':' + str(failure)
         raise
     finally:
@@ -511,7 +512,7 @@ def run_batch(binary, root, pairs, status_on, args, deadline, trace_factory=None
                 'scope':'controller+in-process syscall/trace parsing, setup and finish CPU; sampled group RSS and cumulative process-lifetime HWM are separate; excludes writer processes and kernel tracing overhead'}
         if first_failure is not None or trace_failure is not None or cleanup_errors:
             try:
-                ab.write_json(root / 'batch-failure.json', {'first_failure':first_failure,
+                ab.write_json(root / 'batch-failure.json', {'first_failure':first_failure,'first_failure_monotonic_ns':first_failure_monotonic_ns,
                     'trace_failure':trace_failure,'first_child_failure':first_child_failure,'cleanup_errors':cleanup_errors,'trace':trace_result,
                     'child_returncodes':[p.returncode for p in children],'resources':resource_summary})
             except Exception as failure:

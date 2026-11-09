@@ -329,11 +329,14 @@ class LongProcessTests(unittest.TestCase):
         for behavior,reason in [('hang','WALL_TIME_LIMIT'),('early-failed-one','RAW_QUEUE_OVERFLOW')]:
             with self.subTest(behavior=behavior),tempfile.TemporaryDirectory() as d:
                 root=Path(d);a=args(root,fake_binary(root/'driver',behavior));a.output.mkdir()
-                began=time.monotonic()
+                deadline=time.monotonic()+1
                 with self.assertRaisesRegex(Exception,reason):
-                    long.run_batch(a.binary,a.output/'failed',30,False,a,time.monotonic()+1,RuntimeLostTrace,.01)
-                self.assertLess(time.monotonic()-began,3)
+                    long.run_batch(a.binary,a.output/'failed',30,False,a,deadline,RuntimeLostTrace,.01)
                 side=json.loads((a.output/'failed/batch-failure.json').read_text())
+                # Trigger time is distinct from existing per-child TERM/KILL
+                # and resource finalization budgets. Do not shorten cleanup.
+                self.assertLess(side['first_failure_monotonic_ns']/1e9,deadline+2)
+                if behavior=='hang':self.assertGreaterEqual(side['first_failure_monotonic_ns']/1e9,deadline)
                 self.assertIn(reason,side['first_failure']);self.assertIsNotNone(side['trace_failure'])
                 self.assertEqual(side['cleanup_errors'],[])
                 self.assertTrue(all(code is not None for code in side['child_returncodes']))
