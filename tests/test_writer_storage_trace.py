@@ -6,6 +6,8 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import time
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -101,6 +103,58 @@ class StorageSessionTests(unittest.TestCase):
             self.assertFalse(instance.exists());self.assertTrue((root/'out/SHA256SUMS').is_file())
             self.assertEqual(session.finish(),result)
 
+    def test_two_independent_fifo_readers_preserve_readback_bursts_with_slow_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);proc=root/'proc';(proc/'self/ns').mkdir(parents=True)
+            for name in ('time','pid'):(proc/'self/ns'/name).symlink_to(name+':[42]')
+            original.process_files(proc,10)
+            (proc/'self/timens_offsets').write_text('monotonic 0 0\nboottime 0 0\n')
+            tracefs=root/'tracefs';(tracefs/'instances').mkdir(parents=True)
+            writer=original.FakeTraceSession(root/'writer',32*1024**2,10,tracefs=tracefs,proc=proc)
+            device=FakeStorage(root/'storage',32*1024**2,10,tracefs=tracefs,proc=proc,binding=BINDING)
+            target=SimpleNamespace(pid=10,poll=lambda:None);errors=[]
+            class SlowOutput:
+                def __init__(self,stream):self.stream=stream;self.calls=0
+                def write(self,data):
+                    self.calls+=1
+                    if self.calls%256==0:time.sleep(.001)
+                    return self.stream.write(data)
+                def close(self):self.stream.close()
+            sessions=[writer,device]
+            try:
+                for session in sessions:
+                    self.assertTrue(session.start([target])['ok']);session.stream=SlowOutput(session.stream)
+                    session.start_draining()
+                # A complete sched interval makes the writer fixture meaningful.
+                raws=[(original.line(10,'sched_switch','prev_pid=10 prev_state=D ==> next_pid=91')+
+                       original.line(91,'sched_switch','prev_pid=91 prev_state=R ==> next_pid=10','100.100001')+
+                       ''.join(original.line(10,'sys_enter_fsync','fd=3',f'{101+n}.000000')+
+                               original.line(10,'sys_exit_fsync','ret=0',f'{101+n}.000001') for n in range(4000))).encode(),
+                      (''.join(records())*4000).encode()]
+                def produce(fd,raw):
+                    sent=0;deadline=time.monotonic()+8
+                    try:
+                        while sent<len(raw):
+                            if time.monotonic()>deadline:raise AssertionError('bounded FIFO producer stalled')
+                            try:sent+=os.write(fd,raw[sent:sent+65536])
+                            except BlockingIOError:time.sleep(.001)
+                    except Exception as error:errors.append(str(error))
+                threads=[threading.Thread(target=produce,args=(fd,raw)) for fd,raw in zip([writer.pipe_writer,device.writer],raws)]
+                for thread in threads:thread.start()
+                for thread in threads:thread.join(9);self.assertFalse(thread.is_alive())
+                self.assertEqual(errors,[])
+                reports=[session.finish() for session in sessions]
+                self.assertTrue(all(report['ok'] for report in reports),reports)
+                self.assertEqual(reports[0]['decoded']['paired_syscalls'],4000)
+                self.assertEqual(reports[1]['decoded']['paired_ext4_syncs'],4000)
+                self.assertEqual(reports[1]['decoded']['block_events'],8000)
+                self.assertTrue(all(not session.drain_thread.is_alive() for session in sessions))
+                self.assertTrue(all(report['loss_observation_bytes']<=report['loss_observation_limit_bytes'] for report in reports))
+            finally:
+                for session in sessions:
+                    if session.state!='not-started':session.finish()
+
+
 class AttributionTests(unittest.TestCase):
     def test_role_requires_inode_and_fd_sample_inside_matching_syscall_and_no_block_latency_is_invented(self):
         events=[];decoder=storage.StorageDecoder(BINDING,events.append)
@@ -163,6 +217,13 @@ class FdRoleTests(unittest.TestCase):
                 session._emit({'kind':'sys_exit_fsync','tid':77,'tid_generation':1,'root_pid':10,'fd':3})
                 self.assertEqual(rows[0]['fd_sample']['role'],'payload')
                 self.assertEqual(rows[0]['fd_sample'],rows[1]['fd_sample']);self.assertEqual(session.fd_samples,{})
+                with patch.object(storage.syscalls,'proc_identity',side_effect=AssertionError('rate-limited lookup touched proc')):
+                    session.next_fd_sample_ns=time.monotonic_ns()+1_000_000_000
+                    session._emit({'kind':'sys_enter_fsync','tid':77,'tid_generation':1,'root_pid':10,'fd':3})
+                    self.assertEqual(rows[-1]['fd_sample']['reason'],'STORAGE_FD_SAMPLE_RATE_LIMIT')
+                    self.assertFalse(rows[-1]['fd_sample']['available'])
+                    session._emit({'kind':'sys_exit_fsync','tid':77,'tid_generation':1,'root_pid':10,'fd':3})
+                session.next_fd_sample_ns=0
                 (proc/'77/fd/3').unlink()
                 session._emit({'kind':'sys_enter_fsync','tid':77,'tid_generation':1,'root_pid':10,'fd':3})
                 self.assertFalse(rows[-1]['fd_sample']['available'])

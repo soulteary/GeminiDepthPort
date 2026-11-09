@@ -395,7 +395,7 @@ def run_batch(binary, root, pairs, status_on, args, deadline, trace_factory=None
     observer_rss_peak = None
     children = []; child_roots = []; trace = None; trace_result = None
     sampler = None;resource_summary = None
-    result = None;first_failure = None;first_child_failure=None;finished_results={};finished_heartbeats={}
+    result = None;first_failure = None;first_child_failure=None;finished_results={};finished_heartbeats={};trace_failure=None;first_failure_monotonic_ns=None
     try:
         for index in range(WRITERS):
             child_root = root / ('writer-' + str(index));child_root.mkdir()
@@ -416,6 +416,7 @@ def run_batch(binary, root, pairs, status_on, args, deadline, trace_factory=None
         missing_trace = trace_unavailable(initial_trace)
         if initial_trace.get('ok') is not True and not (missing_trace and args.allow_unavailable_trace):
             raise RuntimeError('TRACE_NOT_READY:' + str(initial_trace.get('reason') or initial_trace.get('error') or initial_trace.get('state')))
+        if not missing_trace and hasattr(trace,'start_draining'):trace.start_draining()
         storage_guard(args, deadline)
         target = time.monotonic_ns() + 200_000_000
         ab.write_json(root / 'start.tmp', {'start_monotonic_ns': target, 'start_unix_ns': time.time_ns() + 200_000_000})
@@ -449,10 +450,17 @@ def run_batch(binary, root, pairs, status_on, args, deadline, trace_factory=None
             sampler.check()
             for index,monitor in enumerate(status_monitors):
                 if children[index].poll() is None and not ab.owned_process_sample(children[index]).get('terminal'):monitor.sample()
-            if not missing_trace:
+            if not missing_trace and trace_failure is None:
                 trace.poll()
                 if trace.failure:
-                    raise RuntimeError('TRACE_RUNTIME_FAILURE:' + str(trace.failure))
+                    trace_failure={'observed_monotonic_ns':time.monotonic_ns(),'error':str(trace.failure),
+                        'policy':'group rejected; finish current writers under unchanged health, storage and wall limits; no subsequent groups'}
+                    ab.write_json(root/'trace-failure.json',trace_failure)
+                    if hasattr(trace,'stop_capture'):trace.stop_capture()
+                    if sampler is not None:sampler.phase='trace-failed-writer-finalizing'
+                    # A diagnostic failure is not a reason to destroy healthy
+                    # in-progress readback. Writer/storage/heartbeat failures
+                    # still take the existing immediate bounded cleanup path.
             if now >= next_budget:
                 storage_guard(args, deadline);next_budget = now + 1_000_000_000
             if time.monotonic() >= deadline:raise RuntimeError('WALL_TIME_LIMIT')
@@ -470,6 +478,7 @@ def run_batch(binary, root, pairs, status_on, args, deadline, trace_factory=None
         result = {'writers': writers, 'status_background_load': status_on,'final_status_heartbeats':final_heartbeats,
                   'start_skew_ns': max(r['actual_start_monotonic_ns'] for r in writers) - min(r['actual_start_monotonic_ns'] for r in writers)}
     except BaseException as failure:
+        first_failure_monotonic_ns=time.monotonic_ns()
         first_failure = type(failure).__name__ + ':' + str(failure)
         raise
     finally:
@@ -492,6 +501,7 @@ def run_batch(binary, root, pairs, status_on, args, deadline, trace_factory=None
         if result is not None:
             if resource_summary is not None:result.update(resource_summary)
             result['trace'] = trace_result
+            result['trace_runtime_failure'] = trace_failure
             observer_ended = resource.getrusage(resource.RUSAGE_SELF)
             result['observer'] = {
                 'cpu_seconds': (observer_ended.ru_utime + observer_ended.ru_stime)
@@ -500,10 +510,10 @@ def run_batch(binary, root, pairs, status_on, args, deadline, trace_factory=None
                 'maxrss_process_lifetime_kib_start':observer_started.ru_maxrss,
                 'maxrss_process_lifetime_kib_end':observer_ended.ru_maxrss,
                 'scope':'controller+in-process syscall/trace parsing, setup and finish CPU; sampled group RSS and cumulative process-lifetime HWM are separate; excludes writer processes and kernel tracing overhead'}
-        if first_failure is not None or cleanup_errors:
+        if first_failure is not None or trace_failure is not None or cleanup_errors:
             try:
-                ab.write_json(root / 'batch-failure.json', {'first_failure':first_failure,
-                    'first_child_failure':first_child_failure,'cleanup_errors':cleanup_errors,'trace':trace_result,
+                ab.write_json(root / 'batch-failure.json', {'first_failure':first_failure,'first_failure_monotonic_ns':first_failure_monotonic_ns,
+                    'trace_failure':trace_failure,'first_child_failure':first_child_failure,'cleanup_errors':cleanup_errors,'trace':trace_result,
                     'child_returncodes':[p.returncode for p in children],'resources':resource_summary})
             except Exception as failure:
                 cleanup_errors.append('sidecar:' + type(failure).__name__ + ':' + str(failure))
