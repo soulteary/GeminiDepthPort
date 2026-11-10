@@ -261,3 +261,20 @@ else:sys.exit(2)
     assert!(calls.contains("/opt/gdp-capture/runtime.json"));
     assert!(!calls.contains("/dev/bus/usb"));
 }
+
+#[test]
+fn legacy_usb_descriptor_requires_verified_vendor_product_and_exact_name() {
+    use geminidepthport::control::identify_usb;
+    assert_eq!(
+        identify_usb("2bc5", "0670", "Orbbec(R) Gemini(TM)"),
+        Some("Gemini 2")
+    );
+    for (vid, pid, name) in [
+        ("0000", "0670", "Orbbec(R) Gemini(TM)"),
+        ("2bc5", "0804", "Orbbec(R) Gemini(TM)"),
+        ("2bc5", "", "Orbbec(R) Gemini(TM)"),
+        ("2bc5", "0670", "Orbbec(R) Gemini(TM) Pro"),
+    ] {
+        assert_eq!(identify_usb(vid, pid, name), None);
+    }
+}

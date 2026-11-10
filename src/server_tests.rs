@@ -370,7 +370,7 @@ fn acquisition_edit_payload(f: &Fixture) -> Value {
 }
 
 #[test]
-fn acquisition_http_save_invalidates_all_confirmations_and_stops_each_owned_preview() {
+fn acquisition_http_save_rejects_previews_before_mutation_then_reconfirms_when_idle() {
     let mut f = Fixture::new(false, 2);
     f.prepare_host();
     let previews = Arc::new(Mutex::new(f.inventory["cameras"].as_array().unwrap().iter().enumerate().map(|(i,c)|json!({"Id":format!("{:064x}",1000+i),"Name":format!("/orbbec-web-preview-{}",text(&c["name"])),"Config":{"Labels":{"orbbec.web.preview":PROJECT}},"State":{"Running":true},"Mounts":[{"Destination":"/config","Source":f.ctl.root.join("work/web-preview").join(text(&c["name"])).join("config")}]})).collect::<Vec<_>>()));
@@ -431,6 +431,14 @@ fn acquisition_http_save_invalidates_all_confirmations_and_stops_each_owned_prev
         camera["timestamp_source"] = "global".into();
     }
     let m = manager(&f);
+    let before = fs::read(f.ctl.root.join("inventory.json")).unwrap();
+    f.ctl.stop("camera", true).unwrap();
+    let (status, _, body) = request(&m, "POST", "/api/config", &payload.to_string(), &[]);
+    assert_eq!(status, 400, "{}", String::from_utf8_lossy(&body));
+    assert!(String::from_utf8_lossy(&body).contains("PREVIEWS_RUNNING"));
+    assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
+    assert!(stopped.lock().unwrap().is_empty());
+    previews.lock().unwrap().clear();
     let (status, _, body) = request(&m, "POST", "/api/config", &payload.to_string(), &[]);
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
     let saved = f.ctl.load().unwrap();
@@ -441,7 +449,7 @@ fn acquisition_http_save_invalidates_all_confirmations_and_stops_each_owned_prev
         assert_eq!(camera["timestamp_source"], "global");
     }
     assert!(previews.lock().unwrap().is_empty());
-    assert_eq!(stopped.lock().unwrap().len(), 3);
+    assert!(stopped.lock().unwrap().is_empty());
     assert!(config::validate(&saved, false).is_err());
     // Reverting to the compatibility policy is an atomic shared edit too.
     let mut reset = acquisition_edit_payload(&f);
@@ -535,6 +543,7 @@ fn invalid_acquisition_http_edits_are_transactional_and_official_backend_refuses
 fn editable_bindings_use_detected_model_and_changes_invalidate_confirmation() {
     let mut f = Fixture::new(true, 1);
     f.prepare_host();
+    f.ctl.stop("camera", true).unwrap();
     let sys = f
         .ctl
         .host_root
@@ -756,6 +765,7 @@ fn editable_same_binding_and_disabling_do_not_require_a_new_detected_device() {
         };
         if disable {
             payload["cameras"][0]["enabled"] = json!(false);
+            f.ctl.stop("camera", true).unwrap();
         }
         save_config(&f.ctl, &payload).unwrap();
         let saved = f.ctl.load().unwrap();
@@ -793,7 +803,7 @@ fn foreign_preview_mounts_block_start_save_and_cleanup_without_external_mutation
         save_config(&f.ctl, &payload)
             .unwrap_err()
             .to_string()
-            .starts_with("INSTANCE_OWNERSHIP")
+            .starts_with("PREVIEWS_RUNNING")
     );
 }
 
@@ -1088,6 +1098,173 @@ fn web_model_change_rechecks_even_retained_serial_and_invalidates_only_changed_s
     assert_eq!(
         saved["cameras"][1]["verification"],
         f.inventory["cameras"][1]["verification"]
+    );
+}
+
+#[test]
+fn property_only_edits_keep_all_capture_interlocks_without_backend_or_image_changes() {
+    for mode in ["running", "preview", "protected", "stale"] {
+        let mut f = Fixture::new(false, 1);
+        f.prepare_host();
+        if mode != "running" {
+            f.ctl.stop("camera", true).unwrap();
+        }
+        if mode == "protected" {
+            atomic_json(
+                &f.ctl.root.join("state/recording-guard.json"),
+                &json!({"version":1}),
+            )
+            .unwrap();
+        }
+        if mode == "preview" {
+            let previous = f.ctl.command_runner.clone().unwrap();
+            let id = "f".repeat(64);
+            f.ctl.command_runner = Some(Arc::new(move |args, input| {
+                if args.get(1).is_some_and(|a| a == "ps")
+                    && args.iter().any(|a| a.contains("orbbec.web.preview"))
+                {
+                    return Ok(id.clone());
+                }
+                if args.get(1).is_some_and(|a| a == "inspect") && args.iter().any(|a| a == &id) {
+                    return Ok(json!([{"Id":id,"Config":{"Labels":{"orbbec.web.preview":PROJECT}},"State":{"Running":true}}]).to_string());
+                }
+                assert!(
+                    !args.get(1).is_some_and(|a| a == "stop" || a == "rm"),
+                    "save must not stop previews"
+                );
+                previous(args, input)
+            }));
+        }
+        for stream in ["color", "ir"] {
+            for field in ["exposure", "gain"] {
+                let mut edit = acquisition_edit_payload(&f);
+                edit["cameras"][0]["parameters"][format!("enable_{stream}_auto_exposure")] =
+                    json!(false);
+                edit["cameras"][0]["parameters"][format!("{stream}_{field}")] = json!(24);
+                if mode == "stale" {
+                    edit["revision"] = json!("stale");
+                }
+                let before = fs::read(f.ctl.root.join("inventory.json")).unwrap();
+                let (code, _, body) =
+                    request(&manager(&f), "POST", "/api/config", &edit.to_string(), &[]);
+                assert_eq!(code, 400, "{mode}: {}", String::from_utf8_lossy(&body));
+                let reason = match mode {
+                    "running" => "CAMERAS_RUNNING",
+                    "preview" => "PREVIEWS_RUNNING",
+                    "protected" => "RECORDING_PROTECTED",
+                    _ => "INVENTORY_DRIFT",
+                };
+                assert!(String::from_utf8_lossy(&body).contains(reason));
+                assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
+            }
+        }
+    }
+}
+
+#[test]
+fn web_keep_removes_existing_auto_controls_through_http_reload_and_service_generation() {
+    for initial in [false, true] {
+        let mut f = Fixture::new(false, 2);
+        f.prepare_host();
+        f.ctl.stop("camera", true).unwrap();
+        let mut data = f.ctl.load().unwrap();
+        for key in ["enable_color_auto_exposure", "enable_ir_auto_exposure"] {
+            data["cameras"][0]["parameters"][key] = json!(initial);
+        }
+        let data = config::invalidate(&f.inventory, &data);
+        atomic_json(&f.ctl.root.join("inventory.json"), &data).unwrap();
+        // Ordinary PATCH omission still preserves existing requests. Only an
+        // explicit removal means "keep device settings" for the Web selector.
+        let ordinary = acquisition_edit_payload(&f);
+        let (code, _, body) = request(
+            &manager(&f),
+            "POST",
+            "/api/config",
+            &ordinary.to_string(),
+            &[],
+        );
+        assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(
+            f.ctl.load().unwrap()["cameras"][0]["parameters"]["enable_color_auto_exposure"],
+            initial
+        );
+        let mut edit = acquisition_edit_payload(&f);
+        edit["cameras"][0]["unset_parameters"] =
+            json!(["enable_color_auto_exposure", "enable_ir_auto_exposure"]);
+        edit["cameras"][0]["parameters"] =
+            json!({"color_exposure":-1,"color_gain":-1,"ir_exposure":-1,"ir_gain":-1});
+        let (code, _, body) = request(&manager(&f), "POST", "/api/config", &edit.to_string(), &[]);
+        assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
+        let saved = f.ctl.load().unwrap();
+        assert_eq!(saved["cameras"][1], data["cameras"][1]);
+        assert_eq!(saved["cameras"][0]["profiles_verified"], false);
+        assert!(saved["cameras"][0].get("unset_parameters").is_none());
+        let camera = config::resolved(&saved, &saved["cameras"][0]);
+        let generated = crate::capture_backend::service_config(
+            &saved,
+            &camera,
+            "test-generation",
+            &json!({"manifest":{}}),
+        );
+        for key in ["enable_color_auto_exposure", "enable_ir_auto_exposure"] {
+            assert!(saved["cameras"][0]["parameters"].get(key).is_none());
+            assert!(generated["device_controls"].get(key).is_none());
+        }
+        let controls: capture_contract::device::DeviceControls =
+            serde_json::from_value(generated["device_controls"].clone()).unwrap();
+        assert!(!controls.requested());
+        let mut invalid = acquisition_edit_payload(&f);
+        for removal in [
+            json!(null),
+            json!(["color_gain"]),
+            json!(["enable_color_auto_exposure", "enable_color_auto_exposure"]),
+            json!([24]),
+        ] {
+            invalid["cameras"][0]["unset_parameters"] = removal;
+            let before = fs::read(f.ctl.root.join("inventory.json")).unwrap();
+            assert!(save_config(&f.ctl, &invalid).is_err());
+            assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
+        }
+        invalid["cameras"][0]["unset_parameters"] = json!(["enable_color_auto_exposure"]);
+        invalid["cameras"][0]["parameters"]["enable_color_auto_exposure"] = json!(false);
+        assert!(save_config(&f.ctl, &invalid).is_err());
+    }
+}
+
+#[test]
+fn real_gemini_usb_descriptor_binds_both_wrist_slots_without_relaxing_model_checks() {
+    let mut f = Fixture::new(false, 3);
+    f.prepare_host();
+    f.ctl.stop("camera", true).unwrap();
+    let mut edit = acquisition_edit_payload(&f);
+    for index in [1, 2] {
+        let path = f
+            .ctl
+            .host_root
+            .as_ref()
+            .unwrap()
+            .join(format!("sys/bus/usb/devices/1-{index}"));
+        atomic(&path.join("product"), b"Orbbec(R) Gemini(TM)").unwrap();
+        atomic(&path.join("idProduct"), b"0670").unwrap();
+        let serial = format!("NEW_SYNTHETIC_WRIST_{index}");
+        atomic(&path.join("serial"), serial.as_bytes()).unwrap();
+        edit["cameras"][index]["serial_number"] = json!(serial);
+        edit["cameras"][index]["profile"] = json!("gemini_2");
+    }
+    let (code, _, body) = request(&manager(&f), "POST", "/api/config", &edit.to_string(), &[]);
+    assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
+    let saved = f.ctl.load().unwrap();
+    for index in [1, 2] {
+        assert_eq!(saved["cameras"][index]["profile"], "gemini_2");
+        assert_eq!(saved["cameras"][index]["profiles_verified"], false);
+    }
+    let mut wrong = acquisition_edit_payload(&f);
+    wrong["cameras"][1]["profile"] = json!("gemini_335l");
+    assert!(
+        save_config(&f.ctl, &wrong)
+            .unwrap_err()
+            .to_string()
+            .starts_with("CAMERA_BINDING")
     );
 }
 

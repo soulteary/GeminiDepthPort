@@ -290,6 +290,7 @@ async function saveConfig() {
   if (!draft) return;
   const cameras = draft.cameras.map(c => ({name:c.name,serial_number:c.serial_number,...(draft.schema_version === 2 && c.profile ? {profile:c.profile} : {}),
     ...(draft.schema_version === 2 ? {...Object.fromEntries(['enabled','namespace','frame_prefix','timestamp_source','calibration_revision','health'].map(k=>[k,c[k]])),imu:c.imu || null,raw_recording:c.raw_recording || null} : {}),
+    ...(draft.capture_backend === 'rust' ? {unset_parameters:['enable_color_auto_exposure','enable_ir_auto_exposure'].filter(k=>!(k in c.parameters))} : {}),
     parameters:Object.fromEntries([...numeric,...booleans,...formats].filter(k => parameterSupported(k) && k in c.parameters).map(k=>[k,c.parameters[k]]))}));
   const result = await api('/api/config', {revision,cameras,...(draft.schema_version === 2 ? {capture_backend:draft.capture_backend || 'official',image:draft.image,discard_unsupported_parameters:discardUnsupported} : {}),...(draft.capture_backend === 'rust' ? {acquisition:draft.rust_capture?.acquisition || null} : {})});
   const fresh = await api('/api/state'); state = fresh; revision = fresh.revision;

@@ -477,14 +477,23 @@ elif a and a[0] in ('exec','stop'):
         saved=json.loads((self.root/'inventory.json').read_text());camera=saved['cameras'][0]
         self.assertTrue(camera['profiles_verified'])
         self.assertEqual(camera['verification']['configuration_digest'],digest(saved,camera))
-    def test_web_save_preserves_an_edit_during_preview_shutdown(self):
+    def test_web_save_rejects_preview_before_any_shutdown_or_inventory_rewrite(self):
         import hashlib
-        data,_=self.prepare_preview();self.start()
+        data,_=self.prepare_preview()
+        # This fixture contains only a preview. Honor Docker's camera role
+        # filter instead of returning that preview as a formal camera too.
+        docker=self.root/'bin/docker'
+        docker.write_text(docker.read_text().replace("if a[:2]==['ps','-aq'] and", "if a[:2]==['ps','-aq'] and 'label=orbbec.role=camera' in a:pass\nelif a[:2]==['ps','-aq'] and",1))
+        self.start()
         revised=copy.deepcopy(data);revised['cameras'][0]['calibration_revision']='external-edit'
         (self.root/'rewrite-inventory.json').write_text(json.dumps(revised))
         payload={'revision':hashlib.sha256((self.root/'inventory.json').read_bytes()).hexdigest(),'cameras':[{'name':c['name'],'parameters':{'color_exposure':100} if i==0 else {}} for i,c in enumerate(data['cameras'])]}
-        self.assertIn('INVENTORY_DRIFT',self.error(400,'/api/config',payload)['error'])
-        self.assertEqual(json.loads((self.root/'inventory.json').read_text()),revised)
+        before=(self.root/'inventory.json').read_bytes()
+        calls_before=(self.root/'docker-calls.jsonl').read_text() if (self.root/'docker-calls.jsonl').exists() else ''
+        self.assertIn('PREVIEWS_RUNNING',self.error(400,'/api/config',payload)['error'])
+        self.assertEqual((self.root/'inventory.json').read_bytes(),before)
+        calls=(self.root/'docker-calls.jsonl').read_text()[len(calls_before):]
+        self.assertFalse(any(json.loads(line)[0] in ('stop','rm') for line in calls.splitlines()))
     def test_confirmation_renews_the_capture_session_lease(self):
         import time
         self.prepare_preview();lease=self.root/'work/web-preview/camera_a/config/lease'

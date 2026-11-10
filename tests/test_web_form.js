@@ -80,6 +80,9 @@ async function check(backend) {
     get('color-auto-policy').value='keep';get('color_exposure').value='-1';get('color_gain').value='-1';
     vm.runInContext('readForm()',context);await vm.runInContext('saveConfig()',context);
     assert.equal(Object.hasOwn(saved.cameras[0].parameters,'enable_color_auto_exposure'),false);
+    assert.ok(saved.cameras[0].unset_parameters.includes('enable_color_auto_exposure'));
+    assert.ok(saved.cameras[0].unset_parameters.includes('enable_ir_auto_exposure'));
+    assert.equal(saved.cameras[0].parameters.color_gain,-1);
     context.report={available:true,info:{name:'<unsafe>',firmware:'1.4.98',hardware:'mock',vid:1,pid:2},properties:[{name:'color_gain',readable:true,writable:true,observed:24,requested:24,readback_verified:true,range:{min:0,max:100,step:1,default:10}}]};
     vm.runInContext("dirty=false;state.previews.cam={running:true,streams:{device_capabilities:report}};updatePreview()",context);
     assert.ok(get('device-capabilities-detail').textContent.includes('1.4.98'));

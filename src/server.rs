@@ -247,7 +247,7 @@ fn save_config(ctl: &Controller, payload: &Value) -> Result<Value> {
     let mut extensions_changed = false;
     let mut changed = vec![];
     for update in updates {
-        require(update.as_object().unwrap().keys().all(|k|"name profile serial_number enabled namespace frame_prefix timestamp_source calibration_revision health parameters imu raw_recording".split_whitespace().any(|v|v==k)),"CAMERA_FIELDS","Unsupported editable field")?;
+        require(update.as_object().unwrap().keys().all(|k|"name profile serial_number enabled namespace frame_prefix timestamp_source calibration_revision health parameters unset_parameters imu raw_recording".split_whitespace().any(|v|v==k)),"CAMERA_FIELDS","Unsupported editable field")?;
         let name = text(&update["name"]);
         let old = role(&d, name)?;
         let profile = update.get("profile").unwrap_or(&old["profile"]);
@@ -311,7 +311,7 @@ fn save_config(ctl: &Controller, payload: &Value) -> Result<Value> {
         for (k, v) in update.as_object().unwrap() {
             if (k == "imu" || k == "raw_recording") && v.is_null() {
                 c.as_object_mut().unwrap().remove(k);
-            } else if k != "name" && k != "parameters" {
+            } else if k != "name" && k != "parameters" && k != "unset_parameters" {
                 c[k] = v.clone();
             }
         }
@@ -342,6 +342,27 @@ fn save_config(ctl: &Controller, payload: &Value) -> Result<Value> {
                 c["parameters"].as_object_mut().unwrap().remove(&key);
             }
         }
+        if let Some(unset) = update.get("unset_parameters") {
+            let names = unset
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("PARAMETER_REMOVAL: Expected an array"))?;
+            require(
+                rust_backend
+                    && names.len() <= 2
+                    && names.iter().enumerate().all(|(i, key)| {
+                        ["enable_color_auto_exposure", "enable_ir_auto_exposure"]
+                            .iter()
+                            .any(|name| key == *name)
+                            && !names[..i].contains(key)
+                            && p.get(text(key)).is_none()
+                    }),
+                "PARAMETER_REMOVAL",
+                "Only omitted Rust auto-exposure controls may be removed",
+            )?;
+            for key in names {
+                c["parameters"].as_object_mut().unwrap().remove(text(key));
+            }
+        }
         c["parameters"]
             .as_object_mut()
             .unwrap()
@@ -356,21 +377,15 @@ fn save_config(ctl: &Controller, payload: &Value) -> Result<Value> {
         }
     }
     config::validate(&d, true)?;
-    if backend_changed || profile_changed || extensions_changed || d["image"] != old_image {
+    // Every effective capture edit requires idle devices, even when only one
+    // property changed. Reject before stopping previews or writing inventory.
+    if !changed.is_empty()
+        || backend_changed
+        || profile_changed
+        || extensions_changed
+        || d["image"] != old_image
+    {
         ctl.assert_stopped()?;
-    }
-    // An unchanged save does not touch preview instances or require Docker.
-    if !changed.is_empty() {
-        require(
-            ctl.instances("preview")?
-                .iter()
-                .all(|item| ctl.owns_preview(item)),
-            "INSTANCE_OWNERSHIP",
-            "Another deployment has a preview; release it before capture",
-        )?;
-    }
-    for name in changed {
-        stop_preview(ctl, &name)?;
     }
     ctl.save_at_revision(&d, false, &revision)?;
     Ok(json!({"message":"配置已保存；启用设备需完成实际档位检查，标定与语义验收另行执行。"}))

@@ -234,7 +234,7 @@ impl Controller {
                 };
                 if read("idVendor").eq_ignore_ascii_case("2bc5") {
                     let product = read("product");
-                    result.push(json!({"port":p.file_name().unwrap().to_string_lossy(),"serial_number":read("serial"),"product":product,"speed_mbps":read("speed"),"bus":read("busnum"),"device":read("devnum"),"model":identify(&product)}));
+                    result.push(json!({"port":p.file_name().unwrap().to_string_lossy(),"serial_number":read("serial"),"product":product,"speed_mbps":read("speed"),"bus":read("busnum"),"device":read("devnum"),"model":identify_usb(&read("idVendor"), &read("idProduct"), &product)}));
                 }
             }
         }
@@ -810,6 +810,17 @@ impl Controller {
         }
         Ok(summary)
     }
+}
+/// The legacy Gemini 2 USB name omits the model suffix. Accept that exact
+/// descriptor only with the verified Orbbec VID/PID; never use a prefix match.
+pub fn identify_usb(vid: &str, pid: &str, product: &str) -> Option<&'static str> {
+    if !vid.eq_ignore_ascii_case("2bc5") {
+        return None;
+    }
+    if product == "Orbbec(R) Gemini(TM)" {
+        return (pid.eq_ignore_ascii_case("0670")).then_some("Gemini 2");
+    }
+    identify(product)
 }
 pub fn identify(product: &str) -> Option<&'static str> {
     let norm = |s: &str| {
