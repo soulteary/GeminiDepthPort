@@ -1999,10 +1999,16 @@ fn worker(config: &ServiceConfig, restart: u64) -> Result<()> {
             .join(format!("failure-{}.json", status.session));
         // Diagnostics must not mask the original acquisition failure if storage
         // is unavailable. The usual status/finalization path still runs below.
+        let device_property_failure = error.chain().find_map(|cause| {
+            cause
+                .downcast_ref::<orbbec_safe::Error>()
+                .and_then(orbbec_safe::Error::device_property_failure)
+        });
         let _ = atomic_status(
             &path,
             &json!({"version":1,
             "kind":"capture-service-private-failure","session_id":status.session,
+            "device_property_failure":device_property_failure,
             "error_chain":detail,"details_truncated":truncated}),
         );
     }

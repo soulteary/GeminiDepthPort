@@ -280,7 +280,7 @@ function updatePreview() {
     lines.push(`${info.name} · 固件 ${info.firmware} · 硬件 ${info.hardware} · VID/PID ${info.vid}/${info.pid}`);
     for(const p of report.properties || []) {
       const range=p.range?`范围 ${p.range.min}…${p.range.max}，步长 ${p.range.step}，默认 ${p.range.default}`:'范围未知';
-      lines.push(`${p.name}: ${p.readable?'可读':'不可读'} / ${p.writable?'可写':'不可写'}；${range}；启动值 ${p.observed??'未知'}${p.requested!==null&&p.requested!==undefined?`；请求 ${p.requested}，${p.readback_verified?'读回一致':'未验证'}`:''}${p.error?`；${p.error}`:''}`);
+      lines.push(`${p.name}: ${p.readable_queried===false?'读权限未知':p.readable?'可读':'不可读'} / ${p.writable_queried===false?'写权限未知':p.writable?'可写':'不可写'}；${range}${p.range_current!==null&&p.range_current!==undefined?`；范围查询时值 ${p.range_current}`:''}${p.observed_before!==null&&p.observed_before!==undefined?`；设置前读值 ${p.observed_before}`:''}；启动值 ${p.observed??'未知'}${p.requested!==null&&p.requested!==undefined?`；请求 ${p.requested}，${p.readback_verified?'读回一致':'未验证'}`:''}${p.error?`；${p.error}`:''}`);
     }
   }
   $('device-capabilities-detail').textContent=lines.join('\n');

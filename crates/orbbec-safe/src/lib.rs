@@ -30,9 +30,23 @@ impl fmt::Display for Error {
         f.write_str(&self.0)
     }
 }
+impl Error {
+    /// Structured startup diagnostics for the owner-only service failure file.
+    pub fn device_property_failure(&self) -> Option<serde_json::Value> {
+        if !self.0.starts_with("DEVICE_PROPERTY_") {
+            return None;
+        }
+        let (_, text) = self.0.split_once(": ")?;
+        let value = serde_json::Deserializer::from_str(text)
+            .into_iter::<serde_json::Value>()
+            .next()?
+            .ok()?;
+        (value["kind"] == "device-property-failure" && value["version"] == 1).then_some(value)
+    }
+}
 impl std::error::Error for Error {}
 pub type Result<T> = std::result::Result<T, Error>;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct VideoProfile {
     pub width: u32,
     pub height: u32,
@@ -340,7 +354,7 @@ impl Sdk {
         session.active.set(true);
         check(a, e)?;
         if let Some(controls) = controls {
-            let report = device::configure(a, session.device.raw(), controls)?;
+            let report = device::configure(a, session.device.raw(), controls, color, depth)?;
             Rc::get_mut(&mut session)
                 .expect("new unique session")
                 .device_report = Some(report);

@@ -53,7 +53,13 @@ return 1700000000000000ULL+sequence*p->imu_period_us;}return 5678;}
 uint8_t *ob_frame_get_data(const obj *p,error **e){(void)p;(void)e;return bytes;}
 uint32_t ob_frame_get_data_size(const obj *p,error **e){(void)p;(void)e;return sizeof(bytes);}
 float ob_depth_frame_get_value_scale(const obj *p,error **e){(void)p;(void)e;return 0.1f;}
-const char *ob_error_get_message(const error *e){(void)e;return "mock SDK rejection";}
+const char *ob_error_get_message(const error *e){(void)e;
+#if defined(MOCK_DEVICE_FAILURE) && MOCK_DEVICE_FAILURE==25
+ static char message[1025];memset(message,1,1024);message[1024]=0;return message;
+#else
+ return "mock SDK rejection";
+#endif
+}
 void ob_delete_error(error *e){(void)e;event("error-delete");}
 
 #ifndef MOCK_NO_CALIBRATION
@@ -184,15 +190,29 @@ _Bool ob_device_is_property_supported(const obj *d,int id,int permission,error *
  if(MOCK_DEVICE_FAILURE==14){*e=(error*)1;return 0;}
  if(MOCK_DEVICE_FAILURE==3)return 0;
  if(MOCK_DEVICE_FAILURE==4&&slot==2&&permission==2)return 0;
+ if(MOCK_DEVICE_FAILURE==24&&id==2002&&permission==2){*e=(error*)1;return 0;}
  return 1;}
 property_int_range ob_device_get_int_property_range(const obj *d,int id,error **e){(void)d;int slot=property_slot(id);property_event("range",id,0);
  property_int_range r={property_values[slot],slot==2||slot==5?100:10000,0,1,slot==2||slot==5?10:100};
+ if(id==2002&&((MOCK_DEVICE_FAILURE>=18&&MOCK_DEVICE_FAILURE<=23)||MOCK_DEVICE_FAILURE==26)){
+  r=(property_int_range){100,255,1,2,101};
+  if(MOCK_DEVICE_FAILURE==19)r.def=100;
+  if(MOCK_DEVICE_FAILURE==20)r.step=-1;
+  if(MOCK_DEVICE_FAILURE==21)r.def=256;
+  if(MOCK_DEVICE_FAILURE==22)r.cur=256;
+ }
  if(MOCK_DEVICE_FAILURE==5)r.min=r.max+1;
  if(MOCK_DEVICE_FAILURE==6)r.step=4;
- if(MOCK_DEVICE_FAILURE==15)*e=(error*)1;
+ if(MOCK_DEVICE_FAILURE==15||(MOCK_DEVICE_FAILURE==25&&id==2002))*e=(error*)1;
  return r;}
 property_bool_range ob_device_get_bool_property_range(const obj *d,int id,error **e){(void)d;(void)e;property_bool_range r={property_values[property_slot(id)]!=0,1,0,1,1};return r;}
-int32_t ob_device_get_int_property(const obj *d,int id,error **e){(void)d;property_event("get",id,0);if(MOCK_DEVICE_FAILURE==16)*e=(error*)1;return property_values[property_slot(id)];}
+int32_t ob_device_get_int_property(const obj *d,int id,error **e){(void)d;property_event("get",id,0);if(MOCK_DEVICE_FAILURE==16)*e=(error*)1;
+ if(id==2002&&property_writes==0){
+  if(MOCK_DEVICE_FAILURE==18||MOCK_DEVICE_FAILURE==26)return 102;
+  if(MOCK_DEVICE_FAILURE==19)return 101;
+  if(MOCK_DEVICE_FAILURE==23)return 256;
+ }
+ return property_values[property_slot(id)];}
 _Bool ob_device_get_bool_property(const obj *d,int id,error **e){(void)d;(void)e;property_event("get",id,0);return property_values[property_slot(id)]!=0;}
 static void property_set(int id,int value,error **e){
  if(!active){abort();}
@@ -200,6 +220,7 @@ static void property_set(int id,int value,error **e){
  if(((MOCK_DEVICE_FAILURE==7&&value==24)||MOCK_DEVICE_FAILURE==9)&&id==2002){*e=(error*)1;return;}
  if(MOCK_DEVICE_FAILURE==9&&property_writes>2){*e=(error*)1;return;}
  if(MOCK_DEVICE_FAILURE==8&&id==2002)return;
+ if(MOCK_DEVICE_FAILURE==26&&id==2027&&value==28){*e=(error*)1;return;}
  property_values[property_slot(id)]=value;
  if(MOCK_DEVICE_FAILURE==17&&id==2002&&value==24)property_values[0]=1;
 }
