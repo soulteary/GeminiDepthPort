@@ -43,8 +43,14 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Verify Ubuntu mirror DNS on the build host
+        run: |
+          getent ahostsv4 archive.ubuntu.com
+          getent ahostsv4 security.ubuntu.com
       - name: Build opt-in service from pinned public SDK sources
-        run: docker build -f capture.Dockerfile -t geminidepthport-rust-capture:ci .
+        # Build-time networking only: avoid the runner Docker bridge resolver.
+        # The actual executable/ABI smoke below remains --network none.
+        run: docker build --network host -f capture.Dockerfile -t geminidepthport-rust-capture:ci .
       - name: Verify executable ABI and immutable runtime without opening hardware
         run: >-
           docker run --rm --network none --read-only --cap-drop ALL --tmpfs /tmp
