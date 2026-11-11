@@ -88,6 +88,11 @@ async function check(backend) {
     assert.ok(get('device-capabilities-detail').textContent.includes('1.4.98'));
     assert.ok(get('device-capabilities-detail').textContent.includes('读回一致'));
     assert.ok(get('device-capabilities-detail').textContent.includes('<unsafe>'));
+    vm.runInContext("report.properties[0]={name:'color_gain',readable:true,writable:false,readable_queried:true,writable_queried:false,range_current:100,observed_before:102,error:'DEVICE_PROPERTY_SUPPORT_QUERY'};updatePreview()",context);
+    assert.ok(get('device-capabilities-detail').textContent.includes('写权限未知'));
+    assert.ok(get('device-capabilities-detail').textContent.includes('范围查询时值 100'));
+    assert.ok(get('device-capabilities-detail').textContent.includes('设置前读值 102'));
+    assert.ok(get('device-capabilities-detail').textContent.includes('DEVICE_PROPERTY_SUPPORT_QUERY'));
     vm.runInContext('dirty=true;updatePreview()',context);
     assert.ok(!get('device-capabilities-detail').textContent.includes('1.4.98'));
   }

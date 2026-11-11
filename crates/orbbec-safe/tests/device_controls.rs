@@ -31,6 +31,18 @@ fn device_startup_controls_probe_preflight_readback_and_restore_real_abi() {
         "range-error",
         "get-error",
         "interference",
+        "auto-grid",
+        "grid-probe",
+        "grid-step",
+        "grid-outside",
+        "default-grid",
+        "negative-step",
+        "default-outside",
+        "range-current-outside",
+        "get-current-outside",
+        "write-support-error",
+        "auto-grid-rollback",
+        "long-sdk-error",
     ] {
         let failure = match case {
             "unsupported" | "probe-unsupported" => 3,
@@ -50,6 +62,15 @@ fn device_startup_controls_probe_preflight_readback_and_restore_real_abi() {
             "range-error" => 15,
             "get-error" | "probe-error" => 16,
             "interference" => 17,
+            "auto-grid" | "grid-probe" | "grid-step" | "grid-outside" => 18,
+            "default-grid" => 19,
+            "negative-step" => 20,
+            "default-outside" => 21,
+            "range-current-outside" => 22,
+            "get-current-outside" => 23,
+            "write-support-error" => 24,
+            "auto-grid-rollback" => 26,
+            "long-sdk-error" => 25,
             _ => 0,
         };
         let library = root.join(format!("{case}.so"));
@@ -93,7 +114,13 @@ fn device_startup_controls_probe_preflight_readback_and_restore_real_abi() {
         let log = fs::read_to_string(events).unwrap();
         if !matches!(
             case,
-            "ok" | "write-error" | "readback" | "rollback-error" | "interference"
+            "ok" | "auto-grid"
+                | "default-grid"
+                | "auto-grid-rollback"
+                | "write-error"
+                | "readback"
+                | "rollback-error"
+                | "interference"
         ) {
             assert!(
                 !log.contains("property-write"),
@@ -126,7 +153,7 @@ fn device_controls_child() {
     };
     if matches!(
         case.as_str(),
-        "probe" | "probe-unsupported" | "probe-error" | "missing"
+        "probe" | "grid-probe" | "probe-unsupported" | "probe-error" | "missing"
     ) {
         controls = Default::default();
     }
@@ -135,6 +162,25 @@ fn device_controls_child() {
     }
     if case == "outside" {
         controls.ir_gain = Some(i32::MAX);
+    }
+    if [
+        "auto-grid",
+        "grid-step",
+        "grid-outside",
+        "default-grid",
+        "negative-step",
+        "default-outside",
+        "range-current-outside",
+        "get-current-outside",
+        "auto-grid-rollback",
+    ]
+    .contains(&case.as_str())
+    {
+        controls.color_gain = Some(match case.as_str() {
+            "grid-step" => 104,
+            "grid-outside" => 257,
+            _ => 103,
+        });
     }
     let profile = VideoProfile {
         width: 2,
@@ -150,7 +196,13 @@ fn device_controls_child() {
     );
     if matches!(
         case.as_str(),
-        "ok" | "probe" | "probe-unsupported" | "probe-error" | "missing"
+        "ok" | "auto-grid"
+            | "default-grid"
+            | "probe"
+            | "grid-probe"
+            | "probe-unsupported"
+            | "probe-error"
+            | "missing"
     ) {
         let mut pipeline = result.unwrap();
         let report = pipeline.device_report().unwrap();
@@ -180,25 +232,42 @@ fn device_controls_child() {
                         .all(|p| p.error.is_some() && p.observed.is_none())
                 );
             }
-            assert!(
-                report
-                    .properties
-                    .iter()
-                    .all(|p| p.readback_verified == (case == "ok"))
-            );
+            assert!(report.properties.iter().all(|p| p.readback_verified
+                == ["ok", "auto-grid", "default-grid"].contains(&case.as_str())));
             if case == "ok" {
                 assert_eq!(report.properties[3].observed, Some(24));
+            }
+            if ["auto-grid", "default-grid", "grid-probe"].contains(&case.as_str()) {
+                let gain = &report.properties[3];
+                assert_eq!(gain.range_current, Some(100));
+                assert_eq!(
+                    gain.observed_before,
+                    Some(if case == "default-grid" { 101 } else { 102 })
+                );
+                assert_eq!(
+                    gain.observed,
+                    Some(if case == "grid-probe" { 102 } else { 103 })
+                );
+                assert_eq!(report.properties[0].observed_before, Some(1));
+                assert_eq!(report.properties[1].observed_before, Some(1));
+                assert!(gain.finished_monotonic_ns.unwrap() >= gain.started_monotonic_ns.unwrap());
             }
         }
         assert!(pipeline.wait(10).unwrap().is_some());
         pipeline.stop().unwrap();
     } else {
-        let error = result.err().unwrap().to_string();
+        let failure = result.err().unwrap();
+        let diagnostic = failure.device_property_failure();
+        let error = failure.to_string();
         let code = match case.as_str() {
             "missing-required" => "API_UNAVAILABLE",
-            "unsupported" | "readonly" | "range" | "support-error" | "range-error"
-            | "get-error" => "UNSUPPORTED",
-            "step" | "outside" => "OUT_OF_RANGE",
+            "unsupported" | "readonly" => "UNSUPPORTED",
+            "range" | "negative-step" | "default-outside" => "RANGE_SCHEMA",
+            "support-error" | "write-support-error" => "SUPPORT_QUERY",
+            "range-error" | "long-sdk-error" => "RANGE_QUERY",
+            "get-error" => "VALUE_READ",
+            "range-current-outside" | "get-current-outside" => "VALUE_RANGE",
+            "step" | "outside" | "grid-step" | "grid-outside" => "OUT_OF_RANGE",
             "readback" | "interference" => "READBACK_MISMATCH",
             "null" => "INFO_NULL",
             "utf8" => "INFO_UTF8",
@@ -208,7 +277,64 @@ fn device_controls_child() {
             _ => "mock SDK rejection",
         };
         assert!(error.contains(code), "{case}: {error}");
-        if matches!(case.as_str(), "write-error" | "readback" | "interference") {
+        if let Some(ref diagnostic) = diagnostic {
+            assert!(error.len() < 4096, "bounded private diagnostic: {case}");
+            assert_eq!(diagnostic["profiles"]["color"]["width"], 2);
+            assert_eq!(diagnostic["profiles"]["depth"]["fps"], 30);
+            assert!(diagnostic["property"]["started_monotonic_ns"].is_u64());
+            assert!(diagnostic["property"]["finished_monotonic_ns"].is_u64());
+            assert!(diagnostic["property"]["failure_monotonic_ns"].is_u64());
+            assert!(
+                diagnostic["property"]["failure_monotonic_ns"]
+                    .as_u64()
+                    .unwrap()
+                    <= diagnostic["property"]["finished_monotonic_ns"]
+                        .as_u64()
+                        .unwrap()
+            );
+            if case.starts_with("grid-") {
+                assert_eq!(diagnostic["property"]["id"], 2002);
+                assert_eq!(diagnostic["property"]["range_current"], 100);
+                assert_eq!(diagnostic["property"]["observed_before"], 102);
+                assert_eq!(diagnostic["auto_exposure_before"]["color"], 1);
+                assert_eq!(diagnostic["property"]["stage"], "requested_range");
+            }
+            if case == "write-support-error" {
+                assert_eq!(diagnostic["property"]["readable_queried"], true);
+                assert_eq!(diagnostic["property"]["writable_queried"], false);
+                assert_eq!(diagnostic["property"]["stage"], "write_support");
+            }
+            if case == "long-sdk-error" {
+                assert_eq!(diagnostic["property"]["error_truncated"], true);
+                assert_eq!(diagnostic["property"]["stage"], "range_query");
+            }
+            if case == "range" {
+                assert!(diagnostic["property"]["range"].is_object());
+            }
+        }
+        if [
+            "support-error",
+            "write-support-error",
+            "range-error",
+            "get-error",
+            "range",
+            "negative-step",
+            "default-outside",
+            "range-current-outside",
+            "get-current-outside",
+        ]
+        .contains(&case.as_str())
+        {
+            assert!(
+                !error.contains("UNSUPPORTED"),
+                "specific error must survive: {error}"
+            );
+            assert!(diagnostic.is_some());
+        }
+        if matches!(
+            case.as_str(),
+            "write-error" | "readback" | "interference" | "auto-grid-rollback"
+        ) {
             assert!(error.contains("rollback_verified=true"), "{error}");
         }
         if case == "rollback-error" {
@@ -220,7 +346,10 @@ fn device_controls_child() {
             !log.contains("wait\n"),
             "failed settings cannot deliver frames"
         );
-        if matches!(case.as_str(), "write-error" | "readback" | "interference") {
+        if matches!(
+            case.as_str(),
+            "write-error" | "readback" | "interference" | "auto-grid-rollback"
+        ) {
             let mut restored = sdk
                 .open_with_controls(
                     "test-device",
@@ -237,8 +366,39 @@ fn device_controls_child() {
                 .iter()
                 .map(|p| p.observed.unwrap())
                 .collect();
-            assert_eq!(values, vec![1, 1, 100, 10, 200, 20]);
+            assert_eq!(
+                values,
+                vec![
+                    1,
+                    1,
+                    100,
+                    if case == "auto-grid-rollback" {
+                        102
+                    } else {
+                        10
+                    },
+                    200,
+                    20
+                ]
+            );
             restored.stop().unwrap();
         }
+    }
+}
+
+#[test]
+fn invalid_or_unrelated_errors_do_not_claim_device_diagnostics() {
+    for message in [
+        "unrelated",
+        "DEVICE_PROPERTY_TEST",
+        "DEVICE_PROPERTY_TEST: invalid",
+        "DEVICE_PROPERTY_TEST: {}",
+        "DEVICE_PROPERTY_TEST: {\"kind\":\"device-property-failure\",\"version\":2}",
+    ] {
+        assert!(
+            orbbec_safe::Error(message.into())
+                .device_property_failure()
+                .is_none()
+        );
     }
 }

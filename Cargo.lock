@@ -447,6 +447,7 @@ name = "orbbec-safe"
 version = "0.1.0"
 dependencies = [
  "capture-contract",
+ "libc",
  "orbbec-sys",
  "serde",
  "serde_json",

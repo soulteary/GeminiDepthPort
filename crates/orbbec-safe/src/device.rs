@@ -19,6 +19,15 @@ pub struct PropertyReport {
     pub readable: bool,
     pub writable: bool,
     pub range: Option<PropertyRange>,
+    pub range_current: Option<i32>,
+    pub observed_before: Option<i32>,
+    pub readable_queried: bool,
+    pub writable_queried: bool,
+    pub stage: &'static str,
+    pub started_monotonic_ns: Option<u64>,
+    pub finished_monotonic_ns: Option<u64>,
+    pub failure_monotonic_ns: Option<u64>,
+    pub error_truncated: bool,
     pub observed: Option<i32>,
     pub requested: Option<i32>,
     pub readback_verified: bool,
@@ -102,10 +111,62 @@ fn in_range(value: i32, r: &PropertyRange) -> bool {
         && value <= r.max
         && (r.step == 0 || (i64::from(value) - i64::from(r.min)) % i64::from(r.step) == 0)
 }
+fn within_bounds(value: i32, range: &PropertyRange) -> bool {
+    (range.min..=range.max).contains(&value)
+}
+fn monotonic_ns() -> Option<u64> {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) } != 0 {
+        return None;
+    }
+    u64::try_from(ts.tv_sec)
+        .ok()?
+        .checked_mul(1_000_000_000)?
+        .checked_add(u64::try_from(ts.tv_nsec).ok()?)
+}
+fn classified<T>(code: &str, result: Result<T>) -> Result<T> {
+    result.map_err(|error| Error(format!("{code}: {error}")))
+}
+fn remember_error(p: &mut PropertyReport, error: &Error) {
+    p.error_truncated = error.0.chars().count() > 256;
+    p.error = Some(error.0.chars().take(256).collect());
+}
+fn failure(
+    code: &str,
+    p: &PropertyReport,
+    properties: &[PropertyReport],
+    color: Option<VideoProfile>,
+    depth: Option<VideoProfile>,
+    rollback: Option<bool>,
+) -> Error {
+    let ae = |name| {
+        properties
+            .iter()
+            .find(|p| p.name == name)
+            .and_then(|p| p.observed_before)
+    };
+    // Only one property, two AE observations and fixed-size profiles. SDK text
+    // is bounded above; no serial, frame payload or caller-controlled path.
+    Error(format!(
+        "{code}: {}",
+        serde_json::json!({"version":1,"kind":"device-property-failure","property":p,
+        "auto_exposure_before":{"color":ae("enable_color_auto_exposure"),"ir":ae("enable_ir_auto_exposure")},
+        "auto_exposure_observed_monotonic_ns":{
+            "color":properties.iter().find(|p|p.name=="enable_color_auto_exposure").and_then(|p|p.finished_monotonic_ns),
+            "ir":properties.iter().find(|p|p.name=="enable_ir_auto_exposure").and_then(|p|p.finished_monotonic_ns)},
+        "auto_exposure_scope":"earlier preflight reads, not an atomic SDK snapshot",
+        "profiles":{"color":color,"depth":depth},"rollback_verified":rollback})
+    ))
+}
 pub(super) fn configure(
     a: &Rc<sys::Api>,
     device: *mut sys::Handle,
     c: &DeviceControls,
+    color: Option<VideoProfile>,
+    depth: Option<VideoProfile>,
 ) -> Result<DeviceReport> {
     c.validate().map_err(|e| Error(e.to_string()))?;
     let d = match a.device_api() {
@@ -171,19 +232,41 @@ pub(super) fn configure(
             readable: false,
             writable: false,
             range: None,
+            range_current: None,
+            observed_before: None,
+            readable_queried: false,
+            writable_queried: false,
+            stage: "read_support",
+            started_monotonic_ns: monotonic_ns(),
+            finished_monotonic_ns: None,
+            failure_monotonic_ns: None,
+            error_truncated: false,
             observed: None,
             requested,
             readback_verified: false,
             error: None,
         };
         let discovery = (|| -> Result<()> {
-            p.readable = call(a, |e| unsafe { (d.supported)(device, id, 1, e) })?;
-            p.writable = call(a, |e| unsafe { (d.supported)(device, id, 2, e) })?;
+            p.readable = classified(
+                "DEVICE_PROPERTY_SUPPORT_QUERY",
+                call(a, |e| unsafe { (d.supported)(device, id, 1, e) }),
+            )?;
+            p.readable_queried = true;
+            p.stage = "write_support";
+            p.writable = classified(
+                "DEVICE_PROPERTY_SUPPORT_QUERY",
+                call(a, |e| unsafe { (d.supported)(device, id, 2, e) }),
+            )?;
+            p.writable_queried = true;
             if !p.readable {
                 return Ok(());
             }
+            p.stage = "range_query";
             let (range, current) = if boolean {
-                let r = call(a, |e| unsafe { (d.bool_range)(device, id, e) })?;
+                let r = classified(
+                    "DEVICE_PROPERTY_RANGE_QUERY",
+                    call(a, |e| unsafe { (d.bool_range)(device, id, e) }),
+                )?;
                 (
                     PropertyRange {
                         min: i32::from(r.min),
@@ -194,7 +277,10 @@ pub(super) fn configure(
                     i32::from(r.cur),
                 )
             } else {
-                let r = call(a, |e| unsafe { (d.int_range)(device, id, e) })?;
+                let r = classified(
+                    "DEVICE_PROPERTY_RANGE_QUERY",
+                    call(a, |e| unsafe { (d.int_range)(device, id, e) }),
+                )?;
                 (
                     PropertyRange {
                         min: r.min,
@@ -205,42 +291,93 @@ pub(super) fn configure(
                     r.cur,
                 )
             };
-            if range.min > range.max
-                || range.step < 0
-                || !in_range(current, &range)
-                || !in_range(range.default, &range)
-            {
+            p.range_current = Some(current);
+            p.range = Some(range);
+            let range = p.range.as_ref().expect("queried range");
+            p.stage = "range_schema";
+            if range.min > range.max || range.step < 0 || !within_bounds(range.default, range) {
                 return Err(Error("DEVICE_PROPERTY_RANGE_SCHEMA".into()));
             }
-            let current = read(a, &d, device, id, boolean)?;
-            if !in_range(current, &range) {
+            // cur is an observation, not a manual write request. AE can return
+            // intermediate/non-grid values; range and get are separate SDK calls.
+            p.stage = "range_current";
+            if !within_bounds(current, range) {
                 return Err(Error("DEVICE_PROPERTY_VALUE_RANGE".into()));
             }
-            p.range = Some(range);
+            p.stage = "value_read";
+            let current = classified(
+                "DEVICE_PROPERTY_VALUE_READ",
+                read(a, &d, device, id, boolean),
+            )?;
+            p.observed_before = Some(current);
             p.observed = Some(current);
+            p.stage = "value_bounds";
+            if !within_bounds(current, range) {
+                return Err(Error("DEVICE_PROPERTY_VALUE_RANGE".into()));
+            }
+            p.stage = "preflight_complete";
             Ok(())
         })();
+        p.finished_monotonic_ns = monotonic_ns();
         if let Err(error) = discovery {
-            p.error = Some(error.to_string())
+            p.failure_monotonic_ns = monotonic_ns();
+            p.finished_monotonic_ns = p.failure_monotonic_ns;
+            remember_error(&mut p, &error);
+            if requested.is_some() {
+                let code = error
+                    .0
+                    .split(':')
+                    .next()
+                    .unwrap_or("DEVICE_PROPERTY_DISCOVERY");
+                return Err(failure(code, &p, &properties, color, depth, None));
+            }
         }
         if let Some(value) = requested {
-            if !p.readable || !p.writable || p.error.is_some() {
-                return Err(Error(format!("DEVICE_PROPERTY_UNSUPPORTED: {name}")));
+            if !p.readable || !p.writable {
+                p.failure_monotonic_ns = monotonic_ns();
+                p.finished_monotonic_ns = p.failure_monotonic_ns;
+                return Err(failure(
+                    "DEVICE_PROPERTY_UNSUPPORTED",
+                    &p,
+                    &properties,
+                    color,
+                    depth,
+                    None,
+                ));
             }
+            p.stage = "requested_range";
             if !p.range.as_ref().is_some_and(|r| in_range(value, r)) {
-                return Err(Error(format!("DEVICE_PROPERTY_OUT_OF_RANGE: {name}")));
+                p.failure_monotonic_ns = monotonic_ns();
+                p.finished_monotonic_ns = p.failure_monotonic_ns;
+                return Err(failure(
+                    "DEVICE_PROPERTY_OUT_OF_RANGE",
+                    &p,
+                    &properties,
+                    color,
+                    depth,
+                    None,
+                ));
             }
         }
         properties.push(p);
     }
     let previous: Vec<_> = properties.iter().map(|p| p.observed).collect();
     let mut attempted = Vec::with_capacity(6);
+    let mut failed_index = 0;
     let applied = (|| -> Result<()> {
-        for (i, p) in properties.iter().enumerate() {
+        for (i, p) in properties.iter_mut().enumerate() {
             if let Some(value) = p.requested {
+                failed_index = i;
                 attempted.push(i);
-                write(a, &d, device, p, value)?;
-                if read(a, &d, device, p.id, p.kind == "bool")? != value {
+                p.stage = "write";
+                classified("DEVICE_PROPERTY_WRITE", write(a, &d, device, p, value))?;
+                p.stage = "write_readback";
+                let observed = classified(
+                    "DEVICE_PROPERTY_VALUE_READ",
+                    read(a, &d, device, p.id, p.kind == "bool"),
+                )?;
+                p.observed = Some(observed);
+                if observed != value {
                     return Err(Error(format!(
                         "DEVICE_PROPERTY_READBACK_MISMATCH: {}",
                         p.name
@@ -249,9 +386,15 @@ pub(super) fn configure(
             }
         }
         // Recheck earlier requests too: later writes must not silently undo them.
-        for p in &mut properties {
+        for (i, p) in properties.iter_mut().enumerate() {
             if let Some(value) = p.requested {
-                let observed = read(a, &d, device, p.id, p.kind == "bool")?;
+                failed_index = i;
+                p.stage = "final_readback";
+                let observed = classified(
+                    "DEVICE_PROPERTY_VALUE_READ",
+                    read(a, &d, device, p.id, p.kind == "bool"),
+                )?;
+                p.observed = Some(observed);
                 if observed != value {
                     return Err(Error(format!(
                         "DEVICE_PROPERTY_READBACK_MISMATCH: {}",
@@ -260,11 +403,14 @@ pub(super) fn configure(
                 }
                 p.observed = Some(observed);
                 p.readback_verified = true;
+                p.stage = "complete";
+                p.finished_monotonic_ns = monotonic_ns();
             }
         }
         Ok(())
     })();
     if let Err(error) = applied {
+        properties[failed_index].failure_monotonic_ns = monotonic_ns();
         let mut rollback_failed = false;
         for i in attempted.into_iter().rev() {
             let p = &properties[i];
@@ -275,8 +421,20 @@ pub(super) fn configure(
                 rollback_failed = true
             }
         }
+        let p = &mut properties[failed_index];
+        remember_error(p, &error);
+        p.finished_monotonic_ns = monotonic_ns();
+        let code = error.0.split(':').next().unwrap_or("DEVICE_PROPERTY_APPLY");
+        let detail = failure(
+            code,
+            &properties[failed_index],
+            &properties,
+            color,
+            depth,
+            Some(!rollback_failed),
+        );
         return Err(Error(format!(
-            "{error}; rollback_verified={}",
+            "{detail}; rollback_verified={}",
             !rollback_failed
         )));
     }
