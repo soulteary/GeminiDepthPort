@@ -2,6 +2,7 @@
 
 这些资料解释实现和调试方法。部署、采集和录制步骤从[文档首页](../README.md)进入；固定提交的调查和实验结果从[历史索引](../validation/history.md)查找。
 
+- [属性预检只读取证](property-read-evidence.md)：独立 getter 与可选 UVC 底层观测。
 - [管理服务](management.md)：配置、任务与启停入口。
 - [常驻采集服务](capture-service.md)：worker 监督和运行配置。
 - [SDK 与 ROS](sdk-and-ros.md)、[SDK ABI](../../crates/orbbec-sys/README.md)、[原生 YUYV 适配](native-yuyv.md)、[SDK 扩展评估](sdk-extensions.md)。

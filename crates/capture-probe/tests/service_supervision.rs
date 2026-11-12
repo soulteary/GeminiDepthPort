@@ -2025,7 +2025,9 @@ fn unpaired_depth_still_requires_explicit_millimeter_units() {
 #[test]
 fn raw_byte_limit_after_successful_appends_never_commits_a_partial_target() {
     let f = fixture();
-    configure_runtime_quality(&f, 100, 20_000);
+    // Include the bounded startup property evidence in snapshot metadata;
+    // leave room for successful appends before the byte limit is reached.
+    configure_runtime_quality(&f, 100, 40_000);
     let mut supervisor = launch(&f);
     let failed = wait_status(&f, &mut supervisor, |v| {
         v["raw_recording"]["state"] == "failed"
