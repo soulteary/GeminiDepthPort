@@ -39,7 +39,7 @@ def fixture(root):
     installed=dict(headers,**{'libobsensor/h/Export.h':rt.sha(generated)})
     value={'version':1,'experiment':rt.EXPERIMENT,'repository':'https://github.com/orbbec/OrbbecSDK_v2',
            'commit':rt.BASE,'sdk_version':'2.10.6','patch_sha256':rt.PATCH,'sdk_sha256':rt.sha(rt.physical(root,rt.LIBRARY)),
-           'public_c_exports':406,'public_header_count':33,'installed_public_header_count':34,
+           'uvc_patch_sha256':rt.UVC_PATCH,'public_c_exports':406,'public_header_count':33,'installed_public_header_count':34,
            'installed_public_headers_sha256':hashlib.sha256(json.dumps(installed,sort_keys=True).encode()).hexdigest(),'public_headers_sha256':hashlib.sha256(json.dumps(headers,sort_keys=True).encode()).hexdigest(),
            'public_exports_sha256':rt.sha(rt.physical(root,rt.HOME+'/public-c-exports.txt'))}
     file(rt.HOME+'/sdk-build.json',json.dumps(value).encode())

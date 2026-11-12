@@ -966,7 +966,7 @@ fn configure_property_sdk(f: &Fixture, failure: i32) {
 }
 #[test]
 fn quality_bound_worker_commits_native_recording_and_finalizes_observed_quality() {
-    for (failure, gain) in [(0, 24), (18, 103)] {
+    for (failure, gain) in [(0, 24), (18, 103), (36, 103)] {
         let f = fixture();
         if failure != 0 {
             configure_property_sdk(&f, failure);
@@ -1041,6 +1041,11 @@ fn device_setting_failure_never_publishes_or_commits_native_capture() {
         (20, "DEVICE_PROPERTY_RANGE_SCHEMA"),
         (22, "DEVICE_PROPERTY_VALUE_RANGE"),
         (24, "DEVICE_PROPERTY_SUPPORT_QUERY"),
+        (30, "DEVICE_PROPERTY_VALUE_RANGE"),
+        (32, "DEVICE_PROPERTY_VALUE_RANGE"),
+        (33, "DEVICE_PROPERTY_RANGE_QUERY"),
+        (34, "DEVICE_PROPERTY_VALUE_RANGE"),
+        (35, "DEVICE_PROPERTY_UVC_READ_FAILED"),
     ] {
         let f = fixture();
         configure_runtime_quality(&f, 3, 1_000_000);
@@ -1089,6 +1094,22 @@ fn device_setting_failure_never_publishes_or_commits_native_capture() {
             if failure == 3 { 2000 } else { 2002 }
         );
         assert_eq!(detail["details_truncated"], false);
+        if failure >= 30 {
+            assert_eq!(diagnostic["property"]["getter_attempted"], true);
+            assert_eq!(diagnostic["property"]["getter_uvc"]["backend"], "v4l2");
+            assert_eq!(
+                diagnostic["property"]["getter_uvc"]["events"][0]["selector"],
+                2002
+            );
+            if failure == 30 {
+                assert_eq!(diagnostic["property"]["range_current"], 256);
+                assert_eq!(diagnostic["property"]["getter_returned"], 101);
+            }
+            if failure == 32 || failure == 34 {
+                assert!(diagnostic["property"]["getter_error"].is_string());
+                assert!(diagnostic["property"]["observed_before"].is_null());
+            }
+        }
         if failure != 8 {
             assert!(diagnostic["rollback_verified"].is_null());
         }

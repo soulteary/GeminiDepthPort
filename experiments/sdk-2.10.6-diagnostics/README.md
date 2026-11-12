@@ -104,3 +104,21 @@ GDP 全工作区回归另核对时间戳、两轮实际读回、逐帧/索引哈
 一键运行三相机测试：使用 [run_hardware.py / ONE-CLICK.md](ONE-CLICK.md)，统一 root UID 自动等待健康、采样、录制完成和两轮读回/DDS 验收，失败保留证据并提供独立回滚命令。
 
 至少三轮 on/off 自动交替及指标汇总见 [run_ab.py / AB.md](AB.md)。
+
+### UVC 属性读取观测
+
+重新构建本目录的诊断镜像会在固定 SDK 源码上依次应用原诊断补丁和
+`uvc-observations.patch`。后者的 SHA256 单独写入 SDK 构建记录，旧补丁及
+历史证据不变。生产镜像仍使用厂商 SDK；需要底层属性取证时使用本诊断镜像。
+
+私有 `gdp_uvc_observation_begin_v1` / `snapshot_v1` 接口采用 64 字节事件 ABI。
+后端编号 1 为 V4L2、2 为 libuvc；操作 1 为 VIDIOC_G_CTRL，2 为
+VIDIOC_QUERYCTRL，3 为 libuvc GET。selector 为 V4L2 control ID，或
+libuvc 的 `(unit << 16) | control`；request 为 libuvc 请求码。
+result 保留 ioctl 返回值或 libuvc 有符号传输返回值，errno 与有效位一同保存；
+errno 只有在相应调用失败时才用于解释。范围字段和原始读取值均不修正。
+
+缓冲为线程局部固定 8 条事件，无文件写入、分配、锁或后台线程。
+第 9 条以计数溢出标记报告，不覆盖先前记录。接口不修改底层调用的返回值、
+异常、setter 或 AE 行为。诊断报告中的可用标记不代表设备归因已经成立；
+应关联实际失败调用的后端、返回值及时间窗口。相机复测由实机测试者执行。

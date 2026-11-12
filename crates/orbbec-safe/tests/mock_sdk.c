@@ -170,6 +170,22 @@ imu_value ob_gyro_frame_get_value(const obj *p,error **e){return ob_accel_frame_
 typedef struct { int32_t cur,max,min,step,def; } property_int_range;
 typedef struct { _Bool cur,max,min,step,def; } property_bool_range;
 #pragma pack(pop)
+#if MOCK_DEVICE_FAILURE >= 30
+typedef struct { uint32_t backend,operation,selector,request; int32_t result,error_number,value; uint32_t value_valid; int32_t minimum,maximum,step,default_value; uint64_t started_ns,finished_ns; } uvc_event;
+static _Thread_local uvc_event uvc_events[8];
+static _Thread_local unsigned uvc_count;
+static _Thread_local int uvc_armed;
+void gdp_uvc_observation_begin_v1(void){uvc_count=0;uvc_armed=1;}
+uint32_t gdp_uvc_observation_snapshot_v1(uvc_event *out,uint32_t capacity){unsigned n=uvc_count<8?uvc_count:8;if(n>capacity)n=capacity;memcpy(out,uvc_events,n*sizeof(*out));uvc_armed=0;return uvc_count;}
+static void uvc_read(int op,int value){if(!uvc_armed)return;uvc_event ev={1,(uint32_t)op,2002,0,0,0,value,1,1,255,2,101,100,101};
+ if(MOCK_DEVICE_FAILURE==34&&op==1){ev.result=-1;ev.error_number=5;ev.value_valid=0;}
+ if(MOCK_DEVICE_FAILURE==35&&op==2){ev.result=-1;ev.error_number=5;ev.value_valid=0;}
+ if(MOCK_DEVICE_FAILURE==36)ev.backend=2;
+ if(MOCK_DEVICE_FAILURE==38)ev.backend=99;
+ uvc_events[0]=ev;uvc_count=MOCK_DEVICE_FAILURE==37?9:1;
+ if(uvc_count==9)for(int i=1;i<8;i++)uvc_events[i]=ev;
+}
+#endif
 static int property_values[6]={1,100,10,1,200,20};
 static int property_writes;
 static int property_slot(int id){switch(id){case 2000:return 0;case 2001:return 1;case 2002:return 2;case 2025:return 3;case 2026:return 4;case 2027:return 5;default:abort();}}
@@ -201,12 +217,18 @@ property_int_range ob_device_get_int_property_range(const obj *d,int id,error **
   if(MOCK_DEVICE_FAILURE==21)r.def=256;
   if(MOCK_DEVICE_FAILURE==22)r.cur=256;
  }
+ #if MOCK_DEVICE_FAILURE >= 30
+ if(id==2002){r=(property_int_range){MOCK_DEVICE_FAILURE==36?101:256,255,1,2,101};uvc_read(2,r.cur);if(MOCK_DEVICE_FAILURE==33||MOCK_DEVICE_FAILURE==39)*e=(error*)1;}
+#endif
  if(MOCK_DEVICE_FAILURE==5)r.min=r.max+1;
  if(MOCK_DEVICE_FAILURE==6)r.step=4;
  if(MOCK_DEVICE_FAILURE==15||(MOCK_DEVICE_FAILURE==25&&id==2002))*e=(error*)1;
  return r;}
 property_bool_range ob_device_get_bool_property_range(const obj *d,int id,error **e){(void)d;(void)e;property_bool_range r={property_values[property_slot(id)]!=0,1,0,1,1};return r;}
 int32_t ob_device_get_int_property(const obj *d,int id,error **e){(void)d;property_event("get",id,0);if(MOCK_DEVICE_FAILURE==16)*e=(error*)1;
+ #if MOCK_DEVICE_FAILURE >= 30
+ if(id==2002&&property_writes==0){int value=MOCK_DEVICE_FAILURE==31?256:101;uvc_read(1,value);if(MOCK_DEVICE_FAILURE==32||MOCK_DEVICE_FAILURE==39)*e=(error*)1;return value;}
+#endif
  if(id==2002&&property_writes==0){
   if(MOCK_DEVICE_FAILURE==18||MOCK_DEVICE_FAILURE==26)return 102;
   if(MOCK_DEVICE_FAILURE==19)return 101;

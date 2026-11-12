@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libusb-1.0-0-dev libudev-dev libssl-dev libgl1-mesa-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY experiments/sdk-2.10.6-diagnostics/sdk-diagnostics.patch /experiment/sdk-diagnostics.patch
+COPY experiments/sdk-2.10.6-diagnostics/uvc-observations.patch /experiment/uvc-observations.patch
 COPY experiments/sdk-2.10.6-diagnostics/public-c-exports.txt /experiment/public-c-exports.txt
 RUN set -e; git init /sdk; \
     git -C /sdk remote add origin https://github.com/orbbec/OrbbecSDK_v2.git; \
@@ -34,6 +35,9 @@ RUN set -e; git init /sdk; \
     && echo '0db54c7c1bcafa9d18cd51bddcd4cf0d0c733c967ff0f9542f7796b770a0757c  /experiment/sdk-diagnostics.patch' | sha256sum -c - \
     && git -C /sdk apply --check /experiment/sdk-diagnostics.patch \
     && git -C /sdk apply /experiment/sdk-diagnostics.patch \
+    && echo '6f1ef57a15c5effd80f1afede6a07fed6b8164019f304eadb4b45ee5f98bcae6  /experiment/uvc-observations.patch' | sha256sum -c - \
+    && git -C /sdk apply --check /experiment/uvc-observations.patch \
+    && git -C /sdk apply /experiment/uvc-observations.patch \
     && cmake -S /sdk -B /sdk-build -DCMAKE_BUILD_TYPE=Release \
        -DCMAKE_INSTALL_PREFIX=/opt/gdp-sdk-experiment -DOB_BUILD_MAIN_PROJECT=ON \
        -DOB_BUILD_EXAMPLES=OFF -DOB_BUILD_TOOLS=OFF -DOB_BUILD_TESTS=OFF \
@@ -44,11 +48,11 @@ RUN set -e; git init /sdk; \
     && cp "/sdk/End User License Agreement.txt" /opt/gdp-sdk-experiment/SDK-EULA.txt \
     && cp /sdk/extensions/license.txt /opt/gdp-sdk-experiment/extensions-LICENSE.txt \
     && mkdir -p /opt/gdp-experiment \
-    && cp /experiment/sdk-diagnostics.patch /experiment/public-c-exports.txt /opt/gdp-experiment/
+    && cp /experiment/sdk-diagnostics.patch /experiment/uvc-observations.patch /experiment/public-c-exports.txt /opt/gdp-experiment/
 # Metadata/validator changes reuse the compiled fixed SDK layer, not host libraries.
 COPY experiments/sdk-2.10.6-diagnostics/experiment_runtime.py /experiment/experiment_runtime.py
 RUN python3 /experiment/experiment_runtime.py sdk-build-record --sdk-source /sdk \
-       --patch /experiment/sdk-diagnostics.patch --exports /experiment/public-c-exports.txt \
+       --patch /experiment/sdk-diagnostics.patch --uvc-patch /experiment/uvc-observations.patch --exports /experiment/public-c-exports.txt \
        --output /opt/gdp-experiment/sdk-build.json
 COPY ros /gdp-ros
 RUN source /opt/ros/humble/setup.bash \

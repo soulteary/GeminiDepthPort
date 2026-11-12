@@ -1,0 +1,137 @@
+diff --git a/src/impl/Device.cpp b/src/impl/Device.cpp
+--- a/src/impl/Device.cpp
++++ b/src/impl/Device.cpp
+@@ -4,6 +4,7 @@
+ #include "libobsensor/h/Device.h"
+ 
+ #include "ImplTypes.hpp"
++#include "utils/UvcPropertyObservations.hpp"
+ #include "exception/ObException.hpp"
+ #include "firmwareupdater/FirmwareUpdater.hpp"
+ #include "shared/utils/Utils.hpp"
+@@ -24,6 +25,10 @@
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
++
++// Private diagnostic ABI; no public SDK header or ob_* export is changed.
++OB_EXPORT void gdp_uvc_observation_begin_v1() { gdp_uvc::begin(); }
++OB_EXPORT uint32_t gdp_uvc_observation_snapshot_v1(gdp_uvc::Event *out, uint32_t capacity) { return gdp_uvc::snapshot(out, capacity); }
+ 
+ void ob_delete_device_list(ob_device_list *list, ob_error **error) BEGIN_API_CALL {
+     VALIDATE_NOT_NULL(list);
+diff --git a/src/platform/usb/uvc/ObV4lUvcDevicePort.cpp b/src/platform/usb/uvc/ObV4lUvcDevicePort.cpp
+--- a/src/platform/usb/uvc/ObV4lUvcDevicePort.cpp
++++ b/src/platform/usb/uvc/ObV4lUvcDevicePort.cpp
+@@ -1,3 +1,4 @@
++#include "utils/UvcPropertyObservations.hpp"
+ // Copyright (c) Orbbec Inc. All Rights Reserved.
+ // Licensed under the MIT License.
+ 
+@@ -894,7 +895,12 @@
+     auto                                  fd      = deviceHandles_.front()->fd;
+     auto                                  cid     = CIDFromOBPropertyID(static_cast<OBPropertyID>(propertyId));
+     struct v4l2_control                   control = { cid, 0 };
+-    if(xioctl(fd, VIDIOC_G_CTRL, &control) < 0) {
++    const uint64_t gdpStarted = gdp_uvc::stamp();
++    const int gdpResult = xioctl(fd, VIDIOC_G_CTRL, &control);
++    const int gdpErrno = gdpResult < 0 ? errno : 0;
++    gdp_uvc::record({1, 1, cid, static_cast<uint32_t>(VIDIOC_G_CTRL), gdpResult, gdpErrno,
++                     control.value, gdpResult >= 0 ? 1U : 0U, 0, 0, 0, 0, gdpStarted, 0});
++    if(gdpResult < 0) {
+         LOG_ERROR("get {0} xioctl(VIDIOC_G_CTRL) failed, {1}", propertyId, strerror(errno));
+         return false;
+     }
+@@ -1025,7 +1031,12 @@
+     struct v4l2_queryctrl query = {};
+     query.id                    = CIDFromOBPropertyID(static_cast<OBPropertyID>(propertyId));
+     VALIDATE_GE(fd, 0);
+-    if(xioctl(fd, VIDIOC_QUERYCTRL, &query) < 0) {
++    const uint64_t gdpStarted = gdp_uvc::stamp();
++    const int gdpResult = xioctl(fd, VIDIOC_QUERYCTRL, &query);
++    const int gdpErrno = gdpResult < 0 ? errno : 0;
++    gdp_uvc::record({1, 2, query.id, static_cast<uint32_t>(VIDIOC_QUERYCTRL), gdpResult, gdpErrno,
++                     0, gdpResult >= 0 ? 1U : 0U, query.minimum, query.maximum, query.step, query.default_value, gdpStarted, 0});
++    if(gdpResult < 0) {
+         query.minimum = query.maximum = 0;
+     }
+     UvcControlRange range(query.minimum, query.maximum, query.step, query.default_value);
+diff --git a/src/platform/usb/uvc/ObLibuvcDevicePort.cpp b/src/platform/usb/uvc/ObLibuvcDevicePort.cpp
+--- a/src/platform/usb/uvc/ObLibuvcDevicePort.cpp
++++ b/src/platform/usb/uvc/ObLibuvcDevicePort.cpp
+@@ -1,3 +1,4 @@
++#include "utils/UvcPropertyObservations.hpp"
+ // Copyright (c) Orbbec Inc. All Rights Reserved.
+ // Licensed under the MIT License.
+ 
+@@ -513,7 +514,19 @@
+ 
+     uint32_t transferred;
+ 
+-    transferred = uvc_get_ctrl(uvcDevHandle_, unit, control, buffer, sizeof(buffer), action);
++    const uint64_t gdpStarted = gdp_uvc::stamp();
++    const int gdpResult = uvc_get_ctrl(uvcDevHandle_, unit, control, buffer, sizeof(buffer), action);
++    const int gdpErrno = gdpResult < 0 ? errno : 0;
++    transferred = gdpResult; // Same signed-to-unsigned conversion as the original.
++    const bool gdpValid = gdpResult == 1 || gdpResult == 2 || gdpResult == 4;
++    int32_t gdpValue = 0;
++    if(gdpValid) {
++        uint32_t raw = 0;
++        for(int i=0; i<gdpResult; ++i) raw |= static_cast<uint32_t>(buffer[i]) << (8*i);
++        gdpValue = static_cast<int32_t>(raw);
++    }
++    gdp_uvc::record({2, 3, (static_cast<uint32_t>(unit)<<16)|control, static_cast<uint32_t>(action),
++                     gdpResult, gdpErrno, gdpValue, gdpValid ? 1U : 0U, 0, 0, 0, 0, gdpStarted, 0});
+ 
+     if(control == UVC_PU_BRIGHTNESS_CONTROL || control == UVC_PU_HUE_CONTROL) {
+         ret = (short)SW_TO_SHORT(buffer);
+diff --git a/src/shared/utils/UvcPropertyObservations.hpp b/src/shared/utils/UvcPropertyObservations.hpp
+new file mode 100644
+--- /dev/null
++++ b/src/shared/utils/UvcPropertyObservations.hpp
+@@ -0,0 +1,45 @@
++// Copyright (c) 2026 GDP contributors. Licensed under the MIT License.
++#pragma once
++// Opt-in, read-only SDK evidence. C++11; no allocation, I/O, locks or workers.
++#include <cstdint>
++#include <ctime>
++#include <cerrno>
++namespace gdp_uvc {
++struct Event {
++    uint32_t backend, operation, selector, request;
++    int32_t result, error_number, value;
++    uint32_t value_valid;
++    int32_t minimum, maximum, step, default_value;
++    uint64_t started_ns, finished_ns;
++};
++static_assert(sizeof(Event) == 64, "private UVC ABI v1");
++struct State {
++    bool armed;
++    uint32_t count;
++    Event events[8];
++    State() : armed(false), count(0), events{} {}
++};
++inline State &state() { static thread_local State value; return value; }
++inline uint64_t stamp() noexcept {
++    if(!state().armed) return 0;
++    const int saved = errno;
++    timespec ts{};
++    const bool ok = clock_gettime(CLOCK_MONOTONIC, &ts) == 0;
++    errno = saved;
++    return ok ? static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL + static_cast<uint64_t>(ts.tv_nsec) : 0;
++}
++inline void begin() noexcept { state().count = 0; state().armed = true; }
++inline void record(Event value) noexcept {
++    State &s = state();
++    if(!s.armed) return;
++    if(s.count < 8) { value.finished_ns = stamp(); s.events[s.count++] = value; }
++    else s.count = 9; // Saturated overflow marker; never overwrites old evidence.
++}
++inline uint32_t snapshot(Event *output, uint32_t capacity) noexcept {
++    State &s = state();
++    s.armed = false;
++    const uint32_t copy = s.count < 8 ? s.count : 8;
++    if(output) for(uint32_t i=0; i<copy && i<capacity; ++i) output[i] = s.events[i];
++    return s.count;
++}
++} // namespace gdp_uvc

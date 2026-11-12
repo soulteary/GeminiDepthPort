@@ -21,6 +21,14 @@ pub struct PropertyReport {
     pub range: Option<PropertyRange>,
     pub range_current: Option<i32>,
     pub observed_before: Option<i32>,
+    pub getter_attempted: bool,
+    pub getter_returned: Option<i32>,
+    pub getter_error: Option<String>,
+    pub getter_error_truncated: bool,
+    pub getter_started_monotonic_ns: Option<u64>,
+    pub getter_finished_monotonic_ns: Option<u64>,
+    pub range_uvc: UvcObservation,
+    pub getter_uvc: UvcObservation,
     pub readable_queried: bool,
     pub writable_queried: bool,
     pub stage: &'static str,
@@ -223,6 +231,7 @@ pub(super) fn configure(
         ),
         ("ir_gain", 2027, false, c.ir_gain.filter(|v| *v >= 0)),
     ];
+    let uvc = a.uvc_observation_api();
     let mut properties = Vec::with_capacity(6);
     for (name, id, boolean, requested) in specs {
         let mut p = PropertyReport {
@@ -234,6 +243,14 @@ pub(super) fn configure(
             range: None,
             range_current: None,
             observed_before: None,
+            getter_attempted: false,
+            getter_returned: None,
+            getter_error: None,
+            getter_error_truncated: false,
+            getter_started_monotonic_ns: None,
+            getter_finished_monotonic_ns: None,
+            range_uvc: Default::default(),
+            getter_uvc: Default::default(),
             readable_queried: false,
             writable_queried: false,
             stage: "read_support",
@@ -253,66 +270,115 @@ pub(super) fn configure(
             )?;
             p.readable_queried = true;
             p.stage = "write_support";
-            p.writable = classified(
+            let write_support = classified(
                 "DEVICE_PROPERTY_SUPPORT_QUERY",
                 call(a, |e| unsafe { (d.supported)(device, id, 2, e) }),
-            )?;
-            p.writable_queried = true;
+            );
+            p.writable_queried = write_support.is_ok();
+            p.writable = *write_support.as_ref().unwrap_or(&false);
             if !p.readable {
+                write_support?;
                 return Ok(());
             }
             p.stage = "range_query";
-            let (range, current) = if boolean {
-                let r = classified(
-                    "DEVICE_PROPERTY_RANGE_QUERY",
-                    call(a, |e| unsafe { (d.bool_range)(device, id, e) }),
-                )?;
-                (
-                    PropertyRange {
-                        min: i32::from(r.min),
-                        max: i32::from(r.max),
-                        step: i32::from(r.step),
-                        default: i32::from(r.def),
-                    },
-                    i32::from(r.cur),
-                )
-            } else {
-                let r = classified(
-                    "DEVICE_PROPERTY_RANGE_QUERY",
-                    call(a, |e| unsafe { (d.int_range)(device, id, e) }),
-                )?;
-                (
-                    PropertyRange {
-                        min: r.min,
-                        max: r.max,
-                        step: r.step,
-                        default: r.def,
-                    },
-                    r.cur,
-                )
-            };
-            p.range_current = Some(current);
-            p.range = Some(range);
-            let range = p.range.as_ref().expect("queried range");
+            let (range_result, range_trace) = crate::uvc_observation::observe(uvc.as_ref(), || {
+                let value = if boolean {
+                    let r = classified(
+                        "DEVICE_PROPERTY_RANGE_QUERY",
+                        call(a, |e| unsafe { (d.bool_range)(device, id, e) }),
+                    )?;
+                    (
+                        PropertyRange {
+                            min: i32::from(r.min),
+                            max: i32::from(r.max),
+                            step: i32::from(r.step),
+                            default: i32::from(r.def),
+                        },
+                        i32::from(r.cur),
+                    )
+                } else {
+                    let r = classified(
+                        "DEVICE_PROPERTY_RANGE_QUERY",
+                        call(a, |e| unsafe { (d.int_range)(device, id, e) }),
+                    )?;
+                    (
+                        PropertyRange {
+                            min: r.min,
+                            max: r.max,
+                            step: r.step,
+                            default: r.def,
+                        },
+                        r.cur,
+                    )
+                };
+                Ok(value)
+            });
+            p.range_uvc = range_trace;
+            if let Ok((range, current)) = range_result.as_ref() {
+                p.range_current = Some(*current);
+                p.range = Some(range.clone());
+            }
+            // Always attempt the independent read when READ permission is known.
+            // Its evidence cannot erase a range/query/schema anomaly or authorize
+            // a write; keep the primary failure and any secondary read failure.
+            p.getter_attempted = true;
+            p.getter_started_monotonic_ns = monotonic_ns();
+            let (getter_result, getter_trace) =
+                crate::uvc_observation::observe(uvc.as_ref(), || {
+                    classified(
+                        "DEVICE_PROPERTY_VALUE_READ",
+                        read(a, &d, device, id, boolean),
+                    )
+                });
+            p.getter_finished_monotonic_ns = monotonic_ns();
+            p.getter_uvc = getter_trace;
+            if let Ok(current) = getter_result.as_ref() {
+                p.getter_returned = Some(*current);
+            }
+            let getter_result = getter_result.and_then(|current| {
+                if p.getter_uvc.invalid || p.getter_uvc.truncated {
+                    return Err(Error("DEVICE_PROPERTY_UVC_TRACE_INVALID".into()));
+                }
+                if p.getter_uvc.failed() {
+                    return Err(Error("DEVICE_PROPERTY_UVC_READ_FAILED".into()));
+                }
+                Ok(current)
+            });
+            match &getter_result {
+                Ok(current) => {
+                    p.observed_before = Some(*current);
+                    p.observed = Some(*current);
+                }
+                Err(error) => {
+                    p.getter_error_truncated = error.0.chars().count() > 256;
+                    p.getter_error = Some(error.0.chars().take(256).collect());
+                }
+            }
+            p.stage = "write_support";
+            write_support?;
+            p.stage = "range_query";
+            let (range, current) = range_result?;
+            p.stage = "range_uvc";
+            if p.range_uvc.invalid || p.range_uvc.truncated {
+                return Err(Error("DEVICE_PROPERTY_UVC_TRACE_INVALID".into()));
+            }
+            if p.range_uvc.failed() {
+                return Err(Error("DEVICE_PROPERTY_UVC_READ_FAILED".into()));
+            }
             p.stage = "range_schema";
-            if range.min > range.max || range.step < 0 || !within_bounds(range.default, range) {
+            if range.min > range.max || range.step < 0 || !within_bounds(range.default, &range) {
                 return Err(Error("DEVICE_PROPERTY_RANGE_SCHEMA".into()));
             }
             // cur is an observation, not a manual write request. AE can return
             // intermediate/non-grid values; range and get are separate SDK calls.
             p.stage = "range_current";
-            if !within_bounds(current, range) {
+            if !within_bounds(current, &range) {
                 return Err(Error("DEVICE_PROPERTY_VALUE_RANGE".into()));
             }
             p.stage = "value_read";
-            let current = classified(
-                "DEVICE_PROPERTY_VALUE_READ",
-                read(a, &d, device, id, boolean),
-            )?;
-            p.observed_before = Some(current);
-            p.observed = Some(current);
+            let current = getter_result?;
             p.stage = "value_bounds";
-            if !within_bounds(current, range) {
+            if !within_bounds(current, &range) {
                 return Err(Error("DEVICE_PROPERTY_VALUE_RANGE".into()));
             }
             p.stage = "preflight_complete";

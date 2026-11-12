@@ -11,6 +11,8 @@ revision="$(git rev-parse HEAD)"
 git diff --quiet HEAD -- Cargo.toml Cargo.lock src crates ros runtime native/usb-recovery scripts/capture-runtime
 python3 experiments/sdk-2.10.6-diagnostics/experiment_runtime.py verify-patch \
   --patch experiments/sdk-2.10.6-diagnostics/sdk-diagnostics.patch
+python3 experiments/sdk-2.10.6-diagnostics/experiment_runtime.py verify-uvc-patch \
+  --patch experiments/sdk-2.10.6-diagnostics/uvc-observations.patch
 docker build --platform "$platform" --build-arg "GDP_REVISION=$revision" \
   -f experiments/sdk-2.10.6-diagnostics/capture.Dockerfile -t "$image" .
 image_id="$(docker image inspect --format '{{.Id}}' "$image")"

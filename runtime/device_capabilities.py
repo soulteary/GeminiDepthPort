@@ -22,7 +22,7 @@ def startup_report(config=Path('/config/capture.json'), status=Path('/tmp/captur
             return {'available': False, 'error': '服务尚未提供设备启动报告'}
         if not isinstance(report, dict) or report.get('version') != 1:
             raise ValueError('device report schema')
-        if len(json.dumps(report).encode()) > 16384:
+        if len(json.dumps(report).encode()) > 65536:
             raise ValueError('device report byte limit')
         return report
     except (OSError, ValueError, TypeError, AttributeError) as error:

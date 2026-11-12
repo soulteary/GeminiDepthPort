@@ -6,7 +6,9 @@
 use orbbec_sys as sys;
 mod calibration;
 mod device;
+mod uvc_observation;
 pub use device::{DeviceInfo, DeviceReport, PropertyRange, PropertyReport};
+pub use uvc_observation::{UvcObservation, UvcReadEvent};
 mod imu;
 pub use calibration::{Extrinsics, SessionCalibration, StreamCalibration};
 pub use imu::{ImuCapture, ImuFailureObservation};

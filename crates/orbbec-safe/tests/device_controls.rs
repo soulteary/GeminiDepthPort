@@ -43,35 +43,49 @@ fn device_startup_controls_probe_preflight_readback_and_restore_real_abi() {
         "write-support-error",
         "auto-grid-rollback",
         "long-sdk-error",
+        "uvc-30",
+        "uvc-31",
+        "uvc-32",
+        "uvc-33",
+        "uvc-34",
+        "uvc-35",
+        "uvc-36",
+        "uvc-37",
+        "uvc-38",
+        "uvc-39",
     ] {
-        let failure = match case {
-            "unsupported" | "probe-unsupported" => 3,
-            "readonly" => 4,
-            "range" => 5,
-            "step" => 6,
-            "write-error" => 7,
-            "readback" => 8,
-            "rollback-error" => 9,
-            "info-error" => 1,
-            "null" => 2,
-            "utf8" => 10,
-            "long" => 11,
-            "text" => 12,
-            "pid" => 13,
-            "support-error" => 14,
-            "range-error" => 15,
-            "get-error" | "probe-error" => 16,
-            "interference" => 17,
-            "auto-grid" | "grid-probe" | "grid-step" | "grid-outside" => 18,
-            "default-grid" => 19,
-            "negative-step" => 20,
-            "default-outside" => 21,
-            "range-current-outside" => 22,
-            "get-current-outside" => 23,
-            "write-support-error" => 24,
-            "auto-grid-rollback" => 26,
-            "long-sdk-error" => 25,
-            _ => 0,
+        let failure = if let Some(code) = case.strip_prefix("uvc-") {
+            code.parse::<u32>().unwrap()
+        } else {
+            match case {
+                "unsupported" | "probe-unsupported" => 3,
+                "readonly" => 4,
+                "range" => 5,
+                "step" => 6,
+                "write-error" => 7,
+                "readback" => 8,
+                "rollback-error" => 9,
+                "info-error" => 1,
+                "null" => 2,
+                "utf8" => 10,
+                "long" => 11,
+                "text" => 12,
+                "pid" => 13,
+                "support-error" => 14,
+                "range-error" => 15,
+                "get-error" | "probe-error" => 16,
+                "interference" => 17,
+                "auto-grid" | "grid-probe" | "grid-step" | "grid-outside" => 18,
+                "default-grid" => 19,
+                "negative-step" => 20,
+                "default-outside" => 21,
+                "range-current-outside" => 22,
+                "get-current-outside" => 23,
+                "write-support-error" => 24,
+                "auto-grid-rollback" => 26,
+                "long-sdk-error" => 25,
+                _ => 0,
+            }
         };
         let library = root.join(format!("{case}.so"));
         let mut command = Command::new("cc");
@@ -114,7 +128,8 @@ fn device_startup_controls_probe_preflight_readback_and_restore_real_abi() {
         let log = fs::read_to_string(events).unwrap();
         if !matches!(
             case,
-            "ok" | "auto-grid"
+            "ok" | "uvc-36"
+                | "auto-grid"
                 | "default-grid"
                 | "auto-grid-rollback"
                 | "write-error"
@@ -157,6 +172,9 @@ fn device_controls_child() {
     ) {
         controls = Default::default();
     }
+    if case.starts_with("uvc-") {
+        controls.color_gain = Some(103);
+    }
     if case == "step" {
         controls.color_exposure = Some(103);
     }
@@ -196,7 +214,8 @@ fn device_controls_child() {
     );
     if matches!(
         case.as_str(),
-        "ok" | "auto-grid"
+        "ok" | "uvc-36"
+            | "auto-grid"
             | "default-grid"
             | "probe"
             | "grid-probe"
@@ -233,7 +252,12 @@ fn device_controls_child() {
                 );
             }
             assert!(report.properties.iter().all(|p| p.readback_verified
-                == ["ok", "auto-grid", "default-grid"].contains(&case.as_str())));
+                == ["ok", "uvc-36", "auto-grid", "default-grid"].contains(&case.as_str())));
+            if case == "uvc-36" {
+                assert_eq!(report.properties[3].getter_uvc.backend, Some("libuvc"));
+                assert_eq!(report.properties[3].getter_returned, Some(101));
+                assert_eq!(report.properties[3].observed, Some(103));
+            }
             if case == "ok" {
                 assert_eq!(report.properties[3].observed, Some(24));
             }
@@ -260,6 +284,10 @@ fn device_controls_child() {
         let diagnostic = failure.device_property_failure();
         let error = failure.to_string();
         let code = match case.as_str() {
+            "uvc-33" | "uvc-39" => "RANGE_QUERY",
+            "uvc-35" => "UVC_READ_FAILED",
+            "uvc-37" | "uvc-38" => "UVC_TRACE_INVALID",
+            "uvc-30" | "uvc-31" | "uvc-32" | "uvc-34" => "VALUE_RANGE",
             "missing-required" => "API_UNAVAILABLE",
             "unsupported" | "readonly" => "UNSUPPORTED",
             "range" | "negative-step" | "default-outside" => "RANGE_SCHEMA",
@@ -278,7 +306,7 @@ fn device_controls_child() {
         };
         assert!(error.contains(code), "{case}: {error}");
         if let Some(ref diagnostic) = diagnostic {
-            assert!(error.len() < 4096, "bounded private diagnostic: {case}");
+            assert!(error.len() < 16384, "bounded private diagnostic: {case}");
             assert_eq!(diagnostic["profiles"]["color"]["width"], 2);
             assert_eq!(diagnostic["profiles"]["depth"]["fps"], 30);
             assert!(diagnostic["property"]["started_monotonic_ns"].is_u64());
@@ -303,10 +331,48 @@ fn device_controls_child() {
                 assert_eq!(diagnostic["property"]["readable_queried"], true);
                 assert_eq!(diagnostic["property"]["writable_queried"], false);
                 assert_eq!(diagnostic["property"]["stage"], "write_support");
+                assert_eq!(diagnostic["property"]["getter_attempted"], true);
             }
             if case == "long-sdk-error" {
                 assert_eq!(diagnostic["property"]["error_truncated"], true);
                 assert_eq!(diagnostic["property"]["stage"], "range_query");
+            }
+            if case.starts_with("uvc-")
+                || [
+                    "range",
+                    "range-error",
+                    "negative-step",
+                    "default-outside",
+                    "range-current-outside",
+                    "long-sdk-error",
+                ]
+                .contains(&case.as_str())
+            {
+                assert_eq!(diagnostic["property"]["getter_attempted"], true);
+                assert!(
+                    diagnostic["property"]["getter_finished_monotonic_ns"]
+                        .as_u64()
+                        .unwrap()
+                        >= diagnostic["property"]["getter_started_monotonic_ns"]
+                            .as_u64()
+                            .unwrap()
+                );
+                assert!(diagnostic["rollback_verified"].is_null());
+            }
+            if case.starts_with("uvc-") {
+                let p = &diagnostic["property"];
+                assert_eq!(p["range_uvc"]["available"], true);
+                assert!(!p["getter_uvc"]["events"].as_array().unwrap().is_empty());
+                if ["uvc-32", "uvc-34", "uvc-37", "uvc-38", "uvc-39"].contains(&case.as_str()) {
+                    assert!(p["getter_error"].is_string());
+                    assert!(p["observed_before"].is_null());
+                }
+                if case == "uvc-30" {
+                    assert_eq!(p["range_current"], 256);
+                    assert_eq!(p["getter_returned"], 101);
+                    assert_eq!(p["observed_before"], 101);
+                    assert_eq!(p["getter_uvc"]["backend"], "v4l2");
+                }
             }
             if case == "range" {
                 assert!(diagnostic["property"]["range"].is_object());

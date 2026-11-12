@@ -14,6 +14,7 @@ EXPERIMENT = 'sdk-2.10.6-diagnostics-v1'
 ROLE = 'rust-sdk-diagnostics-v1'
 BASE = '575347ca742d219ef61b1e214e97043f17f48d23'
 PATCH = '0db54c7c1bcafa9d18cd51bddcd4cf0d0c733c967ff0f9542f7796b770a0757c'
+UVC_PATCH = '6f1ef57a15c5effd80f1afede6a07fed6b8164019f304eadb4b45ee5f98bcae6'
 SDK = '/opt/gdp-sdk-experiment'
 HOME = '/opt/gdp-experiment'
 MANIFEST = HOME + '/runtime.json'
@@ -75,8 +76,9 @@ def verify_patch(path):
     require(sha(path)==PATCH,'SDK_PATCH_DIGEST')
 
 
-def sdk_record(source, patch, exports, output):
+def sdk_record(source, patch, exports, output, uvc_patch):
     verify_patch(patch)
+    require(sha(uvc_patch)==UVC_PATCH,'SDK_UVC_PATCH_DIGEST')
     head=subprocess.check_output(['git','-C',str(source),'rev-parse','HEAD'],text=True).strip()
     require(head==BASE,'SDK_SOURCE_COMMIT')
     headers={}
@@ -97,7 +99,7 @@ def sdk_record(source, patch, exports, output):
     for name in REQUIRED_LICENSES:require((Path(SDK)/name).is_file(),'SDK_LICENSE_MISSING:'+name)
     value={'version':1,'experiment':EXPERIMENT,'repository':'https://github.com/orbbec/OrbbecSDK_v2','commit':BASE,
            'sdk_version':'2.10.6','patch_sha256':PATCH,'sdk_sha256':sha(LIBRARY),
-           'public_c_exports':len(actual),'public_exports_sha256':sha(exports),
+           'uvc_patch_sha256':UVC_PATCH,'public_c_exports':len(actual),'public_exports_sha256':sha(exports),
            'public_headers_sha256':hashlib.sha256(json.dumps(headers,sort_keys=True).encode()).hexdigest(),
            'public_header_count':len(headers),'installed_public_header_count':len(installed),
            'installed_public_headers_sha256':hashlib.sha256(json.dumps(installed,sort_keys=True).encode()).hexdigest(),
@@ -126,6 +128,7 @@ def validate_manifest(value,root=Path('/')):
     require(build.get('experiment')==EXPERIMENT and build.get('commit')==BASE
             and build.get('repository')=='https://github.com/orbbec/OrbbecSDK_v2'
             and build.get('sdk_version')=='2.10.6' and build.get('patch_sha256')==PATCH
+            and build.get('uvc_patch_sha256')==UVC_PATCH
             and build.get('public_c_exports')==406 and build.get('public_header_count')==33,'SDK_EXPERIMENT_SOURCE')
     require(read_json(physical(root,HOME+'/sdk-build.json'))==build,'SDK_BUILD_BINDING')
     headers={str(p.relative_to(physical(root,SDK+'/include'))):sha(p)
@@ -208,7 +211,8 @@ def smoke():
     lib=ctypes.CDLL(LIBRARY)
     require(lib.ob_get_version()==21006,'SDK_VERSION')
     for name in ('ob_pipeline_enable_frame_sync','ob_pipeline_disable_frame_sync','ob_device_get_sensor',
-                 'ob_sensor_start','ob_sensor_stop','ob_frame_get_global_timestamp_us'):
+                 'ob_sensor_start','ob_sensor_stop','ob_frame_get_global_timestamp_us',
+                 'gdp_uvc_observation_begin_v1','gdp_uvc_observation_snapshot_v1'):
         require(hasattr(lib,name),'SDK_SYMBOL:'+name)
     bridge=ctypes.CDLL(BRIDGE)
     require(bridge.gdp_ros_context_abi_version()==1,'ROS_CONTEXT_ABI')
@@ -235,12 +239,14 @@ def smoke():
 def main():
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='action',required=True)
     s=sub.add_parser('verify-patch');s.add_argument('--patch',type=Path,required=True)
-    s=sub.add_parser('sdk-build-record');s.add_argument('--sdk-source',type=Path,required=True);s.add_argument('--patch',type=Path,required=True);s.add_argument('--exports',type=Path,required=True);s.add_argument('--output',type=Path,required=True)
+    s=sub.add_parser('verify-uvc-patch');s.add_argument('--patch',type=Path,required=True)
+    s=sub.add_parser('sdk-build-record');s.add_argument('--sdk-source',type=Path,required=True);s.add_argument('--patch',type=Path,required=True);s.add_argument('--uvc-patch',type=Path,required=True);s.add_argument('--exports',type=Path,required=True);s.add_argument('--output',type=Path,required=True)
     sub.add_parser('make-manifest');sub.add_parser('validate');sub.add_parser('smoke')
     a=p.parse_args()
     try:
         if a.action=='verify-patch':verify_patch(a.patch);result={'ok':True}
-        elif a.action=='sdk-build-record':sdk_record(a.sdk_source,a.patch,a.exports,a.output);result={'ok':True}
+        elif a.action=='verify-uvc-patch':require(sha(a.patch)==UVC_PATCH,'SDK_UVC_PATCH_DIGEST');result={'ok':True}
+        elif a.action=='sdk-build-record':sdk_record(a.sdk_source,a.patch,a.exports,a.output,a.uvc_patch);result={'ok':True}
         elif a.action=='make-manifest':make_manifest();result={'ok':True}
         elif a.action=='validate':validate();result={'ok':True,'hardware_opened':False}
         else:result=smoke()

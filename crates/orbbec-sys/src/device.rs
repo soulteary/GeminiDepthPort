@@ -64,9 +64,51 @@ mod tests {
     use super::*;
     #[test]
     fn packed_property_range_abi() {
+        assert_eq!(std::mem::size_of::<UvcEvent>(), 64);
+        assert_eq!(std::mem::align_of::<UvcEvent>(), 8);
         assert_eq!(std::mem::size_of::<IntRange>(), 20);
         assert_eq!(std::mem::align_of::<IntRange>(), 1);
         assert_eq!(std::mem::size_of::<BoolRange>(), 5);
         assert_eq!(std::mem::align_of::<BoolRange>(), 1);
+    }
+}
+
+/// Private, optional observation ABI. Vendor SDKs need not export it.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct UvcEvent {
+    pub backend: u32,
+    pub operation: u32,
+    pub selector: u32,
+    pub request: u32,
+    pub result: i32,
+    pub error_number: i32,
+    pub value: i32,
+    pub value_valid: u32,
+    pub minimum: i32,
+    pub maximum: i32,
+    pub step: i32,
+    pub default_value: i32,
+    pub started_ns: u64,
+    pub finished_ns: u64,
+}
+pub struct UvcObservationApi {
+    pub begin: unsafe extern "C" fn(),
+    pub snapshot: unsafe extern "C" fn(*mut UvcEvent, u32) -> u32,
+}
+impl Api {
+    pub fn uvc_observation_api(&self) -> Option<UvcObservationApi> {
+        Some(UvcObservationApi {
+            begin: unsafe {
+                self._library
+                    .symbol(b"gdp_uvc_observation_begin_v1\0")
+                    .ok()?
+            },
+            snapshot: unsafe {
+                self._library
+                    .symbol(b"gdp_uvc_observation_snapshot_v1\0")
+                    .ok()?
+            },
+        })
     }
 }

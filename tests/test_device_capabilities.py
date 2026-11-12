@@ -30,7 +30,7 @@ class StartupReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);config=root/'capture.json';status=root/'status.json';config.write_bytes(b'{}')
             digest=hashlib.sha256(b'{}').hexdigest()
-            for report in [None,[],{'version':2},{'version':1,'data':'x'*17000}]:
+            for report in [None,[],{'version':2},{'version':1,'data':'x'*65537}]:
                 status.write_text(json.dumps({'config_sha256':digest,'device_capabilities':report}))
                 self.assertFalse(helper.startup_report(config,status)['available'])
             for raw in ['{','null',' '* (512*1024+1)]:
