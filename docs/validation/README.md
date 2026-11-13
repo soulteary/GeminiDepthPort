@@ -6,6 +6,8 @@
 
 - [首次 checkpoint 错峰实验](first-checkpoint-phase.md)：同屏障启动、首批 3／5／7、相位观测及故障恢复对照。
 
+- [固定 checkpoint 8 MiB／6 MiB 对照](fixed-checkpoint-target.md)：同屏障同目标、实际批次、同步频率与 credit／队龄观测。
+
 ## 原生持续录制的最近结论
 
 截至包含 `dde3e1a` 的主线，三相机原生持续录制的 `RAW_QUEUE_OVERFLOW` 尚未关闭，新的六组正式长测及独立相机恢复验收仍未完成。

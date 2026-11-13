@@ -69,7 +69,7 @@ def patch_driver(source):
                         '    report["queue_final"] = progress.queue.observation();')
 
 
-def build(repo, output, revision):
+def build(repo, output, revision, patches=None, modes=None, env_name=None):
     if sys.platform != 'linux':
         raise ValueError('LINUX_REQUIRED')
     commit = subprocess.check_output(['git', 'rev-parse', '--verify', revision + '^{commit}'], cwd=repo, text=True).strip()
@@ -78,7 +78,7 @@ def build(repo, output, revision):
     subprocess.run(['git', 'archive', '--format=tar', '-o', str(archive), commit], cwd=repo, check=True)
     root = output / 'source'; root.mkdir()
     subprocess.run(['tar', '-xf', str(archive), '-C', str(root)], check=True)
-    for path, patch in ((TARGET, patch_writer), (DRIVER, patch_driver)):
+    for path, patch in (patches or ((TARGET, patch_writer), (DRIVER, patch_driver))):
         original = (root / path).read_text()
         changed = patch(original)
         (root / path).write_text(changed)
@@ -96,12 +96,16 @@ def build(repo, output, revision):
     if len(binaries) != 1: raise ValueError('AMBIGUOUS_BINARY')
     payload = output / 'phase.elf'; shutil.copy2(binaries[0], payload)
     variants = {}
-    for mode in ('aligned', 'staggered', 'first3', 'first5', 'first7'):
+    for mode in (modes or ('aligned', 'staggered', 'first3', 'first5', 'first7')):
         binary = output / (mode + '.bin')
         choose = ('case "${GDP_CONTENTION_ROOT##*/}" in writer-0) first=3;; writer-1) first=5;; writer-2) first=7;; *) first=7;; esac\n'
                   if mode == 'staggered' else 'first=' + (mode[5:] if mode.startswith('first') else '7') + '\n')
         binary.write_text('#!/bin/sh\n' + choose + 'exec env GDP_CONTENTION_BATCH_POLICY=half-credit '
                           'GDP_EXPERIMENT_FIRST_PAIRS="$first" ' + shlex.quote(str(payload)) + ' "$@"\n')
+        if modes is not None:
+            binary.write_text('#!/bin/sh\nexec env GDP_CONTENTION_BATCH_POLICY=half-credit '
+                              + env_name + '=' + str(modes[mode]) + ' '
+                              + shlex.quote(str(payload)) + ' "$@"\n')
         binary.chmod(0o700)
         variants[mode] = dict(binary=str(binary), binary_sha256=sha(binary), payload=str(payload), payload_sha256=sha(payload))
     manifest = dict(commit=commit, variants=variants, patched_files=[str(TARGET), str(DRIVER)],

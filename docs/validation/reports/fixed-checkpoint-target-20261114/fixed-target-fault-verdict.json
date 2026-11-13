@@ -1,0 +1,9 @@
+{
+  "cases": 4,
+  "delay_ms": 400,
+  "ok": true,
+  "target_mib": [
+    8,
+    6
+  ]
+}

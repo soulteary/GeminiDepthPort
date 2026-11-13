@@ -1,0 +1,32 @@
+{
+  "commit": "61642b8b8757ba4b7d223992545c4ac61c53b007",
+  "variants": {
+    "mib8": {
+      "binary": "/work/gdp-fixed-target-build-20261114/mib8.bin",
+      "binary_sha256": "52d536fe58696dccbb6555ddb42928b176a1fbd6a9bb7fbf5b842677751dd49d",
+      "payload": "/work/gdp-fixed-target-build-20261114/phase.elf",
+      "payload_sha256": "4d00a4d449d20a5491a6a0758fb251d1bd2cc09c4a8bafd6378dd0a5b131961b"
+    },
+    "mib6": {
+      "binary": "/work/gdp-fixed-target-build-20261114/mib6.bin",
+      "binary_sha256": "17b9bb6e0b658409587f0be4aac3ec03ebddeda5460c877349b6df2aae9ee281",
+      "payload": "/work/gdp-fixed-target-build-20261114/phase.elf",
+      "payload_sha256": "4d00a4d449d20a5491a6a0758fb251d1bd2cc09c4a8bafd6378dd0a5b131961b"
+    }
+  },
+  "patched_files": [
+    "crates/offline-depth/src/recording/chunked.rs",
+    "crates/offline-depth/tests/writer_contention_benchmark.rs"
+  ],
+  "common_driver_sha256": "33fa58c44d372c9627730746bd85e712463d4120a3629625570057d1187463b5",
+  "rustc": "rustc 1.90.0 (1159e78c4 2025-09-14)\nbinary: rustc\ncommit-hash: 1159e78c4747b02ef996e55082b704c09b970588\ncommit-date: 2025-09-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.90.0\nLLVM version: 20.1.8\n",
+  "production_modified": false,
+  "collector": "identical bounded in-memory collector in both variants; no sampling sleeps",
+  "tool_sha256": "ce5d604b03c1868f2332452f17725c919af2cfcd04b45cd5ecff2972baad71e1",
+  "experiment": "fixed-checkpoint-target-v1",
+  "target_mib": {
+    "mib8": 8,
+    "mib6": 6
+  },
+  "experiment_tool_sha256": "b2ae7e73917bfae60d5dd658af8cfe49e427a169ca24509b000ae38ce604acd0"
+}

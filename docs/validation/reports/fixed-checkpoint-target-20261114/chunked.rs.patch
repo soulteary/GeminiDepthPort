@@ -1,0 +1,110 @@
+--- crates/offline-depth/src/recording/chunked.rs
++++ crates/offline-depth/src/recording/chunked.rs
+@@ -17,6 +17,7 @@
+     pub index_buffer: Vec<u8>,
+     pipeline: bool,
+     full_credit_batches: bool,
++    experiment_target_mib: u64,
+     pending: Option<PendingCheckpoint>,
+     checkpoint_bytes: u64,
+     verified: Option<VerifiedPrefix>,
+@@ -298,6 +299,11 @@
+             .chunked
+             .as_mut()
+             .ok_or(OfflineError::Invalid("RECORDING_PIPELINE_REQUIRES_V3"))?;
++        state.experiment_target_mib = std::env::var("GDP_EXPERIMENT_TARGET_MIB")
++            .expect("explicit experimental target required").parse().expect("MiB integer");
++        assert!([6,8].contains(&state.experiment_target_mib));
++        EXPERIMENT_TARGET.store(state.experiment_target_mib, std::sync::atomic::Ordering::Relaxed);
++        EXPERIMENT_EVENTS.lock().unwrap().reserve_exact(131072);
+         state.pipeline = true;
+         state.full_credit_batches = false;
+         self.diagnostics
+@@ -348,7 +354,7 @@
+             .as_ref()
+             .is_some_and(|s| s.pipeline && !s.full_credit_batches)
+         {
+-            (CHUNK_PAIRS / 2, CHUNK_BYTES / 2)
++            (CHUNK_PAIRS / 2, self.chunked.as_ref().unwrap().experiment_target_mib * 1024 * 1024)
+         } else {
+             (CHUNK_PAIRS, CHUNK_BYTES)
+         }
+@@ -505,6 +511,7 @@
+             self.flush_index()?;
+             return Ok(());
+         };
++        experiment_event("dispatch", info);
+         let diagnostics = self.diagnostics.clone();
+         diagnostics
+             .1
+@@ -540,12 +547,15 @@
+         let checkpoint_bytes = raw.len() as u64;
+         let work_diagnostics = diagnostics.clone();
+         let work = move || -> Result<VerifiedPrefix> {
++            experiment_event("payload_start", info);
+             work_diagnostics.1.measure(info, Phase::PayloadSync, || {
+                 work_diagnostics.measure("fsync", || chunk.file.sync_all())
+             })?;
++            experiment_event("index_start", info);
+             work_diagnostics.1.measure(info, Phase::IndexSync, || {
+                 work_diagnostics.measure("fsync", || records.sync_all())
+             })?;
++            experiment_event("index_end", info);
+             work_diagnostics.1.measure(info, Phase::DirectorySync, || {
+                 work_diagnostics.measure("fsync", || fs::File::open(&stage)?.sync_all())
+             })?;
+@@ -557,6 +567,7 @@
+                 info,
+             )?;
+             persist_checkpoint(&stage, &checkpoint, &raw, &work_diagnostics, info)?;
++            experiment_event("commit_end", info);
+             Ok(verified)
+         };
+         if asynchronous {
+@@ -594,6 +605,7 @@
+                 payload_limit_bytes: CHUNK_BYTES,
+                 pair_limit: CHUNK_PAIRS,
+             };
++            experiment_record("credit_start", pending.info, Some(credit), Some(reason));
+             let verified = self.diagnostics.1.measure_credit_wait(
+                 pending.info,
+                 reason,
+@@ -605,6 +617,7 @@
+                         .map_err(|_| OfflineError::Invalid("RECORDING_VERIFIER_PANIC"))?
+                 },
+             )?;
++            experiment_record("credit_end", pending.info, Some(credit), Some(reason));
+             self.accept_checkpoint(verified, pending.checkpoint_bytes);
+         }
+         Ok(())
+@@ -914,3 +927,30 @@
+         assert_eq!(calls, 0);
+     }
+ }
++
++// Experimental process-local bounded observations, serialized only after finish.
++#[derive(Clone, serde::Serialize)]
++struct ExperimentEvent { phase: &'static str, checkpoint: u64, pairs: u64, bytes: u64, monotonic_ns: u64,
++    credit: Option<super::telemetry::CreditAtWait>, reason: Option<WaitReason> }
++static EXPERIMENT_TARGET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++static EXPERIMENT_EVENTS: std::sync::Mutex<Vec<ExperimentEvent>> = std::sync::Mutex::new(Vec::new());
++static EXPERIMENT_DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++fn experiment_event(phase: &'static str, info: CheckpointInfo) { experiment_record(phase, info, None, None); }
++fn experiment_record(phase: &'static str, info: CheckpointInfo,
++    credit: Option<super::telemetry::CreditAtWait>, reason: Option<WaitReason>) {
++    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
++    assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) }, 0);
++    let row = ExperimentEvent { phase, checkpoint: info.checkpoint_id, pairs: info.prefix_pairs,
++        bytes: info.payload_bytes.unwrap_or(0), credit, reason,
++        monotonic_ns: ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64 };
++    let mut rows = EXPERIMENT_EVENTS.lock().unwrap();
++    if rows.len() < 131072 { rows.push(row); }
++    else { EXPERIMENT_DROPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
++}
++impl RawRecordingWriter {
++    pub fn experiment_phase_report() -> serde_json::Value {
++        serde_json::json!({"clock":"CLOCK_MONOTONIC", "target_mib":EXPERIMENT_TARGET.load(std::sync::atomic::Ordering::Relaxed), "capacity":131072,
++            "dropped":EXPERIMENT_DROPPED.load(std::sync::atomic::Ordering::Relaxed),
++            "events": &*EXPERIMENT_EVENTS.lock().unwrap()})
++    }
++}

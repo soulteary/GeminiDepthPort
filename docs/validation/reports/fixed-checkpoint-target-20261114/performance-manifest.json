@@ -1,0 +1,56 @@
+{
+  "build": {
+    "collector": "identical bounded in-memory collector in both variants; no sampling sleeps",
+    "commit": "61642b8b8757ba4b7d223992545c4ac61c53b007",
+    "common_driver_sha256": "33fa58c44d372c9627730746bd85e712463d4120a3629625570057d1187463b5",
+    "experiment": "fixed-checkpoint-target-v1",
+    "experiment_tool_sha256": "b2ae7e73917bfae60d5dd658af8cfe49e427a169ca24509b000ae38ce604acd0",
+    "patched_files": [
+      "crates/offline-depth/src/recording/chunked.rs",
+      "crates/offline-depth/tests/writer_contention_benchmark.rs"
+    ],
+    "production_modified": false,
+    "rustc": "rustc 1.90.0 (1159e78c4 2025-09-14)\nbinary: rustc\ncommit-hash: 1159e78c4747b02ef996e55082b704c09b970588\ncommit-date: 2025-09-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.90.0\nLLVM version: 20.1.8\n",
+    "target_mib": {
+      "mib6": 6,
+      "mib8": 8
+    },
+    "tool_sha256": "ce5d604b03c1868f2332452f17725c919af2cfcd04b45cd5ecff2972baad71e1",
+    "variants": {
+      "mib6": {
+        "binary": "/work/gdp-fixed-target-build-20261114/mib6.bin",
+        "binary_sha256": "17b9bb6e0b658409587f0be4aac3ec03ebddeda5460c877349b6df2aae9ee281",
+        "payload": "/work/gdp-fixed-target-build-20261114/phase.elf",
+        "payload_sha256": "4d00a4d449d20a5491a6a0758fb251d1bd2cc09c4a8bafd6378dd0a5b131961b"
+      },
+      "mib8": {
+        "binary": "/work/gdp-fixed-target-build-20261114/mib8.bin",
+        "binary_sha256": "52d536fe58696dccbb6555ddb42928b176a1fbd6a9bb7fbf5b842677751dd49d",
+        "payload": "/work/gdp-fixed-target-build-20261114/phase.elf",
+        "payload_sha256": "4d00a4d449d20a5491a6a0758fb251d1bd2cc09c4a8bafd6378dd0a5b131961b"
+      }
+    }
+  },
+  "common_barrier": true,
+  "credit_bytes": 16777216,
+  "credit_pairs": 32,
+  "filesystem": {
+    "filesystem": "overlay",
+    "limits": "mountinfo identifies this namespace only; ext4 name alone does not verify physical device or MiniPC",
+    "major_minor": "0:201",
+    "mount_options": "rw,relatime",
+    "mountpoint": "/",
+    "physical_ext4_verified": false,
+    "source": "overlay",
+    "st_dev": 201,
+    "super_options": [
+      "rw,context=\"system_u:object_r:container_file_t:s0:c83,c817\",lowerdir=/var/lib/containers/storage/overlay/l/YZ27O3YDTEU3GCCY35QM4S45TG:/var/lib/containers/storage/overlay/l/TCENRRR77TWLROFCY4H7YROUXQ:/var/lib/containers/storage/overlay/l/U2523NG3V4FSZ5KTODIGDLK5VJ:/var/lib/containers/storage/overlay/l/PBLPTVDSGVJI5WU3RCECF4TMAL:/var/lib/containers/storage/overlay/l/2RS5SGE7JE4YPMBGRNBMIL4VHU:/var/lib/containers/storage/overlay/l/FYSY5MREOS53YHS5IMBHU2PMVM,upperdir=/var/lib/containers/storage/overlay/ecc4997a79e1b0dddb9b40ad77e94446f078e960b0acea86d9826598edc50a75/diff,workdir=/var/lib/containers/storage/overlay/ecc4997a79e1b0dddb9b40ad77e94446f078e960b0acea86d9826598edc50a75/work,redirect_dir=on,uuid=on,metacopy=on,fsync=volatile"
+    ]
+  },
+  "limits": "Synthetic storage-only experiment, no SDK/ROS/heartbeats or production status load; identical bounded collector in both; no hardware acceptance",
+  "planned_bytes": 4851171328,
+  "queue_capacity": 16,
+  "repeats": 3,
+  "seconds": 5,
+  "status_background_load": false
+}

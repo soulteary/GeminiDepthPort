@@ -1,0 +1,293 @@
+[
+  {
+    "variant": "mib8",
+    "fault": "delay",
+    "observations": {
+      "target_mib": 8,
+      "complete": true,
+      "actual_batches": [
+        {
+          "checkpoint": 1,
+          "pairs": 7,
+          "bytes": 7896128,
+          "monotonic_ns": 79210175423772
+        },
+        {
+          "checkpoint": 2,
+          "pairs": 7,
+          "bytes": 7896155,
+          "monotonic_ns": 79210408550580
+        },
+        {
+          "checkpoint": 3,
+          "pairs": 7,
+          "bytes": 7896161,
+          "monotonic_ns": 79210816590733
+        },
+        {
+          "checkpoint": 4,
+          "pairs": 7,
+          "bytes": 7896161,
+          "monotonic_ns": 79210876379702
+        },
+        {
+          "checkpoint": 5,
+          "pairs": 2,
+          "bytes": 2256052,
+          "monotonic_ns": 79210940662524
+        }
+      ],
+      "batch_pair_histogram": {
+        "7": 4,
+        "2": 1
+      },
+      "dispatches_in_capture": 4,
+      "capture_seconds": 1.000147985,
+      "checkpoint_dispatches_per_capture_second": 3.99940814758528,
+      "lifecycle_fsync_calls": 31,
+      "credit_waits": [
+        {
+          "start_ns": 79210642133515,
+          "end_ns": 79210816589942,
+          "wall_ns": 174456427,
+          "reason": "global_payload_credit",
+          "credit": {
+            "active_pairs": 7,
+            "active_payload_bytes": 7896161,
+            "pair_limit": 32,
+            "payload_limit_bytes": 16777216,
+            "pending_pairs": 7,
+            "pending_payload_bytes": 7896155
+          },
+          "queue_before": {
+            "monotonic_ns": 79210642061056,
+            "oldest_age_ns": 0,
+            "queued_pairs": 0,
+            "sequence": 22
+          },
+          "queue_after": {
+            "monotonic_ns": 79210841927927,
+            "oldest_age_ns": 0,
+            "queued_pairs": 0,
+            "sequence": 28
+          }
+        }
+      ],
+      "unclosed_waits": [],
+      "continuous_wait_gap_limit_ns": 33333334,
+      "continuous_wait_episodes": [
+        {
+          "start_ns": 79210642133515,
+          "end_ns": 79210816589942,
+          "wait_ns": 174456427,
+          "waits": 1
+        }
+      ],
+      "oldest_queued_age_ns_max": 132424286,
+      "queue_depth_at_push_max": 4,
+      "scope": "before-push queue samples are not atomic with writer spans; lifecycle fsync count includes setup/finalization"
+    }
+  },
+  {
+    "variant": "mib8",
+    "fault": "eio",
+    "observations": {
+      "target_mib": 8,
+      "complete": false,
+      "actual_batches": [
+        {
+          "checkpoint": 1,
+          "pairs": 7,
+          "bytes": 7896128,
+          "monotonic_ns": 79211799808019
+        },
+        {
+          "checkpoint": 2,
+          "pairs": 7,
+          "bytes": 7896155,
+          "monotonic_ns": 79212033963998
+        }
+      ],
+      "batch_pair_histogram": {
+        "7": 2
+      },
+      "dispatches_in_capture": 2,
+      "capture_seconds": 0.534761581,
+      "checkpoint_dispatches_per_capture_second": 3.7399844548668124,
+      "lifecycle_fsync_calls": 9,
+      "credit_waits": [],
+      "unclosed_waits": [
+        {
+          "bytes": 7896155,
+          "checkpoint": 2,
+          "credit": {
+            "active_pairs": 1,
+            "active_payload_bytes": 1128023,
+            "pair_limit": 32,
+            "payload_limit_bytes": 16777216,
+            "pending_pairs": 7,
+            "pending_payload_bytes": 7896155
+          },
+          "monotonic_ns": 79212067272394,
+          "pairs": 14,
+          "phase": "credit_start",
+          "reason": "finished_reap"
+        }
+      ],
+      "continuous_wait_gap_limit_ns": 33333334,
+      "continuous_wait_episodes": [],
+      "oldest_queued_age_ns_max": 0,
+      "queue_depth_at_push_max": 0,
+      "scope": "before-push queue samples are not atomic with writer spans; lifecycle fsync count includes setup/finalization"
+    }
+  },
+  {
+    "variant": "mib6",
+    "fault": "delay",
+    "observations": {
+      "target_mib": 6,
+      "complete": true,
+      "actual_batches": [
+        {
+          "checkpoint": 1,
+          "pairs": 5,
+          "bytes": 5640088,
+          "monotonic_ns": 79213012224221
+        },
+        {
+          "checkpoint": 2,
+          "pairs": 5,
+          "bytes": 5640103,
+          "monotonic_ns": 79213177512525
+        },
+        {
+          "checkpoint": 3,
+          "pairs": 9,
+          "bytes": 10152207,
+          "monotonic_ns": 79213582771833
+        },
+        {
+          "checkpoint": 4,
+          "pairs": 5,
+          "bytes": 5640115,
+          "monotonic_ns": 79213644440477
+        },
+        {
+          "checkpoint": 5,
+          "pairs": 5,
+          "bytes": 5640115,
+          "monotonic_ns": 79213810724285
+        },
+        {
+          "checkpoint": 6,
+          "pairs": 1,
+          "bytes": 1128029,
+          "monotonic_ns": 79213844905059
+        }
+      ],
+      "batch_pair_histogram": {
+        "5": 4,
+        "9": 1,
+        "1": 1
+      },
+      "dispatches_in_capture": 5,
+      "capture_seconds": 1.002257327,
+      "checkpoint_dispatches_per_capture_second": 4.988738785244122,
+      "lifecycle_fsync_calls": 36,
+      "credit_waits": [
+        {
+          "start_ns": 79213477499749,
+          "end_ns": 79213582771166,
+          "wall_ns": 105271417,
+          "reason": "global_payload_credit",
+          "credit": {
+            "active_pairs": 9,
+            "active_payload_bytes": 10152207,
+            "pair_limit": 32,
+            "payload_limit_bytes": 16777216,
+            "pending_pairs": 5,
+            "pending_payload_bytes": 5640103
+          },
+          "queue_before": {
+            "monotonic_ns": 79213477431457,
+            "oldest_age_ns": 0,
+            "queued_pairs": 0,
+            "sequence": 20
+          },
+          "queue_after": {
+            "monotonic_ns": 79213611360916,
+            "oldest_age_ns": 0,
+            "queued_pairs": 0,
+            "sequence": 24
+          }
+        }
+      ],
+      "unclosed_waits": [],
+      "continuous_wait_gap_limit_ns": 33333334,
+      "continuous_wait_episodes": [
+        {
+          "start_ns": 79213477499749,
+          "end_ns": 79213582771166,
+          "wait_ns": 105271417,
+          "waits": 1
+        }
+      ],
+      "oldest_queued_age_ns_max": 66218288,
+      "queue_depth_at_push_max": 2,
+      "scope": "before-push queue samples are not atomic with writer spans; lifecycle fsync count includes setup/finalization"
+    }
+  },
+  {
+    "variant": "mib6",
+    "fault": "eio",
+    "observations": {
+      "target_mib": 6,
+      "complete": false,
+      "actual_batches": [
+        {
+          "checkpoint": 1,
+          "pairs": 5,
+          "bytes": 5640088,
+          "monotonic_ns": 79214640269859
+        },
+        {
+          "checkpoint": 2,
+          "pairs": 5,
+          "bytes": 5640103,
+          "monotonic_ns": 79214807903757
+        }
+      ],
+      "batch_pair_histogram": {
+        "5": 2
+      },
+      "dispatches_in_capture": 2,
+      "capture_seconds": 0.401529667,
+      "checkpoint_dispatches_per_capture_second": 4.980952005222568,
+      "lifecycle_fsync_calls": 9,
+      "credit_waits": [],
+      "unclosed_waits": [
+        {
+          "bytes": 5640103,
+          "checkpoint": 2,
+          "credit": {
+            "active_pairs": 1,
+            "active_payload_bytes": 1128023,
+            "pair_limit": 32,
+            "payload_limit_bytes": 16777216,
+            "pending_pairs": 5,
+            "pending_payload_bytes": 5640103
+          },
+          "monotonic_ns": 79214840933151,
+          "pairs": 10,
+          "phase": "credit_start",
+          "reason": "finished_reap"
+        }
+      ],
+      "continuous_wait_gap_limit_ns": 33333334,
+      "continuous_wait_episodes": [],
+      "oldest_queued_age_ns_max": 0,
+      "queue_depth_at_push_max": 0,
+      "scope": "before-push queue samples are not atomic with writer spans; lifecycle fsync count includes setup/finalization"
+    }
+  }
+]

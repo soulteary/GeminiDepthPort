@@ -1,0 +1,49 @@
+--- crates/offline-depth/tests/writer_contention_benchmark.rs
++++ crates/offline-depth/tests/writer_contention_benchmark.rs
+@@ -189,8 +189,13 @@
+     enqueued: Instant,
+ }
+ #[derive(Default)]
++#[derive(serde::Serialize)]
++struct ExperimentQueueSample { monotonic_ns: u64, queued_pairs: usize, oldest_age_ns: u64, sequence: u64 }
++#[derive(Default)]
+ struct QueueState {
+     items: VecDeque<Message>,
++    experiment_history: Vec<ExperimentQueueSample>,
++    experiment_dropped: u64,
+     closed: bool,
+     abort: bool,
+     peak: usize,
+@@ -207,6 +212,11 @@
+ impl Queue {
+     fn push(&self, message: Message) -> Result<(), &'static str> {
+         let mut s = self.state.lock().unwrap();
++        let sample = ExperimentQueueSample { monotonic_ns: monotonic_ns(), queued_pairs: s.items.len(),
++            oldest_age_ns: s.items.front().map_or(0, |p| p.enqueued.elapsed().as_nanos() as u64),
++            sequence: message.pair.pair_sequence };
++        if s.experiment_history.len() < 108000 { s.experiment_history.push(sample); }
++        else { s.experiment_dropped += 1; }
+         if s.closed {
+             return Err("RAW_STORAGE_OR_QUEUE_CLOSED");
+         }
+@@ -445,6 +455,7 @@
+     }
+     assert_eq!(mode, "run");
+     let queue = progress.queue.clone();
++    queue.state.lock().unwrap().experiment_history.reserve_exact(108000);
+     let sink_queue = queue.clone();
+     let sink_root = root.clone();
+     let delay_ms: u64 = std::env::var("GDP_CONTENTION_TEST_SINK_DELAY_MS")
+@@ -635,6 +646,12 @@
+     report["cpu_scope"] = json!(
+         "process CPU from capture barrier through writer finish, two independent readers and background final critical cleanup; startup excluded; capture_cpu fields stop at fixed producer horizon"
+     );
++    report["experiment_phase"] = RawRecordingWriter::experiment_phase_report();
++    report["experiment_queue"] = {
++        let s=progress.queue.state.lock().unwrap();
++        json!({"clock":"CLOCK_MONOTONIC","capacity":108000,"dropped":s.experiment_dropped,
++            "scope":"before each producer push including overflow, not a continuous scheduler trace", "samples":&s.experiment_history})
++    };
+     report["queue_final"] = progress.queue.observation();
+     fs::write(
+         root.join("result.json"),

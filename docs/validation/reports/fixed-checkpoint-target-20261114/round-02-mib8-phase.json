@@ -1,0 +1,470 @@
+{
+  "actual_start_offsets_ns": [
+    59539,
+    73831,
+    59456
+  ],
+  "barrier_monotonic_ns": 79091352712494,
+  "target_mib": 8,
+  "writers": [
+    {
+      "actual_batches": [
+        {
+          "bytes": 7896128,
+          "checkpoint": 1,
+          "monotonic_ns": 79091587126430,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896155,
+          "checkpoint": 2,
+          "monotonic_ns": 79091821145991,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896161,
+          "checkpoint": 3,
+          "monotonic_ns": 79092054496884,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896161,
+          "checkpoint": 4,
+          "monotonic_ns": 79092287090606,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896197,
+          "checkpoint": 5,
+          "monotonic_ns": 79092521074834,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 6,
+          "monotonic_ns": 79092753634806,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 7,
+          "monotonic_ns": 79092986912906,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 8,
+          "monotonic_ns": 79093220212798,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 9,
+          "monotonic_ns": 79093454476778,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 10,
+          "monotonic_ns": 79093686909916,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 11,
+          "monotonic_ns": 79093920327475,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 12,
+          "monotonic_ns": 79094153638325,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 13,
+          "monotonic_ns": 79094386801550,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 14,
+          "monotonic_ns": 79094620445027,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896221,
+          "checkpoint": 15,
+          "monotonic_ns": 79094853667377,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896224,
+          "checkpoint": 16,
+          "monotonic_ns": 79095087076602,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896224,
+          "checkpoint": 17,
+          "monotonic_ns": 79095320411703,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896224,
+          "checkpoint": 18,
+          "monotonic_ns": 79095553703053,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896224,
+          "checkpoint": 19,
+          "monotonic_ns": 79095787691531,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896224,
+          "checkpoint": 20,
+          "monotonic_ns": 79096020373129,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896224,
+          "checkpoint": 21,
+          "monotonic_ns": 79096253719938,
+          "pairs": 7
+        },
+        {
+          "bytes": 3384096,
+          "checkpoint": 22,
+          "monotonic_ns": 79096353166830,
+          "pairs": 3
+        }
+      ],
+      "batch_pair_histogram": {
+        "3": 1,
+        "7": 21
+      },
+      "capture_seconds": 5.000347089,
+      "checkpoint_dispatches_per_capture_second": 4.199708465477685,
+      "complete": true,
+      "continuous_wait_episodes": [],
+      "continuous_wait_gap_limit_ns": 33333334,
+      "credit_waits": [],
+      "dispatches_in_capture": 21,
+      "lifecycle_fsync_calls": 116,
+      "oldest_queued_age_ns_max": 0,
+      "queue_depth_at_push_max": 0,
+      "scope": "before-push queue samples are not atomic with writer spans; lifecycle fsync count includes setup/finalization",
+      "target_mib": 8,
+      "unclosed_waits": []
+    },
+    {
+      "actual_batches": [
+        {
+          "bytes": 7896128,
+          "checkpoint": 1,
+          "monotonic_ns": 79091587081679,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896155,
+          "checkpoint": 2,
+          "monotonic_ns": 79091820363155,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896161,
+          "checkpoint": 3,
+          "monotonic_ns": 79092053652421,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896161,
+          "checkpoint": 4,
+          "monotonic_ns": 79092287698817,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896197,
+          "checkpoint": 5,
+          "monotonic_ns": 79092520320289,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 6,
+          "monotonic_ns": 79092753593723,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 7,
+          "monotonic_ns": 79092986867198,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 8,
+          "monotonic_ns": 79093220835551,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 9,
+          "monotonic_ns": 79093453679441,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 10,
+          "monotonic_ns": 79093686954249,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 11,
+          "monotonic_ns": 79093920327725,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 12,
+          "monotonic_ns": 79094153607200,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 13,
+          "monotonic_ns": 79094386828633,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 14,
+          "monotonic_ns": 79094620430943,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896221,
+          "checkpoint": 15,
+          "monotonic_ns": 79094853650252,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896224,
+          "checkpoint": 16,
+          "monotonic_ns": 79095087083061,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896224,
+          "checkpoint": 17,
+          "monotonic_ns": 79095320436828,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896224,
+          "checkpoint": 18,
+          "monotonic_ns": 79095553684011,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896224,
+          "checkpoint": 19,
+          "monotonic_ns": 79095786961237,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896224,
+          "checkpoint": 20,
+          "monotonic_ns": 79096020390546,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896224,
+          "checkpoint": 21,
+          "monotonic_ns": 79096253717438,
+          "pairs": 7
+        },
+        {
+          "bytes": 3384096,
+          "checkpoint": 22,
+          "monotonic_ns": 79096353067246,
+          "pairs": 3
+        }
+      ],
+      "batch_pair_histogram": {
+        "3": 1,
+        "7": 21
+      },
+      "capture_seconds": 5.000202505,
+      "checkpoint_dispatches_per_capture_second": 4.199829902689111,
+      "complete": true,
+      "continuous_wait_episodes": [],
+      "continuous_wait_gap_limit_ns": 33333334,
+      "credit_waits": [],
+      "dispatches_in_capture": 21,
+      "lifecycle_fsync_calls": 116,
+      "oldest_queued_age_ns_max": 0,
+      "queue_depth_at_push_max": 0,
+      "scope": "before-push queue samples are not atomic with writer spans; lifecycle fsync count includes setup/finalization",
+      "target_mib": 8,
+      "unclosed_waits": []
+    },
+    {
+      "actual_batches": [
+        {
+          "bytes": 7896128,
+          "checkpoint": 1,
+          "monotonic_ns": 79091588059642,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896155,
+          "checkpoint": 2,
+          "monotonic_ns": 79091820394863,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896161,
+          "checkpoint": 3,
+          "monotonic_ns": 79092053661338,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896161,
+          "checkpoint": 4,
+          "monotonic_ns": 79092286957397,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896197,
+          "checkpoint": 5,
+          "monotonic_ns": 79092520349456,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 6,
+          "monotonic_ns": 79092753597681,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 7,
+          "monotonic_ns": 79092986949615,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 8,
+          "monotonic_ns": 79093220192715,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 9,
+          "monotonic_ns": 79093453664441,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 10,
+          "monotonic_ns": 79093686897874,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 11,
+          "monotonic_ns": 79093920348433,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 12,
+          "monotonic_ns": 79094153727742,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 13,
+          "monotonic_ns": 79094386806883,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896203,
+          "checkpoint": 14,
+          "monotonic_ns": 79094620569694,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896221,
+          "checkpoint": 15,
+          "monotonic_ns": 79094853906544,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896224,
+          "checkpoint": 16,
+          "monotonic_ns": 79095087110519,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896224,
+          "checkpoint": 17,
+          "monotonic_ns": 79095320456078,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896224,
+          "checkpoint": 18,
+          "monotonic_ns": 79095553792845,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896224,
+          "checkpoint": 19,
+          "monotonic_ns": 79095786960487,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896224,
+          "checkpoint": 20,
+          "monotonic_ns": 79096020381754,
+          "pairs": 7
+        },
+        {
+          "bytes": 7896224,
+          "checkpoint": 21,
+          "monotonic_ns": 79096253681354,
+          "pairs": 7
+        },
+        {
+          "bytes": 3384096,
+          "checkpoint": 22,
+          "monotonic_ns": 79096353071371,
+          "pairs": 3
+        }
+      ],
+      "batch_pair_histogram": {
+        "3": 1,
+        "7": 21
+      },
+      "capture_seconds": 5.000175754,
+      "checkpoint_dispatches_per_capture_second": 4.199852371829248,
+      "complete": true,
+      "continuous_wait_episodes": [],
+      "continuous_wait_gap_limit_ns": 33333334,
+      "credit_waits": [],
+      "dispatches_in_capture": 21,
+      "lifecycle_fsync_calls": 116,
+      "oldest_queued_age_ns_max": 0,
+      "queue_depth_at_push_max": 0,
+      "scope": "before-push queue samples are not atomic with writer spans; lifecycle fsync count includes setup/finalization",
+      "target_mib": 8,
+      "unclosed_waits": []
+    }
+  ]
+}

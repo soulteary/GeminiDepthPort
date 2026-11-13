@@ -11,9 +11,11 @@ import time
 import writer_contention_ab as ab
 
 
-def run(build, output, variants=(('sync_all', 'fsync'), ('sync_data', 'fdatasync'))):
+def run(build, output, variants=(('sync_all', 'fsync'), ('sync_data', 'fdatasync')), delay_ms=100):
     if sys.platform != 'linux':
         raise ValueError('LINUX_REQUIRED')
+    if not 1 <= delay_ms <= 5000:
+        raise ValueError('BOUNDED_DELAY_REQUIRED')
     manifest = json.loads((build / 'build-manifest.json').read_text())
     output.mkdir(parents=True, exist_ok=False)
     library = output / 'faults.so'
@@ -37,7 +39,7 @@ def run(build, output, variants=(('sync_all', 'fsync'), ('sync_data', 'fdatasync
                        GDP_IO_FAIL_OP=operation, GDP_IO_FAIL_SUFFIX='/records.jsonl',
                        GDP_IO_FAIL_NTH='2', GDP_IO_FAULT_MARKER=str(root / 'injected'))
             if fault == 'delay':
-                env['GDP_IO_DELAY_MS'] = '100'
+                env['GDP_IO_DELAY_MS'] = str(delay_ms)
             with (root / 'child.log').open('w') as log:
                 subprocess.run([str(binary), '--exact', ab.TEST_NAME, '--ignored', '--nocapture'],
                                env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=30)

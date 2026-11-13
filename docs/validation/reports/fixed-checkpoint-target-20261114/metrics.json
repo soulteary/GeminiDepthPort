@@ -1,0 +1,21 @@
+{
+  "metrics": [
+    {
+      "variant": "mib8",
+      "processes": 9,
+      "median_append_p99_ms": 4.141018,
+      "median_cpu_seconds": 0.806753052,
+      "median_verification_ms": 263.051649,
+      "median_image_payload_mib_per_lifecycle_second": 29.22667479089109
+    },
+    {
+      "variant": "mib6",
+      "processes": 9,
+      "median_append_p99_ms": 2.629594,
+      "median_cpu_seconds": 0.8197049369999999,
+      "median_verification_ms": 217.876412,
+      "median_image_payload_mib_per_lifecycle_second": 29.188130744849076
+    }
+  ],
+  "scope": "5 seconds per writer, Docker overlay; process medians; lifecycle throughput includes extra readers; no sustained-tail claim"
+}

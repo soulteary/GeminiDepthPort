@@ -41,7 +41,7 @@ def phase_report(row, targets):
                 scope='application spans across same-host CLOCK_MONOTONIC; not block-device latency')
 
 
-def run(args):
+def run(args, variants=('aligned','staggered'), observer=None, recovery_modes=('first3','first5','first7')):
     if sys.platform!='linux': raise ValueError('LINUX_REQUIRED')
     if not 1<=args.seconds<=3600 or not 3<=args.repeats<=10: raise ValueError('BOUNDED_SECONDS_REPEATS_REQUIRED')
     if not 1<=args.max_wall_seconds<=86400: raise ValueError('BOUNDED_WALL_REQUIRED')
@@ -65,12 +65,14 @@ def run(args):
     rows=[]; recovery={}; error=None; expected=None; completed=0
     try:
         for repeat in range(args.repeats):
-            for variant in (('aligned','staggered') if repeat%2==0 else ('staggered','aligned')):
+            for variant in (variants if repeat%2==0 else tuple(reversed(variants))):
                 binary=Path(manifest['variants'][variant]['binary'])
                 name=f'round-{repeat:02d}-{variant}'
                 row=ab.run_batch(binary,output/name,3,pairs,output,args.max_output_bytes,deadline)
                 row.update(variant=variant,writer_count=3,repeat=repeat,directory=name)
                 rows.append(row);ab.write_json(output/(name+'.json'),row)
+                if observer:
+                    ab.write_json(output/(name+'-phase.json'),observer(row))
                 for child in row['writers']:
                     fingerprints=ab.validate_result(child,pairs)
                     if child['common_driver_sha256']!=manifest['common_driver_sha256']: raise ValueError('COMMON_DRIVER_HASH')
@@ -80,15 +82,16 @@ def run(args):
                     if expected is None: expected=fingerprint
                     if expected!=fingerprint: raise ValueError('SAME_INPUT_OR_SNAPSHOT_HASH_MISMATCH')
                 if not row['resource_diagnostic_complete']: raise ValueError('RESOURCE_DIAGNOSTIC_INCOMPLETE')
-                phase=phase_report(row,[3,5,7] if variant=='staggered' else [7,7,7])
-                ab.write_json(output/(name+'-phase.json'),phase)
+                if not observer:
+                    phase=phase_report(row,[3,5,7] if variant=='staggered' else [7,7,7])
+                    ab.write_json(output/(name+'-phase.json'),phase)
                 completed+=1
-        for mode in ('first3','first5','first7'):
+        for mode in recovery_modes:
             recovery[mode]=ab.run_recovery(Path(manifest['variants'][mode]['binary']),output/('recovery-'+mode),output,args.max_output_bytes,deadline)
     except Exception as e:
         error=type(e).__name__+':'+str(e)
     summary=dict(ok=error is None,error=error,completed_groups=completed,attempted_groups=len(rows),planned_groups=args.repeats*2,
-                 groups=ab.summarize_groups(rows,{'aligned':None,'staggered':None}),recovery=recovery,hardware_acceptance=False)
+                 groups=ab.summarize_groups(rows,dict.fromkeys(variants)),recovery=recovery,hardware_acceptance=False)
     ab.write_json(output/'summary.json',summary)
     with (output/'SHA256SUMS').open('x') as f:
         for path in sorted(output.rglob('*')):
@@ -96,13 +99,13 @@ def run(args):
     return summary
 
 
-def recovery_only(build, output):
+def recovery_only(build, output, modes=('first3','first5','first7')):
     if sys.platform!='linux': raise ValueError('LINUX_REQUIRED')
     manifest=json.loads((build/'build-manifest.json').read_text())
     output.mkdir(parents=True,exist_ok=False)
     results={}; error=None
     try:
-        for mode in ('first3','first5','first7'):
+        for mode in modes:
             v=manifest['variants'][mode]
             if ab.sha256(v['binary'])!=v['binary_sha256'] or ab.sha256(v['payload'])!=v['payload_sha256']:
                 raise ValueError('BUILD_HASH_MISMATCH')
