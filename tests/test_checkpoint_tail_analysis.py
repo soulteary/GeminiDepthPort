@@ -47,6 +47,53 @@ def fixture(root):
 
 
 class TailTests(unittest.TestCase):
+    def test_three_writer_contiguous_tails_use_exact_overflow_clock_and_local_credits(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=fixture(Path(d)/'evidence')
+            write(root/'capture/run.json',{'cameras':[{'name':n} for n in ('a','b','c')]})
+            credit={'pending_payload_bytes':8_000_000,'pending_pairs':16,'active_payload_bytes':7_000_000,
+                    'active_pairs':16,'payload_limit_bytes':16*1024**2,'pair_limit':32}
+            events=[event(1,7,800_000_000,322_689_827,phase='verify_wait'),
+                    event(2,8,1_150_000_000,227_664_122,phase='payload_sync'),
+                    event(3,8,1_155_000_000,250_000_000,phase='verify_wait')]
+            for e in (events[0],events[2]):e.update(wait_reason='global_pair_credit',credit_at_wait=credit)
+            rows=[sample(500_000_000),sample(1_500_000_000,'failed')]
+            for row in rows:
+                original=row['cameras'][0];row['cameras']=[]
+                for index,name in enumerate(('a','b','c')):
+                    entry=copy.deepcopy(original);entry['name']=name;entry['process']['host_pid']+=index
+                    if name!='b':entry['status']['raw']['state']='recording'
+                    if row is rows[-1]:entry['checkpoint_events']=copy.deepcopy(events)
+                    if name=='b' and row is rows[-1]:entry['status']['raw']['overflow_observation']={
+                        'detected_monotonic_ns':1_350_000_000,'queue_at_detection':{'queued_pairs':16,'oldest_queued_age_ns':533_438_637}}
+                    row['cameras'].append(entry)
+            write(root/'lifecycle/samples.jsonl',rows,True)
+            checkpoint=[]
+            for row in rows:
+                targets=[]
+                for index,entry in enumerate(row['cameras']):
+                    entry=copy.deepcopy(entry);entry['index']=index;entry.pop('checkpoint_events');targets.append(entry)
+                checkpoint.append({'kind':'sample','monotonic_ns':row['monotonic_ns'],'targets':targets})
+            for index in range(3):
+                for e in events:checkpoint.append({'kind':'checkpoint_event','target_index':index,'epoch':0,**e})
+            write(root/'capture/checkpoint-samples/samples.jsonl',checkpoint,True)
+            before={str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()}
+            result=analysis.analyze(root)[0];chain=result['three_writer_wait_chain']
+            self.assertEqual(chain['anchor_basis'],'overflow_detection')
+            self.assertEqual(chain['anchor_monotonic_ns'],1_350_000_000)
+            self.assertEqual(chain['queue_at_detection']['oldest_queued_age_ns'],533_438_637)
+            self.assertEqual({v['target'] for v in chain['events']},{'a','b','c'})
+            links=[v for v in chain['wait_links'] if v['target']=='b' and v['checkpoint_id']==8]
+            self.assertEqual(links[0]['overlapping_task_event_ids'],[2])
+            self.assertEqual(links[0]['credit_at_wait'],credit)
+            self.assertEqual(links[0]['join_return_monotonic_ns'],1_405_000_000)
+            self.assertEqual(result['deduplication']['unique_events_all_windows'],9)
+            self.assertEqual({str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()},before)
+            for bad in (True,-1,'32'):
+                changed=copy.deepcopy(events);changed[0]['credit_at_wait']['pair_limit']=bad
+                checkpoint[-9].update(changed[0]);write(root/'capture/checkpoint-samples/samples.jsonl',checkpoint,True)
+                with self.assertRaisesRegex(ValueError,'CREDIT_SCHEMA'):analysis.analyze(root)
+
     def test_real_trace_to_analysis_preserves_overflow_append_and_wait_reason(self):
         with tempfile.TemporaryDirectory() as d:
             root=fixture(Path(d)/'evidence');wait=event();wait['wait_reason']='chunk_rotation'

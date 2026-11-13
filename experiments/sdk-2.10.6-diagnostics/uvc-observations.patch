@@ -56,6 +56,20 @@ diff --git a/src/platform/usb/uvc/ObV4lUvcDevicePort.cpp b/src/platform/usb/uvc/
          query.minimum = query.maximum = 0;
      }
      UvcControlRange range(query.minimum, query.maximum, query.step, query.default_value);
+@@ -1043,7 +1054,12 @@
+     auto fd = deviceHandles_.front()->fd;
+     memset(data, 0, *len);
+     struct uvc_xu_control_query query = { static_cast<uint8_t>(xuUnit_.unit), ctrl, UVC_GET_CUR, static_cast<uint16_t>(*len), const_cast<uint8_t *>(data) };
+-    if(xioctl(fd, UVCIOC_CTRL_QUERY, &query) < 0) {
++    const uint64_t gdpStarted = gdp_uvc::stamp();
++    const int gdpResult = xioctl(fd, UVCIOC_CTRL_QUERY, &query);
++    const int gdpErrno = gdpResult < 0 ? errno : 0;
++    gdp_uvc::record_xu(1, 5, (static_cast<uint32_t>(query.unit)<<16)|ctrl, UVC_GET_CUR,
++                       gdpResult, gdpErrno, data, *len, gdpResult >= 0, gdpStarted);
++    if(gdpResult < 0) {
+         LOG_ERROR("get xu failed, errno: {}", strerror(errno));
+         return false;
+     }
 diff --git a/src/platform/usb/uvc/ObLibuvcDevicePort.cpp b/src/platform/usb/uvc/ObLibuvcDevicePort.cpp
 --- a/src/platform/usb/uvc/ObLibuvcDevicePort.cpp
 +++ b/src/platform/usb/uvc/ObLibuvcDevicePort.cpp
@@ -64,7 +78,21 @@ diff --git a/src/platform/usb/uvc/ObLibuvcDevicePort.cpp b/src/platform/usb/uvc/
  // Copyright (c) Orbbec Inc. All Rights Reserved.
  // Licensed under the MIT License.
  
-@@ -513,7 +514,19 @@
+@@ -332,7 +333,13 @@
+     default:
+         return false;
+     }
++    const uint32_t gdpRequested = *len;
++    const uint64_t gdpStarted = gdp_uvc::stamp();
+     int recv = uvc_get_ctrl(uvcDevHandle_, xuUnit_.unit, ctrl, data, *len, UVC_GET_CUR);
++    const int gdpErrno = recv <= 0 ? errno : 0;
++    gdp_uvc::record_xu(2, 4, (static_cast<uint32_t>(xuUnit_.unit)<<16)|ctrl, UVC_GET_CUR,
++                       recv, gdpErrno, data, recv > 0 ? static_cast<uint32_t>(recv) : 0,
++                       recv > 0 && static_cast<uint32_t>(recv) <= gdpRequested, gdpStarted);
+     *len     = recv;
+     if(recv <= 0) {
+         if(recv == LIBUSB_ERROR_IO) {
+@@ -513,7 +520,19 @@
  
      uint32_t transferred;
  
@@ -89,7 +117,7 @@ diff --git a/src/shared/utils/UvcPropertyObservations.hpp b/src/shared/utils/Uvc
 new file mode 100644
 --- /dev/null
 +++ b/src/shared/utils/UvcPropertyObservations.hpp
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,55 @@
 +// Copyright (c) 2026 GDP contributors. Licensed under the MIT License.
 +#pragma once
 +// Opt-in, read-only SDK evidence. C++11; no allocation, I/O, locks or workers.
@@ -133,5 +161,15 @@ new file mode 100644
 +    const uint32_t copy = s.count < 8 ? s.count : 8;
 +    if(output) for(uint32_t i=0; i<copy && i<capacity; ++i) output[i] = s.events[i];
 +    return s.count;
++}
++// XU value is a raw response prefix, never a decoded property value.
++inline void record_xu(uint32_t backend, uint32_t operation, uint32_t selector,
++                      uint32_t request, int result, int error, const uint8_t *data,
++                      uint32_t length, bool valid, uint64_t started) noexcept {
++    if(!state().armed) return;
++    uint32_t prefix = 0;
++    if(valid && data) for(uint32_t i=0; i<length && i<4; ++i) prefix |= static_cast<uint32_t>(data[i]) << (8*i);
++    record({backend, operation, selector, request, result, error, static_cast<int32_t>(prefix),
++            valid ? 1U : 0U, 0, 0, 0, 0, started, 0});
 +}
 +} // namespace gdp_uvc

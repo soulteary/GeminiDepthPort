@@ -42,4 +42,14 @@ inline uint32_t snapshot(Event *output, uint32_t capacity) noexcept {
     if(output) for(uint32_t i=0; i<copy && i<capacity; ++i) output[i] = s.events[i];
     return s.count;
 }
+// XU value is a raw response prefix, never a decoded property value.
+inline void record_xu(uint32_t backend, uint32_t operation, uint32_t selector,
+                      uint32_t request, int result, int error, const uint8_t *data,
+                      uint32_t length, bool valid, uint64_t started) noexcept {
+    if(!state().armed) return;
+    uint32_t prefix = 0;
+    if(valid && data) for(uint32_t i=0; i<length && i<4; ++i) prefix |= static_cast<uint32_t>(data[i]) << (8*i);
+    record({backend, operation, selector, request, result, error, static_cast<int32_t>(prefix),
+            valid ? 1U : 0U, 0, 0, 0, 0, started, 0});
+}
 } // namespace gdp_uvc

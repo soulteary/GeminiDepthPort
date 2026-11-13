@@ -51,3 +51,11 @@ jobs:
           geminidepthport-rust-capture:ci python3 /opt/gdp-capture/smoke_image.py
       - name: Verify service worker accepts its Docker PID 1 supervisor
         run: bash scripts/validation/pid1_service_smoke.sh geminidepthport-rust-capture:ci
+
+  sdk-diagnostics-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Build patched diagnostic SDK and driver, verify immutable ABI without cameras
+        run: bash experiments/sdk-2.10.6-diagnostics/build_runtime.sh geminidepthport-sdk-diagnostics:ci linux/amd64

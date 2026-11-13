@@ -66,7 +66,7 @@ pub(crate) fn observe<T>(
             Some(old) if old == backend => old,
             _ => "mixed",
         });
-        trace.invalid |= !(1..=3).contains(&e.operation)
+        trace.invalid |= !(1..=5).contains(&e.operation)
             || e.value_valid > 1
             || (e.started_ns != 0 && e.finished_ns < e.started_ns);
         trace.events.push(UvcReadEvent {

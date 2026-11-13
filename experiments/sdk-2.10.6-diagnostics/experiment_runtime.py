@@ -14,7 +14,7 @@ EXPERIMENT = 'sdk-2.10.6-diagnostics-v1'
 ROLE = 'rust-sdk-diagnostics-v1'
 BASE = '575347ca742d219ef61b1e214e97043f17f48d23'
 PATCH = '0db54c7c1bcafa9d18cd51bddcd4cf0d0c733c967ff0f9542f7796b770a0757c'
-UVC_PATCH = '6f1ef57a15c5effd80f1afede6a07fed6b8164019f304eadb4b45ee5f98bcae6'
+UVC_PATCH = 'e4f10c7ab03f41e39bc5a4ff1e777866686de57bbad9c95137c6f40958515b07'
 SDK = '/opt/gdp-sdk-experiment'
 HOME = '/opt/gdp-experiment'
 MANIFEST = HOME + '/runtime.json'
@@ -146,6 +146,7 @@ def validate_manifest(value,root=Path('/')):
     require(build.get('sdk_sha256')==value['sdk_sha256'],'SDK_BINARY_SOURCE_BINDING')
     require(value['files'].get(SDK+'/lib/libOrbbecSDK.so.2.10.6')==value['sdk_sha256'],'SDK_SONAME_BINDING')
     require(value['files'].get(HOME+'/sdk-diagnostics.patch')==PATCH,'SDK_PATCH_BINDING')
+    require(value['files'].get(HOME+'/uvc-observations.patch')==UVC_PATCH,'SDK_UVC_PATCH_BINDING')
     require(value['files'].get(HOME+'/public-c-exports.txt')==build['public_exports_sha256'],'SDK_EXPORTS_BINDING')
     for name in REQUIRED_LICENSES:require(SDK+'/'+name in value['files'],'SDK_LICENSE_INVENTORY')
     require(HOME+'/experiment_runtime.py' in value['files'] and HOME+'/entrypoint.sh' in value['files'],'EXPERIMENT_VALIDATOR_INVENTORY')

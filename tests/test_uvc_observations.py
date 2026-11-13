@@ -1,6 +1,8 @@
 """Private SDK trace ABI: real C++11 shared library, no camera or ROS."""
 import ctypes
 import hashlib
+import fnmatch
+import re
 import importlib.util
 from pathlib import Path
 import subprocess
@@ -24,6 +26,22 @@ class UvcObservationTests(unittest.TestCase):
         self.assertIn('gdpResult = uvc_get_ctrl',patch)
         self.assertIn('gdpResult = xioctl(fd, VIDIOC_QUERYCTRL',patch)
         self.assertNotIn('setPu(',patch)
+        self.assertIn('gdp_uvc::record_xu(2, 4',patch)
+        self.assertIn('gdp_uvc::record_xu(1, 5',patch)
+
+    def test_diagnostic_copy_sources_survive_the_actual_dockerignore(self):
+        rules=(HERE/'capture.Dockerfile.dockerignore').read_text().splitlines()
+        dockerfile=(HERE/'capture.Dockerfile').read_text()
+        sources=re.findall(r'^COPY (experiments/\S+) ',dockerfile,re.M)
+        self.assertIn('experiments/sdk-2.10.6-diagnostics/uvc-observations.patch',sources)
+        for source in sources:
+            self.assertTrue((ROOT/source).is_file())
+            for path in [source]+[str(p) for p in Path(source).parents if str(p)!='.']:
+                allowed=True
+                for rule in rules:
+                    if rule and not rule.startswith('#') and fnmatch.fnmatch(path,rule.lstrip('!').rstrip('/')):
+                        allowed=rule.startswith('!')
+                self.assertTrue(allowed,path+' excluded from build context')
 
     def test_real_cpp_tls_cross_translation_units_capacity_errno_and_backend_results(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -44,6 +62,11 @@ extern "C" __attribute__((visibility("default"))) void emit(int backend,int resu
  const int before=errno;const auto stamp=gdp_uvc::stamp();
  gdp_uvc::record({static_cast<unsigned>(backend),1,2002,1,result,result<0?5:0,256,result>=0?1U:0U,1,255,2,101,stamp,0});
  assert(errno==before);
+}
+extern "C" __attribute__((visibility("default"))) void emitxu(int backend,int result,int valid){
+ uint8_t bytes[4]={0x10,0x27,0,0};
+ gdp_uvc::record_xu(backend,backend==2?4:5,0x0310,129,result, result<0?5:0,
+     valid?bytes:nullptr,valid?4:1000000,valid!=0,gdp_uvc::stamp());
 }
 ''')
             library=root/'trace.so'
@@ -67,6 +90,14 @@ extern "C" __attribute__((visibility("default"))) void emit(int backend,int resu
             for _ in range(20):lib.emit(1,0)
             out[1].value=77
             self.assertEqual(lib.snapshot(out,1),9);self.assertEqual(out[1].value,77)
+            for backend in (1,2):
+                lib.begin();ctypes.set_errno(73);lib.emitxu(backend,64 if backend==2 else 0,1)
+                self.assertEqual(ctypes.get_errno(),73);self.assertEqual(lib.snapshot(out,8),1)
+                self.assertEqual(out[0].backend,backend);self.assertEqual(out[0].operation,4 if backend==2 else 5)
+                self.assertEqual(out[0].value,10000);self.assertEqual(out[0].value_valid,1)
+                lib.begin();lib.emitxu(backend,-7,0);self.assertEqual(lib.snapshot(out,8),1)
+                self.assertEqual(out[0].value,0);self.assertEqual(out[0].value_valid,0)
+                self.assertEqual(out[0].result,-7)
             lib.begin();lib.emit(2,-7);self.assertEqual(lib.snapshot(out,8),1)
             self.assertEqual(out[0].value_valid,0);self.assertEqual(out[0].error_number,5);self.assertEqual(out[0].result,-7)
 

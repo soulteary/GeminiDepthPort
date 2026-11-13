@@ -53,6 +53,16 @@ impl WaitReason {
         }
     }
 }
+/// Per-writer admission credits, copied before joining its own pending task.
+#[derive(Clone, Copy, Serialize)]
+pub(super) struct CreditAtWait {
+    pub pending_payload_bytes: u64,
+    pub pending_pairs: u64,
+    pub active_payload_bytes: u64,
+    pub active_pairs: u64,
+    pub payload_limit_bytes: u64,
+    pub pair_limit: u64,
+}
 #[derive(Clone, Serialize)]
 struct Span {
     span_id: u64,
@@ -63,6 +73,8 @@ struct Span {
     start_monotonic_ns: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     wait_reason: Option<WaitReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credit_at_wait: Option<CreditAtWait>,
 }
 #[derive(Clone, Serialize)]
 struct AppendSpan {
@@ -273,21 +285,32 @@ impl Observation {
         phase: Phase,
         run: impl FnOnce() -> std::result::Result<T, E>,
     ) -> std::result::Result<T, E> {
-        self.measure_context(info, phase, None, run)
+        self.measure_context(info, phase, None, None, run)
     }
+    #[cfg(test)]
     pub fn measure_wait<T, E>(
         &self,
         info: CheckpointInfo,
         reason: WaitReason,
         run: impl FnOnce() -> std::result::Result<T, E>,
     ) -> std::result::Result<T, E> {
-        self.measure_context(info, Phase::VerifyWait, Some(reason), run)
+        self.measure_context(info, Phase::VerifyWait, Some(reason), None, run)
+    }
+    pub fn measure_credit_wait<T, E>(
+        &self,
+        info: CheckpointInfo,
+        reason: WaitReason,
+        credit: CreditAtWait,
+        run: impl FnOnce() -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E> {
+        self.measure_context(info, Phase::VerifyWait, Some(reason), Some(credit), run)
     }
     fn measure_context<T, E>(
         &self,
         info: CheckpointInfo,
         phase: Phase,
         wait_reason: Option<WaitReason>,
+        credit_at_wait: Option<CreditAtWait>,
         run: impl FnOnce() -> std::result::Result<T, E>,
     ) -> std::result::Result<T, E> {
         if !self.enabled {
@@ -307,6 +330,7 @@ impl Observation {
                 tid: tid(),
                 start_monotonic_ns,
                 wait_reason,
+                credit_at_wait,
             };
             if s.active.len() < ACTIVE {
                 s.active.push(span.clone());
@@ -366,6 +390,42 @@ mod tests {
             prefix_pairs: 32,
             payload_bytes: Some(128),
             asynchronous: false,
+        }
+    }
+    #[test]
+    fn credit_wait_links_the_pending_task_without_changing_the_result() {
+        for enabled in [true, false] {
+            let d = Observation::new(enabled);
+            let credit = CreditAtWait {
+                pending_payload_bytes: 8,
+                pending_pairs: 16,
+                active_payload_bytes: 7,
+                active_pairs: 16,
+                payload_limit_bytes: 16,
+                pair_limit: 32,
+            };
+            let result =
+                d.measure_credit_wait(info(), WaitReason::GlobalPairCredit, credit, || {
+                    let active = d.failure_context();
+                    if enabled {
+                        assert_eq!(
+                            active["active_checkpoint_spans"][0]["credit_at_wait"]["pending_pairs"],
+                            16
+                        );
+                        assert_eq!(
+                            active["active_checkpoint_spans"][0]["info"]["checkpoint_id"],
+                            1
+                        );
+                    }
+                    Err::<(), _>("join-error")
+                });
+            assert_eq!(result, Err("join-error"));
+            let report = d.report();
+            assert!(report["active"].as_array().unwrap().is_empty());
+            if enabled {
+                assert_eq!(report["events"][0]["credit_at_wait"]["pair_limit"], 32);
+                assert_eq!(report["events"][0]["ok"], false);
+            }
         }
     }
     #[test]

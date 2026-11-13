@@ -138,6 +138,54 @@ def disk_window(samples, start, end):
     return output
 
 
+def credit_snapshot(value):
+    require(type(value) is dict, 'CREDIT_SCHEMA')
+    fields = ('pending_payload_bytes', 'pending_pairs', 'active_payload_bytes',
+              'active_pairs', 'payload_limit_bytes', 'pair_limit')
+    require(set(value) == set(fields), 'CREDIT_SCHEMA')
+    return {key: integer(value[key], 'CREDIT_SCHEMA') for key in fields}
+
+
+def wait_chain(samples, groups, failure):
+    # Prefer the once-locked overflow timestamp to the later polling clock.
+    frozen = failure['raw'].get('overflow_observation') or {}
+    detected = frozen.get('detected_monotonic_ns')
+    exact = detected is not None
+    at = integer(detected, 'OVERFLOW_CLOCK') if exact else failure['monotonic_ns']
+    require(at <= failure['monotonic_ns'], 'OVERFLOW_AFTER_OBSERVATION')
+    start, end = max(0, at-1_000_000_000), at+100_000_000
+    timeline, links = [], []
+    for group in groups:
+        for event in group['events']:
+            first = event['start_monotonic_ns']; last = first+event['wall_ns']
+            if last < start or first > end:continue
+            row = {'target':group['target'], 'epoch':group['epoch'],
+                   'checkpoint_id':group['checkpoint_id'], **event,
+                   'relative_start_ns':first-at, 'relative_end_ns':last-at}
+            timeline.append(row)
+            if event['phase'] == 'verify_wait':
+                dependencies = [other['event_id'] for other in group['events']
+                    if other['phase'] != 'verify_wait' and other['start_monotonic_ns'] <= last
+                    and other['start_monotonic_ns']+other['wall_ns'] >= first]
+                links.append({'target':group['target'], 'epoch':group['epoch'],
+                    'wait_event_id':event['event_id'], 'checkpoint_id':group['checkpoint_id'],
+                    'wait_reason':event.get('wait_reason'), 'credit_at_wait':event.get('credit_at_wait'),
+                    'overlapping_task_event_ids':dependencies,
+                    'join_return_monotonic_ns':last, 'ok':event['ok']})
+    queues = [{'sample_id':v['sample_id'], 'target':v['target'], 'epoch':v['epoch'],
+               'source':v['source'], 'monotonic_ns':v['monotonic_ns'],
+               'relative_ns':v['monotonic_ns']-at, 'writer_queue':v['writer_queue'],
+               'active':v['active'], 'active_append':v.get('active_append')}
+              for v in samples if start <= v['monotonic_ns'] <= end]
+    return {'anchor_monotonic_ns':at, 'anchor_basis':'overflow_detection' if exact else 'first_failure_sample',
+        'window_start_monotonic_ns':start, 'window_end_monotonic_ns':end,
+        'queue_at_detection':frozen.get('queue_at_detection'),
+        'writer_context_at_detection':frozen.get('writer_context'),
+        'events':sorted(timeline,key=lambda v:(v['start_monotonic_ns'],v['target'],v['event_id'])),
+        'wait_links':links, 'queue_samples':queues,
+        'scope':'Credits belong to one writer, not a cross-process pool. Join completion is observed, not a credit transfer between writers. Same-checkpoint overlapping phases are task context, not proven exclusive causes. Sample times are not atomic with queue detection. Missing events/CPU/kernel traces remain missing; no unique storage or scheduling attribution.'}
+
+
 def analyze(run_dir, before_seconds=10., after_seconds=2., failure_camera=None):
     require(math.isfinite(before_seconds) and 0 < before_seconds <= 600
             and math.isfinite(after_seconds) and 0 <= after_seconds <= 60, 'WINDOW_LIMIT')
@@ -190,6 +238,9 @@ def analyze(run_dir, before_seconds=10., after_seconds=2., failure_camera=None):
             require(value['phase'] == 'verify_wait' and type(reason) is str
                     and reason in WAIT_REASONS, 'CHECKPOINT_WAIT_REASON')
             value['wait_reason'] = reason
+        if 'credit_at_wait' in raw:
+            require(value['phase'] == 'verify_wait', 'CREDIT_PHASE')
+            value['credit_at_wait'] = credit_snapshot(raw['credit_at_wait'])
         integer(value['event_id'], 'EVENT_ID'); integer(value['start_monotonic_ns'], 'EVENT_CLOCK'); integer(value['wall_ns'], 'EVENT_WALL')
         if value['thread_cpu_ns'] is not None:integer(value['thread_cpu_ns'], 'EVENT_CPU')
         require(type(value['phase']) is str and type(value['info']) is dict, 'EVENT_SCHEMA')
@@ -207,6 +258,12 @@ def analyze(run_dir, before_seconds=10., after_seconds=2., failure_camera=None):
     failures = [v for v in samples if v['raw'].get('state') == 'failed' and (failure_camera is None or v['target'] == failure_camera)]
     require(failures, 'NO_OBSERVED_RAW_FAILURE')
     failure = failures[0]; start = max(0, failure['monotonic_ns']-round(before_seconds*1e9)); end = failure['monotonic_ns']+round(after_seconds*1e9)
+    detected = (failure['raw'].get('overflow_observation') or {}).get('detected_monotonic_ns')
+    if detected is not None:
+        detected = integer(detected, 'OVERFLOW_CLOCK')
+        require(detected <= failure['monotonic_ns'], 'OVERFLOW_AFTER_OBSERVATION')
+        start = min(start, max(0, detected-1_000_000_000))
+        end = max(end, detected+100_000_000)
     context = []
     for name in names:
         selected = [v for v in samples if v['target'] == name]
@@ -249,6 +306,7 @@ def analyze(run_dir, before_seconds=10., after_seconds=2., failure_camera=None):
     summary = {'version': 1, 'analysis_only': True, 'hardware_acceptance_verified': False,
         'failure_first_observed': failure, 'failure_previous_recording_sample': healthy[-1] if healthy else None,
         'window': {'start_monotonic_ns': start, 'end_monotonic_ns': end, 'before_seconds': before_seconds, 'after_seconds': after_seconds},
+        'three_writer_wait_chain':wait_chain(samples, list(groups.values()), failure),
         'source_summaries': summaries, 'input_sha256': hashes, 'deduplication': {**duplicate_count, 'unique_events_all_windows': len(events)},
         'worker_epochs': [{'source': key[0], 'target': key[1], 'source_epoch': key[2], 'host_pid': value[0], 'start_ticks': value[1], 'epoch': canonical[(key[1], value)]} for key, value in sorted(identities.items())],
         'event_union_coverage':coverage, 'checkpoint_groups': len(groups), 'phase_stats': phase_stats(selected_events),

@@ -35,7 +35,7 @@ RUN set -e; git init /sdk; \
     && echo '0db54c7c1bcafa9d18cd51bddcd4cf0d0c733c967ff0f9542f7796b770a0757c  /experiment/sdk-diagnostics.patch' | sha256sum -c - \
     && git -C /sdk apply --check /experiment/sdk-diagnostics.patch \
     && git -C /sdk apply /experiment/sdk-diagnostics.patch \
-    && echo '6f1ef57a15c5effd80f1afede6a07fed6b8164019f304eadb4b45ee5f98bcae6  /experiment/uvc-observations.patch' | sha256sum -c - \
+    && echo 'e4f10c7ab03f41e39bc5a4ff1e777866686de57bbad9c95137c6f40958515b07  /experiment/uvc-observations.patch' | sha256sum -c - \
     && git -C /sdk apply --check /experiment/uvc-observations.patch \
     && git -C /sdk apply /experiment/uvc-observations.patch \
     && cmake -S /sdk -B /sdk-build -DCMAKE_BUILD_TYPE=Release \
