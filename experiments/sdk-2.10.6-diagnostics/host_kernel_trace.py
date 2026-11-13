@@ -3,8 +3,8 @@
 
 This is not writer_syscall_trace.TraceSession and does not relax its guards.
 The caller starts this observer before Popen(run_retest), polls failure at least
-every 0.2 s, sends SIGTERM to that original driver on failure, and calls finish
-after its original cleanup. This module never signals a target or uses Docker.
+every 0.2 s, and retains the original driver's writer cleanup on trace failure.
+It calls finish after that cleanup. This module never signals a target or uses Docker.
 """
 import argparse
 import hashlib
@@ -35,7 +35,7 @@ MAX_CPUS = 256
 RESERVE = 2 * 1024**2
 LOSS_KEYS = ("overrun", "commit overrun", "dropped events")
 SCOPE = (
-    "Independent host-global raw syscall/scheduler trace, with a second "
+    "Independent host-namespace PID-filtered syscall/scheduler trace, with a second "
     "device-filtered ext4/jbd2/block instance. Host events follow pinned writer TIDs and forks. Raw trace may "
     "contain unrelated task names, paths and syscall pointer values and must "
     "remain private. Only subsequently proven host TID generations may be "
