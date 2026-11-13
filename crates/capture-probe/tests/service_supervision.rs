@@ -3913,6 +3913,7 @@ impl Drop for RawOverflowFaultChild<'_> {
         // Release only this fixture's files before reaping its owned child.
         let _ = fs::write(&self.critical_release, b"1");
         let _ = fs::write(&self.checkpoint_release, b"1");
+        let _ = fs::write(self.checkpoint_release.with_extension("first"), b"1");
         // Child caches a reaped exit. Never signal a numeric PID after it has
         // been reaped, nor after an error leaves child identity unconfirmed.
         if matches!(self.child.try_wait(), Ok(None)) {
@@ -4048,6 +4049,13 @@ fn assert_raw_overflow_context(value: &Value, held_phase: &str, observed_ns: u64
     // A busy checkpoint no longer makes the half-credit chunk target block.
     // Tiny pairs consume the full 32-pair budget before the next admission waits.
     assert_eq!(waiting["wait_reason"], "global_pair_credit");
+    let credits = &waiting["credit_at_wait"];
+    assert_eq!(credits["pair_limit"], 32);
+    assert_eq!(credits["payload_limit_bytes"], 16 * 1024 * 1024);
+    assert_eq!(
+        credits["pending_pairs"].as_u64().unwrap() + credits["active_pairs"].as_u64().unwrap(),
+        32
+    );
     assert_eq!(
         value["raw_recording"]["disk_stages"]["uncommitted_pairs_peak"],
         32
@@ -4070,6 +4078,29 @@ fn raw_overflow_payload_sync_freezes_queue_and_checkpoint_wait_before_durable_fa
 }
 
 fn assert_raw_overflow_context_frozen_during_critical_fsync(held_phase: &str) {
+    run_raw_overflow_fault(held_phase, None);
+}
+
+#[test]
+fn three_writers_consecutive_payload_fences_keep_local_credits_and_recover_prefixes() {
+    let ready = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    thread::scope(|scope| {
+        let children: Vec<_> = (0..3)
+            .map(|_| {
+                let ready = ready.clone();
+                scope.spawn(move || run_raw_overflow_fault("payload_sync", Some(ready)))
+            })
+            .collect();
+        for child in children {
+            child.join().unwrap();
+        }
+    });
+}
+
+fn run_raw_overflow_fault(
+    held_phase: &str,
+    group: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+) {
     let f = normal_rate_wait_fixture(1000);
     // This fixture isolates checkpoint/status fencing, not IMU throughput.
     // Keep callbacks active during the fence without making LLVM-instrumented
@@ -4079,6 +4110,25 @@ fn assert_raw_overflow_context_frozen_during_critical_fsync(held_phase: &str) {
     config["imu"]["accel_rate_hz"] = json!(50);
     config["imu"]["gyro_rate_hz"] = json!(50);
     fs::write(&f.config, config.to_string()).unwrap();
+    if group.is_some() {
+        // Bound production during the first fence by frame progress, so a
+        // delayed parent cannot accidentally overflow before releasing it.
+        // Returning an SDK timeout keeps heartbeat/IMU pumping live.
+        let source = f.root.join("mock-sdk.c");
+        let mut sdk = fs::read_to_string(&source).unwrap();
+        replace(
+            &mut sdk,
+            "obj *ob_pipeline_wait_for_frameset(obj *p,uint32_t ms,error **e){",
+            r#"obj *ob_pipeline_wait_for_frameset(obj *p,uint32_t ms,error **e){
+        static unsigned after_first_fence;
+        const char *first_marker=getenv("GDP_IO_FIRST_MARKER"),*first_release=getenv("GDP_IO_FIRST_RELEASE");
+        if(first_marker && first_release && access(first_marker,F_OK)==0 && access(first_release,F_OK)!=0
+           && ++after_first_fence>24){usleep(1000);return NULL;}
+        "#,
+        );
+        fs::write(&source, sdk).unwrap();
+        compile("cc", &source, &f.root.join("mock-sdk.so"), None);
+    }
     let library = io_faults::compile(&f.root);
     // Scope the deliberate readback stall to an already healthy recording.
     // GDP_IO_ARMED governs fail(), not the independent read() hold hook.
@@ -4107,6 +4157,25 @@ fn assert_raw_overflow_context_frozen_during_critical_fsync(held_phase: &str) {
             unsigned waited=0;while(access(release,F_OK)!=0&&waited++<10000)usleep(1000);
         }
     }"#,
+        );
+    }
+    if group.is_some() {
+        // Two real fsync barriers in successive payload transactions. The first
+        // is released by queue progress, never by a timing guess; the second
+        // remains fenced until the bounded FIFO reports overflow.
+        replace(
+            &mut hook,
+            "if(armed && access(armed,F_OK)==0 && payload_fd(fd)) {",
+            r#"if(armed && access(armed,F_OK)==0 && payload_fd(fd)) {
+        static _Atomic unsigned payload_fences;
+        if(atomic_fetch_add(&payload_fences,1)==0) {
+            const char *marker=getenv("GDP_IO_FIRST_MARKER"),*release=getenv("GDP_IO_FIRST_RELEASE");
+            if(marker && release) {
+                int out=open(marker,O_WRONLY|O_CREAT|O_EXCL,0600);if(out>=0)close(out);
+                unsigned waited=0;while(access(release,F_OK)!=0&&waited++<10000)usleep(1000);
+            }
+            int (*first_sync)(int)=dlsym(RTLD_NEXT,"fsync");return first_sync(fd);
+        }"#,
         );
     }
     let local_hook = f.root.join("armed-checkpoint-hook.c");
@@ -4142,6 +4211,14 @@ fn assert_raw_overflow_context_frozen_during_critical_fsync(held_phase: &str) {
         .env("GDP_IO_HOLD_MARKER", &checkpoint_held)
         .env("GDP_IO_HOLD_RELEASE", &release_reader)
         .env("GDP_IO_HOLD_ARMED", &arm_reader);
+    if group.is_some() {
+        command
+            .env("GDP_IO_FIRST_MARKER", f.root.join("first-payload-held"))
+            .env(
+                "GDP_IO_FIRST_RELEASE",
+                release_reader.with_extension("first"),
+            );
+    }
     if held_phase == "readback" {
         command.env("GDP_IO_HOLD_READ_SUFFIX", ".bin");
     }
@@ -4175,6 +4252,7 @@ fn assert_raw_overflow_context_frozen_during_critical_fsync(held_phase: &str) {
                 // live child; never leave a gated worker after a failed assert.
                 fs::write(&release, b"1").unwrap();
                 fs::write(&release_reader, b"1").unwrap();
+                fs::write(release_reader.with_extension("first"), b"1").unwrap();
                 if exit.is_none() {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -4209,7 +4287,33 @@ fn assert_raw_overflow_context_frozen_during_critical_fsync(held_phase: &str) {
         !checkpoint_held.exists(),
         "readback hook ran before its arm gate"
     );
+    if let Some(ready) = group.as_ref() {
+        ready.fetch_add(1, Ordering::SeqCst);
+        let began = Instant::now();
+        while ready.load(Ordering::SeqCst) < 3 {
+            assert!(
+                began.elapsed() < Duration::from_secs(8),
+                "three-writer readiness barrier"
+            );
+            assert!(child.try_wait().unwrap().is_none());
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
     fs::write(&arm_reader, b"1").unwrap();
+    if group.is_some() {
+        let first = wait_phase(&mut child, "first consecutive payload fence", &|v| {
+            f.root.join("first-payload-held").exists()
+                && v.as_ref().is_some_and(|v| {
+                    v["raw_recording"]["writer_queue"]["queued_pairs"]
+                        .as_u64()
+                        .unwrap_or(0)
+                        >= 4
+                })
+        })
+        .unwrap();
+        assert_eq!(first["raw_recording"]["whole_pair_queue_overflows"], 0);
+        fs::write(release_reader.with_extension("first"), b"1").unwrap();
+    }
     let _ = wait_phase(&mut child, "armed checkpoint IO", &|_| {
         checkpoint_held.exists()
     });

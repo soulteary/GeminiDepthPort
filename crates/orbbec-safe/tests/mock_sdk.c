@@ -180,7 +180,8 @@ uint32_t gdp_uvc_observation_snapshot_v1(uvc_event *out,uint32_t capacity){unsig
 static void uvc_read(int op,int value){if(!uvc_armed)return;uvc_event ev={1,(uint32_t)op,2002,0,0,0,value,1,1,255,2,101,100,101};
  if(MOCK_DEVICE_FAILURE==34&&op==1){ev.result=-1;ev.error_number=5;ev.value_valid=0;}
  if(MOCK_DEVICE_FAILURE==35&&op==2){ev.result=-1;ev.error_number=5;ev.value_valid=0;}
- if(MOCK_DEVICE_FAILURE==36)ev.backend=2;
+ if(MOCK_DEVICE_FAILURE==36||MOCK_DEVICE_FAILURE==40||MOCK_DEVICE_FAILURE==43)ev.backend=2;
+ if(MOCK_DEVICE_FAILURE>=40){ev.operation=MOCK_DEVICE_FAILURE==41?5:4;ev.result=MOCK_DEVICE_FAILURE==42?-7:64;ev.value_valid=MOCK_DEVICE_FAILURE==42?0:1;}
  if(MOCK_DEVICE_FAILURE==38)ev.backend=99;
  uvc_events[0]=ev;uvc_count=MOCK_DEVICE_FAILURE==37?9:1;
  if(uvc_count==9)for(int i=1;i<8;i++)uvc_events[i]=ev;
@@ -218,16 +219,24 @@ property_int_range ob_device_get_int_property_range(const obj *d,int id,error **
   if(MOCK_DEVICE_FAILURE==22)r.cur=256;
  }
  #if MOCK_DEVICE_FAILURE >= 30
- if(id==2002){r=(property_int_range){MOCK_DEVICE_FAILURE==36?101:256,255,1,2,101};uvc_read(2,r.cur);if(MOCK_DEVICE_FAILURE==33||MOCK_DEVICE_FAILURE==39)*e=(error*)1;}
+ if(id==2002){r=(property_int_range){MOCK_DEVICE_FAILURE==36||MOCK_DEVICE_FAILURE>=40?101:256,255,1,2,101};if(MOCK_DEVICE_FAILURE==43&&property_values[0])r.cur=256;uvc_read(2,r.cur);if(MOCK_DEVICE_FAILURE==33||MOCK_DEVICE_FAILURE==39)*e=(error*)1;}
+#endif
+#if MOCK_DEVICE_FAILURE >= 40
+ if(id==2001||id==2026)uvc_read(2,r.cur);
 #endif
  if(MOCK_DEVICE_FAILURE==5)r.min=r.max+1;
  if(MOCK_DEVICE_FAILURE==6)r.step=4;
  if(MOCK_DEVICE_FAILURE==15||(MOCK_DEVICE_FAILURE==25&&id==2002))*e=(error*)1;
  return r;}
 property_bool_range ob_device_get_bool_property_range(const obj *d,int id,error **e){(void)d;(void)e;property_bool_range r={property_values[property_slot(id)]!=0,1,0,1,1};return r;}
-int32_t ob_device_get_int_property(const obj *d,int id,error **e){(void)d;property_event("get",id,0);if(MOCK_DEVICE_FAILURE==16)*e=(error*)1;
+int32_t ob_device_get_int_property(const obj *d,int id,error **e){(void)d;property_event("get",id,0);
+#if MOCK_DEVICE_FAILURE >= 40
+ if(id==2001||id==2026)uvc_read(1,property_values[property_slot(id)]);
+#endif
+if(MOCK_DEVICE_FAILURE==16)*e=(error*)1;
  #if MOCK_DEVICE_FAILURE >= 30
- if(id==2002&&property_writes==0){int value=MOCK_DEVICE_FAILURE==31?256:101;uvc_read(1,value);if(MOCK_DEVICE_FAILURE==32||MOCK_DEVICE_FAILURE==39)*e=(error*)1;return value;}
+ if(MOCK_DEVICE_FAILURE==43&&id==2002){int value=property_values[0]?256:(property_values[2]==10?101:property_values[2]);uvc_read(1,value);return value;}
+ if(id==2002&&property_writes==0){int value=MOCK_DEVICE_FAILURE==31||(MOCK_DEVICE_FAILURE==43&&property_values[0])?256:101;uvc_read(1,value);if(MOCK_DEVICE_FAILURE==32||MOCK_DEVICE_FAILURE==39)*e=(error*)1;return value;}
 #endif
  if(id==2002&&property_writes==0){
   if(MOCK_DEVICE_FAILURE==18||MOCK_DEVICE_FAILURE==26)return 102;

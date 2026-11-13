@@ -53,11 +53,16 @@ fn device_startup_controls_probe_preflight_readback_and_restore_real_abi() {
         "uvc-37",
         "uvc-38",
         "uvc-39",
+        "uvc-40",
+        "uvc-41",
+        "uvc-42",
+        "ae-requery",
     ] {
         let failure = if let Some(code) = case.strip_prefix("uvc-") {
             code.parse::<u32>().unwrap()
         } else {
             match case {
+                "ae-requery" => 43,
                 "unsupported" | "probe-unsupported" => 3,
                 "readonly" => 4,
                 "range" => 5,
@@ -128,7 +133,10 @@ fn device_startup_controls_probe_preflight_readback_and_restore_real_abi() {
         let log = fs::read_to_string(events).unwrap();
         if !matches!(
             case,
-            "ok" | "uvc-36"
+            "ok" | "ae-requery"
+                | "uvc-40"
+                | "uvc-41"
+                | "uvc-36"
                 | "auto-grid"
                 | "default-grid"
                 | "auto-grid-rollback"
@@ -158,6 +166,76 @@ fn device_startup_controls_probe_preflight_readback_and_restore_real_abi() {
 fn device_controls_child() {
     let case = std::env::var("GDP_PROPERTY_CASE").unwrap();
     let sdk = Sdk::load(std::env::var("GEMINIDEPTHPORT_MOCK_LIBRARY").unwrap()).unwrap();
+    if case == "ae-requery" {
+        let profile = Some(VideoProfile {
+            width: 2,
+            height: 2,
+            fps: 30,
+        });
+        let mut first = sdk
+            .open_with_controls(
+                "test-device",
+                profile,
+                profile,
+                CaptureOptions::default(),
+                &DeviceControls {
+                    enable_color_auto_exposure: Some(false),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            first.device_report().unwrap().properties[3].range_current,
+            Some(256)
+        );
+        first.stop().unwrap();
+        drop(first);
+        let events = std::env::var("GEMINIDEPTHPORT_MOCK_EVENTS").unwrap();
+        assert!(
+            !fs::read_to_string(&events)
+                .unwrap()
+                .contains("property-write-2002")
+        );
+        let mut query = sdk
+            .open_with_controls(
+                "test-device",
+                profile,
+                profile,
+                CaptureOptions::default(),
+                &Default::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            query.device_report().unwrap().properties[3].range_current,
+            Some(101)
+        );
+        assert_eq!(
+            query.device_report().unwrap().properties[3].getter_returned,
+            Some(101)
+        );
+        query.stop().unwrap();
+        drop(query);
+        let mut manual = sdk
+            .open_with_controls(
+                "test-device",
+                profile,
+                profile,
+                CaptureOptions::default(),
+                &DeviceControls {
+                    enable_color_auto_exposure: Some(false),
+                    color_gain: Some(103),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            manual.device_report().unwrap().properties[3].observed,
+            Some(103)
+        );
+        assert!(manual.device_report().unwrap().properties[3].readback_verified);
+        manual.stop().unwrap();
+        return;
+    }
     let mut controls = DeviceControls {
         enable_color_auto_exposure: Some(false),
         color_exposure: Some(104),
@@ -214,7 +292,9 @@ fn device_controls_child() {
     );
     if matches!(
         case.as_str(),
-        "ok" | "uvc-36"
+        "ok" | "uvc-40"
+            | "uvc-41"
+            | "uvc-36"
             | "auto-grid"
             | "default-grid"
             | "probe"
@@ -251,8 +331,32 @@ fn device_controls_child() {
                         .all(|p| p.error.is_some() && p.observed.is_none())
                 );
             }
-            assert!(report.properties.iter().all(|p| p.readback_verified
-                == ["ok", "uvc-36", "auto-grid", "default-grid"].contains(&case.as_str())));
+            assert!(report.properties.iter().all(|p| {
+                p.readback_verified
+                    == [
+                        "ok",
+                        "uvc-40",
+                        "uvc-41",
+                        "uvc-36",
+                        "auto-grid",
+                        "default-grid",
+                    ]
+                    .contains(&case.as_str())
+            }));
+            if ["uvc-40", "uvc-41"].contains(&case.as_str()) {
+                for index in [2, 4] {
+                    let p = &report.properties[index];
+                    assert_eq!(
+                        p.getter_uvc.events[0].operation,
+                        if case == "uvc-40" { 4 } else { 5 }
+                    );
+                    assert_eq!(
+                        p.getter_uvc.backend,
+                        Some(if case == "uvc-40" { "libuvc" } else { "v4l2" })
+                    );
+                    assert!(p.readback_verified);
+                }
+            }
             if case == "uvc-36" {
                 assert_eq!(report.properties[3].getter_uvc.backend, Some("libuvc"));
                 assert_eq!(report.properties[3].getter_returned, Some(101));
@@ -285,7 +389,7 @@ fn device_controls_child() {
         let error = failure.to_string();
         let code = match case.as_str() {
             "uvc-33" | "uvc-39" => "RANGE_QUERY",
-            "uvc-35" => "UVC_READ_FAILED",
+            "uvc-35" | "uvc-42" => "UVC_READ_FAILED",
             "uvc-37" | "uvc-38" => "UVC_TRACE_INVALID",
             "uvc-30" | "uvc-31" | "uvc-32" | "uvc-34" => "VALUE_RANGE",
             "missing-required" => "API_UNAVAILABLE",
@@ -363,7 +467,9 @@ fn device_controls_child() {
                 let p = &diagnostic["property"];
                 assert_eq!(p["range_uvc"]["available"], true);
                 assert!(!p["getter_uvc"]["events"].as_array().unwrap().is_empty());
-                if ["uvc-32", "uvc-34", "uvc-37", "uvc-38", "uvc-39"].contains(&case.as_str()) {
+                if ["uvc-32", "uvc-34", "uvc-37", "uvc-38", "uvc-39", "uvc-42"]
+                    .contains(&case.as_str())
+                {
                     assert!(p["getter_error"].is_string());
                     assert!(p["observed_before"].is_null());
                 }

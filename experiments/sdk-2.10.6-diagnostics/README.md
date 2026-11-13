@@ -122,3 +122,33 @@ errno 只有在相应调用失败时才用于解释。范围字段和原始读�
 第 9 条以计数溢出标记报告，不覆盖先前记录。接口不修改底层调用的返回值、
 异常、setter 或 AE 行为。诊断报告中的可用标记不代表设备归因已经成立；
 应关联实际失败调用的后端、返回值及时间窗口。相机复测由实机测试者执行。
+
+### 三 writer 等待链复测
+
+用本提交重新构建诊断镜像，在原 MiniPC 同盘的新目录执行既有三 writer 至少
+600 秒对照。保留队列 16、原心跳期限、half/full 策略的实际配置及原验收门槛。
+仍需完整覆盖录制和收尾阶段，文件系统／块层追踪保持有界并覆盖内核线程。
+失败后按原规则停止，保留原始载荷与所有旧失败证据。
+
+`analyze_checkpoint_tails.py` 的 `summary.json` 现在包含
+`three_writer_wait_chain`：优先以内部 overflow 的单调时间为锚点，至少关联其
+前一秒的三路事件、队列与活跃 append，输出同 checkpoint 的等待关联和
+`credit_at_wait`。旧日志没有额度字段时为 null，不补造；缺失事件仍沿用原
+覆盖报告。使用新的分析输出目录，例如：
+
+```sh
+python3 experiments/sdk-2.10.6-diagnostics/analyze_checkpoint_tails.py \
+  --run-dir /srv/sdk-test/NEW-RUN/ab/on-01 \
+  --output /srv/sdk-test/NEW-RUN-derived --failure-camera b
+```
+
+回传原始 checkpoint/lifecycle JSONL 与 summary、三 writer 最终状态、完整
+fsync/ext4/jbd2/block/flush 追踪及丢失计数、分析输出与 SHA256。观察额度
+占用、等待开始和 join 返回是否连续，再关联同步和调度；不能把重叠阶段相加，
+也不能仅凭全盘计数或 payload_sync 时间就确定 NVMe 根因。该分析不读取像素，
+不提供两轮 reader、哈希或恢复通过结果。
+
+新增合成回归让同盘三个独立 worker 在健康后同时进入连续 payload fsync
+屏障：首次屏障在队列有积压后释放，第二次保持至原队列溢出。检查额度、失败
+状态、IMU 排空及收尾，再对持久化 prefix 做两次恢复读取。它验证故障处理与
+观测契约，不替代真实 600 秒录制或独立 SIGKILL 验收。

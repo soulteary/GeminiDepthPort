@@ -585,15 +585,26 @@ impl RawRecordingWriter {
     fn complete_pending(&mut self, reason: WaitReason) -> Result<()> {
         let pending = self.chunked.as_mut().and_then(|s| s.pending.take());
         if let Some(pending) = pending {
-            let verified =
-                self.diagnostics
-                    .1
-                    .measure_wait(pending.info, reason, || -> Result<_> {
-                        pending
-                            .task
-                            .join()
-                            .map_err(|_| OfflineError::Invalid("RECORDING_VERIFIER_PANIC"))?
-                    })?;
+            let state = self.chunked.as_ref().unwrap();
+            let credit = super::telemetry::CreditAtWait {
+                pending_payload_bytes: pending.payload_bytes,
+                pending_pairs: pending.pairs,
+                active_payload_bytes: state.active.as_ref().map_or(0, |c| c.bytes),
+                active_pairs: state.active.as_ref().map_or(0, |c| c.pairs),
+                payload_limit_bytes: CHUNK_BYTES,
+                pair_limit: CHUNK_PAIRS,
+            };
+            let verified = self.diagnostics.1.measure_credit_wait(
+                pending.info,
+                reason,
+                credit,
+                || -> Result<_> {
+                    pending
+                        .task
+                        .join()
+                        .map_err(|_| OfflineError::Invalid("RECORDING_VERIFIER_PANIC"))?
+                },
+            )?;
             self.accept_checkpoint(verified, pending.checkpoint_bytes);
         }
         Ok(())

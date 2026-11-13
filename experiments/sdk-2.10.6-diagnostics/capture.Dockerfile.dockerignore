@@ -23,6 +23,7 @@
 !native/usb-recovery/**
 !experiments/
 !experiments/sdk-2.10.6-diagnostics/
+!experiments/sdk-2.10.6-diagnostics/uvc-observations.patch
 !experiments/sdk-2.10.6-diagnostics/sdk-diagnostics.patch
 !experiments/sdk-2.10.6-diagnostics/public-c-exports.txt
 !experiments/sdk-2.10.6-diagnostics/experiment_runtime.py

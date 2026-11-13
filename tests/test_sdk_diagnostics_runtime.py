@@ -30,6 +30,7 @@ def fixture(root):
     for name in rt.REQUIRED_LICENSES:file(rt.SDK+'/'+name)
     for name in ('experiment_runtime.py','entrypoint.sh','health.py'):file(rt.HOME+'/'+name)
     file(rt.HOME+'/sdk-diagnostics.patch',(HERE/'sdk-diagnostics.patch').read_bytes())
+    file(rt.HOME+'/uvc-observations.patch',(HERE/'uvc-observations.patch').read_bytes())
     file(rt.HOME+'/public-c-exports.txt',(HERE/'public-c-exports.txt').read_bytes())
     headers={}
     for n in range(33):
@@ -96,7 +97,7 @@ class RuntimeBindingTests(unittest.TestCase):
             root=Path(d);manifest=fixture(root)
             self.assertEqual(rt.validate_manifest(manifest,root),manifest)
             self.assertNotIn('/opt/gdp-capture/runtime.json',manifest['files'])
-            for name in (rt.LIBRARY,rt.BRIDGE,rt.SERVICE,rt.AUDITOR,rt.HOME+'/sdk-diagnostics.patch',rt.SDK+'/SDK-EULA.txt'):
+            for name in (rt.LIBRARY,rt.BRIDGE,rt.SERVICE,rt.AUDITOR,rt.HOME+'/sdk-diagnostics.patch',rt.HOME+'/uvc-observations.patch',rt.SDK+'/SDK-EULA.txt'):
                 p=rt.physical(root,name);before=p.read_bytes();p.write_bytes(before+b'tamper')
                 with self.subTest(name=name),self.assertRaises(ValueError):rt.validate_manifest(manifest,root)
                 p.write_bytes(before)
