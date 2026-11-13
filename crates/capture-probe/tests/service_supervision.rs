@@ -2028,7 +2028,17 @@ fn raw_byte_limit_after_successful_appends_never_commits_a_partial_target() {
     // Include the bounded startup property evidence in snapshot metadata;
     // leave room for successful appends before the byte limit is reached.
     configure_runtime_quality(&f, 100, 40_000);
-    let mut supervisor = launch(&f);
+    // Exercise the byte budget after a successful append, not throughput.
+    // Dedicated overflow cases retain their full-rate producers and FIFO caps.
+    let mut supervisor = Command::new(env!("CARGO_BIN_EXE_capture-service"))
+        .args(["--config", f.config.to_str().unwrap()])
+        .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+        .env("GDP_ROS_MOCK_EVENTS", &f.events)
+        .env("GDP_MOCK_WAIT_DELAY_MS", "100")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
     let failed = wait_status(&f, &mut supervisor, |v| {
         v["raw_recording"]["state"] == "failed"
     });
@@ -4083,12 +4093,23 @@ fn assert_raw_overflow_context_frozen_during_critical_fsync(held_phase: &str) {
 
 #[test]
 fn three_writers_consecutive_payload_fences_keep_local_credits_and_recover_prefixes() {
+    three_writer_fences("payload_sync");
+}
+#[test]
+fn three_writers_consecutive_index_sync_tails_keep_queue_history_and_recover_prefixes() {
+    three_writer_fences("index_sync");
+}
+fn three_writer_fences(phase: &str) {
+    // Retain three concurrent writers, avoid running two six-worker LLVM
+    // stress groups against each other's test-only parent deadlines.
+    static GROUP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _group = GROUP.lock().unwrap_or_else(|e| e.into_inner());
     let ready = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     thread::scope(|scope| {
         let children: Vec<_> = (0..3)
             .map(|_| {
                 let ready = ready.clone();
-                scope.spawn(move || run_raw_overflow_fault("payload_sync", Some(ready)))
+                scope.spawn(move || run_raw_overflow_fault(phase, Some(ready)))
             })
             .collect();
         for child in children {
@@ -4141,7 +4162,7 @@ fn run_raw_overflow_fault(
         "if(hold) {",
         "const char *hold_armed=getenv(\"GDP_IO_HOLD_ARMED\");if(hold && hold_armed && access(hold_armed,F_OK)==0) {",
     );
-    if held_phase == "payload_sync" {
+    if matches!(held_phase, "payload_sync" | "index_sync") {
         // A second, independent barrier holds the real payload fsync. The
         // existing fail_fd hook still gates only the raw-failed status fsync.
         replace(
@@ -4176,6 +4197,28 @@ fn run_raw_overflow_fault(
             }
             int (*first_sync)(int)=dlsym(RTLD_NEXT,"fsync");return first_sync(fd);
         }"#,
+        );
+    }
+    if held_phase == "index_sync" {
+        replace(
+            &mut hook,
+            "int fsync(int fd) {",
+            r#"static int index_sync_fd(int fd) {
+            char link[64],path[4096];snprintf(link,sizeof(link),"/proc/self/fd/%d",fd);
+            ssize_t n=readlink(link,path,sizeof(path)-1);if(n<0)return 0;path[n]=0;
+            return strstr(path,"/records.jsonl")!=NULL;
+        }
+        int fsync(int fd) {"#,
+        );
+        replace(
+            &mut hook,
+            "access(armed,F_OK)==0 && payload_fd(fd)",
+            "access(armed,F_OK)==0 && index_sync_fd(fd)",
+        );
+        replace(
+            &mut hook,
+            "const char *marker=getenv(\"GDP_IO_HOLD_MARKER\"),*release=getenv(\"GDP_IO_HOLD_RELEASE\");",
+            "usleep(400000); const char *marker=getenv(\"GDP_IO_HOLD_MARKER\"),*release=getenv(\"GDP_IO_HOLD_RELEASE\");",
         );
     }
     let local_hook = f.root.join("armed-checkpoint-hook.c");
@@ -4257,6 +4300,16 @@ fn run_raw_overflow_fault(
                     let _ = child.kill();
                     let _ = child.wait();
                 }
+                let latest = latest.map(|mut v| {
+                    if let Some(events) =
+                        v["raw_recording"]["writer_queue"]["history"]["events"].as_array_mut()
+                    {
+                        if events.len() > 4 {
+                            events.drain(..events.len() - 4);
+                        }
+                    }
+                    v
+                });
                 panic!(
                     "{phase}: exit={exit:?}; evidence={}",
                     json!({"status":latest,"private_failures":failures})
@@ -4342,6 +4395,17 @@ fn run_raw_overflow_fault(
         .expect("critical status tempfile must retain the first overflow before fsync release");
     let frozen =
         assert_raw_overflow_context(&pending, held_phase, raw_overflow_test_monotonic_ns());
+    let history = &pending["raw_recording"]["writer_queue"]["history"];
+    assert_eq!(history["enabled"], true);
+    let events = history["events"].as_array().unwrap();
+    assert!(events.len() <= 512);
+    assert!(events.iter().any(|e| e[2] == "overflow" && e[4] == 16));
+    assert!(
+        events
+            .windows(2)
+            .all(|e| e[0][0].as_u64().unwrap() + 1 == e[1][0].as_u64().unwrap())
+    );
+
     assert!(
         !Path::new(pending["raw_recording"]["partial_path"].as_str().unwrap())
             .join("COMPLETE")

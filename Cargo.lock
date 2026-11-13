@@ -75,6 +75,7 @@ dependencies = [
  "quality-core",
  "ring",
  "ros-output",
+ "serde",
  "serde_json",
  "tempfile",
 ]

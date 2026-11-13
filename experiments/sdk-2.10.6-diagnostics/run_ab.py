@@ -18,6 +18,14 @@ import retention
 HERE=Path(__file__).resolve().parent
 
 
+def check_observer_gate():
+    marker=os.environ.get('GDP_OBSERVER_STOP_FILE')
+    if marker:
+        path=Path(marker)
+        rt.require(path.is_absolute() and not path.is_symlink(),'OBSERVER_STOP_PATH')
+        rt.require(not path.exists(),'EXTERNAL_OBSERVATION_INCOMPLETE_AFTER_CURRENT_GROUP')
+
+
 def schedule(rounds,first):
     rt.require(3<=rounds<=10,'AT_LEAST_THREE_ROUNDS_MAX_TEN')
     modes=(first,'off' if first=='on' else 'on')
@@ -137,12 +145,14 @@ def execute(a):
                   'settings':{k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items()}}
         one.atomic(a.root/'manifest.json',manifest);result.update(image_id=image,runtime_sha256=manifest['runtime_sha256']);save()
         for group in groups:
+            check_observer_gate()
             result['active_group']=group['name'];save()
             rt.require(not (a.root/'ABORT.json').exists(),'BATCH_ABORTED');check_frozen(a.root,manifest)
             entry=dict(group);result['groups'].append(entry);save()
             print(json.dumps({'group':group['name'],'image_id':image}),flush=True)
             limit=a.healthy_timeout+a.seconds+a.completion_timeout+2*a.audit_timeout+600
             controller_command(controller,[sys.executable,str(HERE/'run_hardware.py'),*forward(a,group['mode'],a.root/group['name'],image)],group['name'],limit)
+            check_observer_gate()  # Child has finished writer cleanup; do not start another group or release data.
             summary=metrics.summarize(a.root/group['name'],manifest,group['mode'])
             if result['groups'][0].get('summary'):
                 rt.require(summary['normalized_config_hashes']==result['groups'][0]['summary']['normalized_config_hashes'],'CROSS_RUN_CONFIG_CHANGED')

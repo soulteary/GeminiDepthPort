@@ -271,6 +271,7 @@ def execute(a):
         assert_active(a, manifest); phase('ab')
         limit = a.rounds*2*(a.healthy_timeout+a.seconds+a.completion_timeout+2*a.audit_timeout+600+a.cooldown_seconds)
         command([sys.executable, str(HERE/'run_ab.py'), *batch_args(a, image)], 'ab', limit)
+        batch.check_observer_gate()
         ab_result = rt.read_json(a.root/'ab/result.json'); summary = rt.read_json(a.root/'ab/summary.json')
         rt.require(ab_result.get('ok') is True and summary.get('complete') is True and summary.get('batch_ok') is True
                    and ab_result['image_id'] == image and ab_result['runtime_sha256'] == manifest['runtime_sha256'], 'AB_ACCEPTANCE_FAILED')
