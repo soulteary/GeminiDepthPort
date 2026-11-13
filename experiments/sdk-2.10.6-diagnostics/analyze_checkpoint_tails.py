@@ -157,6 +157,10 @@ def internal_queue_history(samples, start, end):
         require(type(rows) is list and len(rows)<=512, 'QUEUE_HISTORY_BOUND')
         ids=[]
         for row in rows:
+            if type(row) is list:
+                columns=history.get('columns')
+                require(type(columns) is list and len(columns)==len(row) and len(set(columns))==len(columns),'QUEUE_EVENT_COLUMNS')
+                row=dict(zip(columns,row))
             require(type(row) is dict and row.get('operation') in ('enqueue','dequeue','written','overflow','close','abandon'), 'QUEUE_EVENT_SCHEMA')
             event_id=integer(row.get('event_id'),'QUEUE_EVENT_ID'); at=row.get('monotonic_ns')
             if at is None:continue

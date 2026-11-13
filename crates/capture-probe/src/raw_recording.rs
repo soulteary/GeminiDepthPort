@@ -302,7 +302,20 @@ fn monotonic_ns() -> Option<u64> {
     }
 }
 const QUEUE_HISTORY: usize = 512;
+type QueueEventRow = (
+    u64,
+    Option<u64>,
+    &'static str,
+    Option<u64>,
+    usize,
+    u64,
+    u64,
+    Option<u64>,
+    Option<u64>,
+    Option<u64>,
+);
 #[derive(Clone, Copy, serde::Serialize)]
+#[serde(into = "QueueEventRow")]
 struct QueueEvent {
     event_id: u64,
     monotonic_ns: Option<u64>,
@@ -314,6 +327,22 @@ struct QueueEvent {
     oldest_queued_age_ns: Option<u64>,
     front_pair_sequence: Option<u64>,
     inflight_pair_sequence: Option<u64>,
+}
+impl From<QueueEvent> for QueueEventRow {
+    fn from(e: QueueEvent) -> Self {
+        (
+            e.event_id,
+            e.monotonic_ns,
+            e.operation,
+            e.pair_sequence,
+            e.queued_pairs,
+            e.queued_payload_bytes,
+            e.inflight_pairs,
+            e.oldest_queued_age_ns,
+            e.front_pair_sequence,
+            e.inflight_pair_sequence,
+        )
+    }
 }
 struct QueueState {
     history: VecDeque<QueueEvent>,
@@ -381,7 +410,7 @@ struct QueueReport {
 }
 impl QueueReport {
     fn report(self, capacity: usize) -> Value {
-        json!({"history":{"version":1,"clock":"CLOCK_MONOTONIC","enabled":self.history_enabled,"capacity":QUEUE_HISTORY,"latest_event_id":self.latest_event_id,"overwritten_events":self.latest_event_id.saturating_sub(self.history.len() as u64),"events":self.history,"scope":"internal queue transitions, independent of status publication time; retention is bounded, missing history is not zero backlog"},"capacity_pairs":capacity,"queued_pairs":self.queued_pairs,"queued_payload_bytes":self.queued_bytes,
+        json!({"history":{"version":1,"clock":"CLOCK_MONOTONIC","enabled":self.history_enabled,"capacity":QUEUE_HISTORY,"columns":["event_id","monotonic_ns","operation","pair_sequence","queued_pairs","queued_payload_bytes","inflight_pairs","oldest_queued_age_ns","front_pair_sequence","inflight_pair_sequence"],"latest_event_id":self.latest_event_id,"overwritten_events":self.latest_event_id.saturating_sub(self.history.len() as u64),"events":self.history,"scope":"internal queue transitions, independent of status publication time; retention is bounded, missing history is not zero backlog"},"capacity_pairs":capacity,"queued_pairs":self.queued_pairs,"queued_payload_bytes":self.queued_bytes,
             "oldest_queued_age_ns":self.oldest_age_ns,
             "high_water_pairs":self.high_water_pairs,"high_water_payload_bytes":self.high_water_bytes,
             "inflight_pairs":self.inflight_pairs,"inflight_payload_bytes":self.inflight_bytes,
@@ -1353,18 +1382,13 @@ mod tests {
                 assert_eq!(events.len(), QUEUE_HISTORY);
                 assert_eq!(current["history"]["latest_event_id"], 604);
                 assert_eq!(current["history"]["overwritten_events"], 92);
-                assert!(
-                    events
-                        .iter()
-                        .any(|e| e["operation"] == "overflow" && e["queued_pairs"] == 1)
-                );
+                assert!(events.iter().any(|e| e[2] == "overflow" && e[4] == 1));
                 assert!(
                     events
                         .windows(2)
-                        .all(|v| v[0]["event_id"].as_u64().unwrap() + 1
-                            == v[1]["event_id"].as_u64().unwrap())
+                        .all(|v| v[0][0].as_u64().unwrap() + 1 == v[1][0].as_u64().unwrap())
                 );
-                assert!(events.iter().all(|e| e["monotonic_ns"].is_u64()));
+                assert!(events.iter().all(|e| e[1].is_u64()));
             } else {
                 assert!(events.is_empty());
                 assert_eq!(current["history"]["latest_event_id"], 0);

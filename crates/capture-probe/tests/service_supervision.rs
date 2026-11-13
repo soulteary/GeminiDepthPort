@@ -4090,6 +4090,10 @@ fn three_writers_consecutive_index_sync_tails_keep_queue_history_and_recover_pre
     three_writer_fences("index_sync");
 }
 fn three_writer_fences(phase: &str) {
+    // Retain three concurrent writers, avoid running two six-worker LLVM
+    // stress groups against each other's test-only parent deadlines.
+    static GROUP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _group = GROUP.lock().unwrap_or_else(|e| e.into_inner());
     let ready = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     thread::scope(|scope| {
         let children: Vec<_> = (0..3)
@@ -4286,6 +4290,16 @@ fn run_raw_overflow_fault(
                     let _ = child.kill();
                     let _ = child.wait();
                 }
+                let latest = latest.map(|mut v| {
+                    if let Some(events) =
+                        v["raw_recording"]["writer_queue"]["history"]["events"].as_array_mut()
+                    {
+                        if events.len() > 4 {
+                            events.drain(..events.len() - 4);
+                        }
+                    }
+                    v
+                });
                 panic!(
                     "{phase}: exit={exit:?}; evidence={}",
                     json!({"status":latest,"private_failures":failures})
@@ -4375,15 +4389,11 @@ fn run_raw_overflow_fault(
     assert_eq!(history["enabled"], true);
     let events = history["events"].as_array().unwrap();
     assert!(events.len() <= 512);
-    assert!(
-        events
-            .iter()
-            .any(|e| e["operation"] == "overflow" && e["queued_pairs"] == 16)
-    );
+    assert!(events.iter().any(|e| e[2] == "overflow" && e[4] == 16));
     assert!(
         events
             .windows(2)
-            .all(|e| e[0]["event_id"].as_u64().unwrap() + 1 == e[1]["event_id"].as_u64().unwrap())
+            .all(|e| e[0][0].as_u64().unwrap() + 1 == e[1][0].as_u64().unwrap())
     );
 
     assert!(

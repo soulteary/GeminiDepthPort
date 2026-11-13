@@ -52,11 +52,15 @@ class TailTests(unittest.TestCase):
                 for i,at in enumerate((100,200,300,400),1)]}
         rows=[{'sample_id':0,'target':'a','epoch':0,'writer_queue':{'history':history},'monotonic_ns':9000},
               {'sample_id':1,'target':'a','epoch':0,'writer_queue':{'history':history},'monotonic_ns':9100}]
+        rows[1]=copy.deepcopy(rows[1])
+        compact=rows[1]['writer_queue']['history']
+        compact['columns']=list(compact['events'][0])
+        compact['events']=[[e[c] for c in compact['columns']] for e in compact['events']]
         result=analysis.internal_queue_history(rows,150,350)[0]
         self.assertTrue(result['window_bracketed'])
         self.assertEqual([r['event_id'] for r in result['events']],[2,3])
         self.assertEqual(result['missing_between_selected_events'],0)
-        bad=copy.deepcopy(rows);bad[1]=copy.deepcopy(bad[1]);bad[1]['writer_queue']['history']['events'][1]['queued_pairs']=99
+        bad=copy.deepcopy(rows);bad[1]=copy.deepcopy(bad[1]);bad[1]['writer_queue']['history']['events'][1][3]=99
         with self.assertRaisesRegex(ValueError,'CONFLICTING_QUEUE_EVENT'):analysis.internal_queue_history(bad,150,350)
         self.assertEqual(analysis.internal_queue_history([dict(rows[0],writer_queue={})],150,350),[])
 
