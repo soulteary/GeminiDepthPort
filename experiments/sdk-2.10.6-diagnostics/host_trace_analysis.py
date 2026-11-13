@@ -113,6 +113,8 @@ class Generations:
         self.live = {}
         self.by_tid = {}
         self.gaps = []
+        self.exits = {}
+        self.exit_count = 0
         self.gap_count = 0
 
     def gap(self, reason, **context):
@@ -147,6 +149,9 @@ class Generations:
             self.born(tid, at, "exec")
         elif kind == "sched_process_exit":
             tid = scalar(fields, "pid")
+            self.exits.setdefault(tid, []).append(at)
+            self.exit_count += 1
+            require(self.exit_count <= self.maximum, "EXIT_ANALYSIS_LIMIT")
             row = self.live.pop(tid, None)
             if row:
                 row["end"] = at
@@ -180,8 +185,21 @@ class Generations:
             require(thread["nspid"][0] == thread["tid"], "SNAPSHOT_HOST_TID_SCHEMA")
             row = self.at(thread["tid"], start, end)
             if row is None:
+                # A PID-filtered stream attaches to existing tasks. The stable
+                # proc snapshot anchors identity from its END, never from birth.
+                prior=self.by_tid.get(thread["tid"],[])
+                boundaries=[r["start"] for r in prior]+self.exits.get(thread["tid"],[])
+                overlaps=any(r["start"]<=end and (r["end"] is None or r["end"]>=start) for r in prior)
+                if not overlaps and not any(start<=at<=end for at in boundaries):
+                    require(len(self.rows)<self.maximum,"GENERATION_ANALYSIS_LIMIT")
+                    row={"generation":len(self.rows)+1,"tid":thread["tid"],"start":end,
+                        "end":min((at for at in boundaries if at>end),default=None),
+                        "basis":"stable-proc-anchor-after-attach; birth unknown","parent_generation":None,"owner":None}
+                    self.rows.append(row);self.by_tid.setdefault(thread["tid"],[]).append(row)
+                    self.by_tid[thread["tid"]].sort(key=lambda r:r["start"])
+            if row is None:
                 self.gap("snapshot-without-enclosing-fork-or-exec-generation", group=group, camera=camera,
-                         tid=thread["tid"], start_ticks=thread["start_ticks"], sample_started_monotonic_ns=start)
+                         tid=thread["tid"], start_ticks=thread["start_ticks"], sample_started_monotonic_ns=start, sample_finished_monotonic_ns=end)
                 continue
             owner = {"group": group, "camera": camera, "worker_host_pid": worker_key[0],
                      "worker_start_ticks": worker_key[1], "tid_start_ticks": thread["start_ticks"],
@@ -323,6 +341,16 @@ def parse(syscalls, line):
     return int(tid), int(cpu), int(seconds) * 10**9 + int(fraction) * resolution, resolution, kind, fields
 
 
+def split_generation_gaps(gaps, start, end):
+    inside, outside = [], []
+    for gap in gaps:
+        first=gap.get('sample_started_monotonic_ns',gap.get('monotonic_ns'))
+        last=gap.get('sample_finished_monotonic_ns',first)
+        if type(first) is int and type(last) is int and (last<start or first>end):outside.append(gap)
+        else:inside.append(gap)
+    return inside,outside
+
+
 def analyze(source, trace, official, output, max_output=256 * 1024**2):
     source, trace, official, output = map(lambda p: Path(p).resolve(), (source, trace, official, output))
     require(not output.exists() and not output.is_relative_to(trace)
@@ -387,9 +415,7 @@ def analyze(source, trace, official, output, max_output=256 * 1024**2):
                 budget.json("proven-generations.jsonl", row)
         application_gaps = original_observer_gaps(original)
         interval_start, interval_end = chain["window_start_monotonic_ns"], chain["window_end_monotonic_ns"]
-        outside_gaps = [g for g in generations.gaps if g.get("sample_started_monotonic_ns", interval_start) < interval_start
-                        or g.get("sample_started_monotonic_ns", interval_start) > interval_end]
-        window_gaps = [g for g in generations.gaps if g not in outside_gaps]
+        window_gaps, outside_gaps = split_generation_gaps(generations.gaps, interval_start, interval_end)
         gaps = window_gaps + association.gaps + application_gaps
         interval_start, interval_end = chain["window_start_monotonic_ns"], chain["window_end_monotonic_ns"]
         queue_brackets = {}

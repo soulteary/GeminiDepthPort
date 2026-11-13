@@ -307,6 +307,7 @@ struct QueueEvent {
     event_id: u64,
     monotonic_ns: Option<u64>,
     operation: &'static str,
+    pair_sequence: Option<u64>,
     queued_pairs: usize,
     queued_payload_bytes: u64,
     inflight_pairs: u64,
@@ -332,7 +333,7 @@ struct QueueState {
     first_overflow: Option<QueueOverflowSnapshot>,
 }
 impl QueueState {
-    fn observe(&mut self, operation: &'static str) {
+    fn observe(&mut self, operation: &'static str, pair_sequence: Option<u64>) {
         if !self.history_enabled {
             return;
         }
@@ -341,6 +342,7 @@ impl QueueState {
             event_id: self.next_event,
             monotonic_ns: monotonic_ns(),
             operation,
+            pair_sequence,
             queued_pairs: self.pairs.len(),
             queued_payload_bytes: self.bytes,
             inflight_pairs: self.inflight_pairs,
@@ -460,7 +462,7 @@ impl RecordingQueue {
                 state.first_overflow = Some(snapshot);
                 snapshot
             };
-            state.observe("overflow");
+            state.observe("overflow", Some(PairIdentity::of(&pair).pair_sequence));
             drop(state);
             return Err(QueueSendError::Full(Box::new(snapshot)));
         }
@@ -468,7 +470,11 @@ impl RecordingQueue {
         state.pairs.push_back(pair);
         state.high_water_pairs = state.high_water_pairs.max(state.pairs.len());
         state.high_water_bytes = state.high_water_bytes.max(state.bytes);
-        state.observe("enqueue");
+        let sequence = state
+            .pairs
+            .back()
+            .map(|p| PairIdentity::of(p).pair_sequence);
+        state.observe("enqueue", sequence);
         self.available.notify_one();
         Ok(())
     }
@@ -483,7 +489,7 @@ impl RecordingQueue {
                 state.inflight_pair = Some(PairIdentity::of(&pair));
                 state.dequeued += 1;
                 state.wait.observe(pair.enqueued.elapsed());
-                state.observe("dequeue");
+                state.observe("dequeue", Some(PairIdentity::of(&pair).pair_sequence));
                 return Some(pair);
             }
             if state.closed {
@@ -497,15 +503,16 @@ impl RecordingQueue {
     }
     fn written(&self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let sequence = state.inflight_pair.map(|p| p.pair_sequence);
         state.inflight_pairs = 0;
         state.inflight_bytes = 0;
         state.inflight_pair = None;
-        state.observe("written");
+        state.observe("written", sequence);
     }
     fn close(&self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.closed = true;
-        state.observe("close");
+        state.observe("close", None);
         self.available.notify_all();
     }
     fn abandon(&self) {
@@ -517,7 +524,7 @@ impl RecordingQueue {
         state.inflight_pairs = 0;
         state.inflight_bytes = 0;
         state.inflight_pair = None;
-        state.observe("abandon");
+        state.observe("abandon", None);
         drop(state);
         drop(abandoned);
         self.available.notify_all();

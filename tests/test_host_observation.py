@@ -29,6 +29,14 @@ class HostObservationTests(unittest.TestCase):
         source['source_summaries']['checkpoint']['errors']={'read':1}
         self.assertTrue(any(g['reason']=='original-checkpoint-sampling-errors' for g in analysis.original_observer_gaps(source)))
 
+    def test_identity_sample_crossing_window_boundary_remains_incomplete(self):
+        crossing={'sample_started_monotonic_ns':90,'sample_finished_monotonic_ns':110}
+        old={'sample_started_monotonic_ns':10,'sample_finished_monotonic_ns':20}
+        future={'monotonic_ns':300}
+        inside,outside=analysis.split_generation_gaps([crossing,old,future,{'reason':'unknown-clock'}],100,200)
+        self.assertIn(crossing,inside);self.assertIn(old,outside);self.assertIn(future,outside)
+        self.assertEqual(len(inside),2)
+
     def test_generation_namespace_tid_and_pid_reuse_are_strict(self):
         g=analysis.Generations(20)
         g.event('sched_process_fork','parent_pid=10 child_pid=20',100,sc.scalar)
@@ -49,6 +57,19 @@ class HostObservationTests(unittest.TestCase):
         g.event('sched_process_fork','parent_pid=99 child_pid=20',300,sc.scalar)
         self.assertIsNone(g.at(20,310)['owner'])
         self.assertIsNone(g.at(20,240,310))
+
+    def test_attached_existing_thread_is_anchored_after_snapshot_not_backdated(self):
+        g=analysis.Generations(20)
+        g.event('sched_process_exit','pid=10',400,sc.scalar)
+        pin={'container_id':'container','process':{'worker_host_pid':10,'worker_start_ticks':3,'pid_namespace':'pid:[7]'}}
+        sample={'group':'on-01','camera':'a','runtime_identity':pin,
+                'threads':[{'tgid':10,'pid_namespace':'pid:[7]','monotonic_offset_ns':0,'tid':10,'nspid':[10,17],'start_ticks':3}],
+                'sample_started_monotonic_ns':100,'sample_finished_monotonic_ns':120}
+        g.anchor(sample,{('a',10,3)})
+        self.assertIsNone(g.at(10,110))
+        self.assertEqual(g.at(10,130)['owner']['namespace_tid'],17)
+        self.assertIsNone(g.at(10,410))
+        self.assertIn('birth unknown',g.rows[0]['basis'])
 
     def test_fork_callback_captures_short_lived_namespace_identity_and_rejects_reuse(self):
         with tempfile.TemporaryDirectory() as d:
@@ -76,7 +97,7 @@ class HostObservationTests(unittest.TestCase):
             args=SimpleNamespace(execute=True,observer='on',source=ROOT,output=root/'new',recording_path=root,
                 retest_root=root/'run',disk='test',filesystem_uuid='test',revision='a'*40,max_bytes=16*1024**2,max_seconds=600,
                 command=[sys.executable,'-c',"import pathlib,time;time.sleep(.1);pathlib.Path(__import__('sys').argv[1]).write_text('finished')",str(done)])
-            with patch.object(runner,'HostKernelTrace',FailedTrace):self.assertEqual(runner.run(args),2)
+            with patch.object(runner,'HostKernelTrace',FailedTrace),patch.object(runner,'source_identity',return_value='a'*40):self.assertEqual(runner.run(args),2)
             self.assertEqual(done.read_text(),'finished')
             result=json.loads((args.output/'result.json').read_text())
             self.assertEqual(result['driver_returncode'],0);self.assertFalse(result['hardware_acceptance_verified'])

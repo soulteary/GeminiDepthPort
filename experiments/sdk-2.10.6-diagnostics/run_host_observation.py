@@ -6,6 +6,8 @@ failure/cleanup rules. Outputs must be new and private. No hardware acceptance
 is inferred from process exit, tracing, or file hashes.
 """
 import argparse
+import re
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,11 +18,21 @@ import time
 from host_kernel_trace import HostKernelTrace, stream_sha
 
 
+def source_identity(source,revision):
+    if re.fullmatch('[a-f0-9]{40}',revision) is None:raise ValueError('EXPLICIT_SOURCE_REVISION_REQUIRED')
+    git=['git','--no-optional-locks','-C',str(source)]
+    head=subprocess.check_output(git+['rev-parse','HEAD'],text=True,timeout=30).strip()
+    clean=subprocess.check_output(git+['status','--porcelain','--untracked-files=all'],text=True,timeout=30)
+    if head!=revision or clean:raise ValueError('FIXED_CLEAN_SOURCE_REQUIRED')
+    return head
+
+
 def run(args):
     if not args.execute or not args.command:raise ValueError('EXPLICIT_EXECUTE_AND_COMMAND_REQUIRED')
     output=args.output.absolute()
     if output.exists() or output.is_symlink():raise ValueError('FRESH_OUTPUT_REQUIRED')
     if not 600<=args.max_seconds<=86400:raise ValueError('DRIVER_DEADLINE_BOUND')
+    revision=source_identity(args.source,args.revision)
     output.mkdir(parents=True,mode=0o700)
     observer=None;child=None;trace=None;began=time.monotonic();failure=None
     usage_before=resource.getrusage(resource.RUSAGE_SELF)
@@ -53,7 +65,8 @@ def run(args):
             'observer_system_cpu_seconds':usage_after.ru_stime-usage_before.ru_stime,
             'observer_maxrss_native_units':usage_after.ru_maxrss,
             'cpu_scope':'wrapper plus its observer threads only; excludes driver, Docker workers and kernel threads',
-            'version':1,'observer_mode':args.observer,'driver_returncode':child.returncode if child else None,
+            'version':1,'source_revision':revision,'command_sha256':hashlib.sha256(json.dumps(args.command).encode()).hexdigest(),
+            'observer_mode':args.observer,'driver_returncode':child.returncode if child else None,
             'driver_failure':failure,'observation':trace,'hardware_acceptance_verified':False,
             'wall_seconds':time.monotonic()-began,
             'scope':'driver and observer conclusions remain separate; original acceptance reports are authoritative'}
