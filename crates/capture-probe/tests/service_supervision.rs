@@ -4110,6 +4110,25 @@ fn run_raw_overflow_fault(
     config["imu"]["accel_rate_hz"] = json!(50);
     config["imu"]["gyro_rate_hz"] = json!(50);
     fs::write(&f.config, config.to_string()).unwrap();
+    if group.is_some() {
+        // Bound production during the first fence by frame progress, so a
+        // delayed parent cannot accidentally overflow before releasing it.
+        // Returning an SDK timeout keeps heartbeat/IMU pumping live.
+        let source = f.root.join("mock-sdk.c");
+        let mut sdk = fs::read_to_string(&source).unwrap();
+        replace(
+            &mut sdk,
+            "obj *ob_pipeline_wait_for_frameset(obj *p,uint32_t ms,error **e){",
+            r#"obj *ob_pipeline_wait_for_frameset(obj *p,uint32_t ms,error **e){
+        static unsigned after_first_fence;
+        const char *first_marker=getenv("GDP_IO_FIRST_MARKER"),*first_release=getenv("GDP_IO_FIRST_RELEASE");
+        if(first_marker && first_release && access(first_marker,F_OK)==0 && access(first_release,F_OK)!=0
+           && ++after_first_fence>24){usleep(1000);return NULL;}
+        "#,
+        );
+        fs::write(&source, sdk).unwrap();
+        compile("cc", &source, &f.root.join("mock-sdk.so"), None);
+    }
     let library = io_faults::compile(&f.root);
     // Scope the deliberate readback stall to an already healthy recording.
     // GDP_IO_ARMED governs fail(), not the independent read() hold hook.
