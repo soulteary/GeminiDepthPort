@@ -60,11 +60,22 @@ static int fail_fd(const char *op,int fd) {
     const char *content=getenv("GDP_IO_REQUIRE_CONTENT");
     if(content) {
         int input=open(path,O_RDONLY);if(input<0)return 0;
-        char raw[65536];ssize_t (*real_read)(int,void*,size_t)=dlsym(RTLD_NEXT,"read");
-        ssize_t size=real_read(input,raw,sizeof(raw)-1);close(input);
-        if(size<0)return 0;
-        raw[size]=0;
-        if(!strstr(raw,content))return 0;
+        /* Status history can move the target past the first 64 KiB. Scan the
+           bounded file with overlap; never allocate/copy its full contents. */
+        const size_t pattern=strlen(content);
+        if(pattern==0 || pattern>256){close(input);return 0;}
+        char raw[8192+256];size_t carry=0,total=0;int found=0;
+        ssize_t (*real_read)(int,void*,size_t)=dlsym(RTLD_NEXT,"read");
+        while(total<4U*1024U*1024U) {
+            size_t want=4U*1024U*1024U-total;if(want>8192)want=8192;
+            ssize_t size=real_read(input,raw+carry,want);
+            if(size<0 && errno==EINTR)continue;
+            if(size<=0)break;
+            total+=(size_t)size;size_t used=carry+(size_t)size;raw[used]=0;
+            if(strstr(raw,content)){found=1;break;}
+            carry=used<pattern-1?used:pattern-1;memmove(raw,raw+used-carry,carry);
+        }
+        close(input);if(!found)return 0;
     }
     return fail(op,path);
 }

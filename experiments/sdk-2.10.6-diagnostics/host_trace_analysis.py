@@ -139,7 +139,8 @@ class Generations:
         if kind == "sched_process_fork":
             parent = scalar(fields, "parent_pid" if re.search(r"\bparent_pid\s*=", fields) else "pid")
             child = scalar(fields, "child_pid")
-            self.born(child, at, "fork", self.live.get(parent, {}).get("generation"))
+            born=self.born(child, at, "fork", self.live.get(parent, {}).get("generation"))
+            born["parent_tid"]=parent
         elif kind == "sched_process_exec":
             tid, old = scalar(fields, "pid"), scalar(fields, "old_pid")
             for value in {tid, old}:
@@ -170,6 +171,12 @@ class Generations:
         if row["start"] >= start or (row["end"] is not None and row["end"] <= end):
             return None
         return row
+
+    def resolve_parents(self):
+        for row in self.rows:
+            if "parent_tid" in row:
+                parent=self.at(row["parent_tid"],row["start"])
+                if parent is not None:row["parent_generation"]=parent["generation"]
 
     def anchor(self, sample, expected_workers):
         group, camera = sample["group"], sample["camera"]
@@ -390,6 +397,7 @@ def analyze(source, trace, official, output, max_output=256 * 1024**2):
     output.mkdir(mode=0o700, parents=True)
     budget = Budget(output, max_output)
     try:
+        generations.resolve_parents()
         association = Association(syscalls, generations, chain, lambda row: budget.json("writer-events.jsonl", row))
         for line in raw_lines(trace / "host-raw.trace"):
             event = parse(syscalls, line)
@@ -504,7 +512,7 @@ def analyze(source, trace, official, output, max_output=256 * 1024**2):
         value = {"schema": "gdp-independent-host-association-v1", "revision": ready["revision"], "analysis_only": True,
             "outside_window_identity_gaps":outside_gaps,
             "observer_history_notes":original.get("source_summaries"),
-            "overall_identity_history_complete":not generations.gaps,
+            "overall_identity_history_complete":not generations.gaps and not any("birth unknown" in r["basis"] for r in generations.rows),
             "association_complete": not gaps, "state": "complete" if not gaps else "incomplete",
             "hardware_acceptance_verified": False, "original_analysis_unchanged": True,
             "input_sha256": refs, "three_writer_wait_chain": chain, "gaps": gaps,

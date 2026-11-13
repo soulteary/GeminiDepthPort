@@ -8,8 +8,9 @@ jobs:
   data-plane:
     runs-on: ubuntu-24.04
     env:
-      # The tests retain their own explicit concurrent workers/processes.
-      RUST_TEST_THREADS: '2'
+      # Independent fault stimuli run serially; each test retains its explicit
+      # concurrent workers/processes, real queue caps and deadline assertions.
+      RUST_TEST_THREADS: '1'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Install declared minimum Rust toolchain

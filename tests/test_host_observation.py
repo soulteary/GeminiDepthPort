@@ -61,6 +61,7 @@ class HostObservationTests(unittest.TestCase):
     def test_attached_existing_thread_is_anchored_after_snapshot_not_backdated(self):
         g=analysis.Generations(20)
         g.event('sched_process_exit','pid=10',400,sc.scalar)
+        g.event('sched_process_fork','parent_pid=10 child_pid=20',200,sc.scalar)
         pin={'container_id':'container','process':{'worker_host_pid':10,'worker_start_ticks':3,'pid_namespace':'pid:[7]'}}
         sample={'group':'on-01','camera':'a','runtime_identity':pin,
                 'threads':[{'tgid':10,'pid_namespace':'pid:[7]','monotonic_offset_ns':0,'tid':10,'nspid':[10,17],'start_ticks':3}],
@@ -69,7 +70,9 @@ class HostObservationTests(unittest.TestCase):
         self.assertIsNone(g.at(10,110))
         self.assertEqual(g.at(10,130)['owner']['namespace_tid'],17)
         self.assertIsNone(g.at(10,410))
-        self.assertIn('birth unknown',g.rows[0]['basis'])
+        g.resolve_parents()
+        self.assertEqual(g.at(20,210)['parent_generation'],g.at(10,130)['generation'])
+        self.assertIn('birth unknown',g.at(10,130)['basis'])
 
     def test_fork_callback_captures_short_lived_namespace_identity_and_rejects_reuse(self):
         with tempfile.TemporaryDirectory() as d:
