@@ -395,6 +395,8 @@ impl QueueState {
 struct QueueReport {
     history: Vec<QueueEvent>,
     history_enabled: bool,
+    retained_events: usize,
+    history_exported: bool,
     latest_event_id: u64,
     queued_pairs: usize,
     queued_bytes: u64,
@@ -410,7 +412,7 @@ struct QueueReport {
 }
 impl QueueReport {
     fn report(self, capacity: usize) -> Value {
-        json!({"history":{"version":1,"clock":"CLOCK_MONOTONIC","enabled":self.history_enabled,"capacity":QUEUE_HISTORY,"columns":["event_id","monotonic_ns","operation","pair_sequence","queued_pairs","queued_payload_bytes","inflight_pairs","oldest_queued_age_ns","front_pair_sequence","inflight_pair_sequence"],"latest_event_id":self.latest_event_id,"overwritten_events":self.latest_event_id.saturating_sub(self.history.len() as u64),"events":self.history,"scope":"internal queue transitions, independent of status publication time; retention is bounded, missing history is not zero backlog"},"capacity_pairs":capacity,"queued_pairs":self.queued_pairs,"queued_payload_bytes":self.queued_bytes,
+        json!({"history":{"version":1,"clock":"CLOCK_MONOTONIC","enabled":self.history_enabled,"capacity":QUEUE_HISTORY,"columns":["event_id","monotonic_ns","operation","pair_sequence","queued_pairs","queued_payload_bytes","inflight_pairs","oldest_queued_age_ns","front_pair_sequence","inflight_pair_sequence"],"latest_event_id":self.latest_event_id,"exported":self.history_exported,"retained_events":self.retained_events,"overwritten_events":self.latest_event_id.saturating_sub(self.retained_events as u64),"events":self.history,"scope":"internal queue transitions, independent of status publication time; retention is bounded, missing history is not zero backlog"},"capacity_pairs":capacity,"queued_pairs":self.queued_pairs,"queued_payload_bytes":self.queued_bytes,
             "oldest_queued_age_ns":self.oldest_age_ns,
             "high_water_pairs":self.high_water_pairs,"high_water_payload_bytes":self.high_water_bytes,
             "inflight_pairs":self.inflight_pairs,"inflight_payload_bytes":self.inflight_bytes,
@@ -561,8 +563,16 @@ impl RecordingQueue {
     fn snapshot(&self) -> QueueReport {
         let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         QueueReport {
-            history: s.history.iter().copied().collect(),
+            // Normal capture publishes only the cursor. Export the retained
+            // pre-fault window after first full or close, outside the hot loop.
+            history: if s.closed || s.first_overflow.is_some() {
+                s.history.iter().copied().collect()
+            } else {
+                Vec::new()
+            },
             history_enabled: s.history_enabled,
+            retained_events: s.history.len(),
+            history_exported: s.closed || s.first_overflow.is_some(),
             latest_event_id: s.next_event,
             queued_pairs: s.pairs.len(),
             queued_bytes: s.bytes,
@@ -1371,6 +1381,18 @@ mod tests {
                 let _pair = queue.recv().unwrap();
                 queue.written();
             }
+            let in_progress = queue.report();
+            assert!(
+                in_progress["history"]["events"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(
+                in_progress["history"]["retained_events"],
+                if observed { 512 } else { 0 }
+            );
+            assert_eq!(in_progress["history"]["exported"], false);
             assert!(queue.send(owned_queue_pair(201)).is_ok());
             let _ = full_verdict(&queue, owned_queue_pair(202));
             queue.close();

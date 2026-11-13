@@ -2028,7 +2028,17 @@ fn raw_byte_limit_after_successful_appends_never_commits_a_partial_target() {
     // Include the bounded startup property evidence in snapshot metadata;
     // leave room for successful appends before the byte limit is reached.
     configure_runtime_quality(&f, 100, 40_000);
-    let mut supervisor = launch(&f);
+    // Exercise the byte budget after a successful append, not throughput.
+    // Dedicated overflow cases retain their full-rate producers and FIFO caps.
+    let mut supervisor = Command::new(env!("CARGO_BIN_EXE_capture-service"))
+        .args(["--config", f.config.to_str().unwrap()])
+        .env("GEMINIDEPTHPORT_MOCK_EVENTS", &f.events)
+        .env("GDP_ROS_MOCK_EVENTS", &f.events)
+        .env("GDP_MOCK_WAIT_DELAY_MS", "100")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
     let failed = wait_status(&f, &mut supervisor, |v| {
         v["raw_recording"]["state"] == "failed"
     });
