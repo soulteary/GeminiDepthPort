@@ -90,6 +90,14 @@ class HostObservationTests(unittest.TestCase):
             h.budget.close();last=json.loads((h.output/'identities.jsonl').read_text().splitlines()[-1])
             self.assertEqual(last['kind'],'fork-identity-unavailable')
 
+    def test_root_observer_reads_explicit_pinned_source_without_global_git_changes(self):
+        with patch.object(runner.subprocess,'check_output',side_effect=['a'*40+'\n','']) as git:
+            self.assertEqual(runner.source_identity(ROOT,'a'*40),'a'*40)
+        self.assertIn('safe.directory='+str(ROOT.resolve()),git.call_args_list[0].args[0])
+        self.assertNotIn('--global',git.call_args_list[0].args[0])
+        with patch.object(runner.subprocess,'check_output',side_effect=['b'*40+'\n','']):
+            with self.assertRaisesRegex(ValueError,'FIXED_CLEAN_SOURCE'):runner.source_identity(ROOT,'a'*40)
+
     def test_observer_gate_stops_between_groups_and_preserves_flag(self):
         with tempfile.TemporaryDirectory() as d:
             marker=Path(d)/'stop.json'

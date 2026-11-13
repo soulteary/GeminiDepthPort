@@ -20,7 +20,7 @@ from host_kernel_trace import HostKernelTrace, stream_sha
 
 def source_identity(source,revision):
     if re.fullmatch('[a-f0-9]{40}',revision) is None:raise ValueError('EXPLICIT_SOURCE_REVISION_REQUIRED')
-    git=['git','--no-optional-locks','-C',str(source)]
+    git=['git','--no-optional-locks','-c','safe.directory='+str(Path(source).resolve()),'-C',str(source)]
     head=subprocess.check_output(git+['rev-parse','HEAD'],text=True,timeout=30).strip()
     clean=subprocess.check_output(git+['status','--porcelain','--untracked-files=all'],text=True,timeout=30)
     if head!=revision or clean:raise ValueError('FIXED_CLEAN_SOURCE_REQUIRED')
