@@ -1,0 +1,27 @@
+{
+  "commit": "61642b8b8757ba4b7d223992545c4ac61c53b007",
+  "variants": {
+    "sync_all": {
+      "payload": "/work/gdp-index-sync-final-20261113/sync_all.elf",
+      "payload_sha256": "03a206b26eefba504172201ccad9cfbd798c81078b99ef1be0796b1ad37fbde6",
+      "binary": "/work/gdp-index-sync-final-20261113/sync_all.bin",
+      "binary_sha256": "c112c8e3a3bf75f5dfbade10f1a442f6a8cb1c9d436fe50d70400b1fe3944abe",
+      "source_sha256": "bcb6b22619ebb1fd6a2f7ad66e662603f950b14707d1f77f50de0b11bb470ca8"
+    },
+    "sync_data": {
+      "payload": "/work/gdp-index-sync-final-20261113/sync_data.elf",
+      "payload_sha256": "8475894ff75d895aaa061eb07a7bc42fa0d57995da2c8faea5e528770a50ba6d",
+      "binary": "/work/gdp-index-sync-final-20261113/sync_data.bin",
+      "binary_sha256": "bf066e7442f68a4a99c92872281dc12c327748b584caf0e3c850317503e062a1",
+      "source_sha256": "de6c9a2d05723b167c55628264952939ec1f0a08cb23e8dd73829fc31fdda07e"
+    }
+  },
+  "only_candidate_change": {
+    "crates/offline-depth/src/recording/chunked.rs": [
+      "work_diagnostics.measure(\"fsync\", || records.sync_all())",
+      "work_diagnostics.measure(\"fdatasync\", || records.sync_data())"
+    ]
+  },
+  "production_checkout_modified": false,
+  "hardware_acceptance": false
+}

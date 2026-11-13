@@ -191,6 +191,13 @@ int fsync(int fd) {
     if(!injected){int (*real)(int)=dlsym(RTLD_NEXT,"fsync");result=real(fd);}
     int saved=errno;count_sync(fd,result,injected);errno=saved;return result;
 }
+/* Experimental index sync_data follows the same real-I/O fault contract. */
+int fdatasync(int fd) {
+    sync_tail(fd);
+    int injected=fail_fd("fdatasync",fd),result=-1;
+    if(!injected){int (*real)(int)=dlsym(RTLD_NEXT,"fdatasync");result=real(fd);}
+    int saved=errno;count_sync(fd,result,injected);errno=saved;return result;
+}
 int linkat(int a,const char *b,int c,const char *d,int e) {
     if(fail("linkat",d))return -1;
     int (*real)(int,const char*,int,const char*,int)=dlsym(RTLD_NEXT,"linkat");return real(a,b,c,d,e);

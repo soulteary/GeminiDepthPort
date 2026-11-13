@@ -1,0 +1,1005 @@
+{
+  "ok": true,
+  "rows": [
+    {
+      "fault": "delay",
+      "result": {
+        "actual_start_monotonic_ns": 72628158303709,
+        "actual_start_unix_ns": 1794585387777827338,
+        "append_max_ns": 6748160,
+        "append_p99_ns": 6748160,
+        "artifact_sha256": {
+          "COMPLETE": "a91a2c8d80cf1e85e36ceea5c042e4d3eb5f49fb45201e4336e324f8a957cd4f",
+          "checkpoint.json": "0b0d9e3a356f262508311e721d4fe940c376b4f6a9eedcb5149590296d1adb12",
+          "manifest.json": "7e07f996468b3f4a19b2ec0002f3eb71fc64eef1842226747cb4781b6f420419",
+          "records.jsonl": "aa65d1cdaa42ab2fa8f4ef65512bfe72d16e9e2c3085e827c4acec943fbb19c1",
+          "snapshot.json": "c84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610"
+        },
+        "background_sampling": null,
+        "barrier_target_monotonic_ns": 72628158198369,
+        "barrier_target_unix_ns": 1794585387777724331,
+        "capture_cpu_cores": 0.10294351931422331,
+        "capture_cpu_seconds": 0.102965898,
+        "capture_elapsed_ns": 1000217388,
+        "capture_finished_monotonic_ns": 72629158527223,
+        "checkpoint_pipeline": true,
+        "color_bytes": 614400,
+        "common_driver_sha256": "eb81bf97aeee278864821cb4791ebfccc86f8cc4f89202a471c502fc5f7d6ea1",
+        "cpu_cores": 0.1765313283829113,
+        "cpu_scope": "process CPU from capture barrier through writer finish, two independent readers and background final critical cleanup; startup excluded; capture_cpu fields stop at fixed producer horizon",
+        "cpu_seconds": 0.19945745199999998,
+        "credit_bytes": 16777216,
+        "credit_pairs": 32,
+        "depth_bytes": 512000,
+        "diagnostics": {
+          "append": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 6745077,
+            "mean_ns": 2698348.566666667,
+            "minimum_ns": 1218207,
+            "p50_ns": {
+              "lower_bound_ns": 2097152,
+              "upper_bound_ns": 2359295
+            },
+            "p95_ns": {
+              "lower_bound_ns": 5767168,
+              "upper_bound_ns": 6291455
+            },
+            "p99_ns": {
+              "lower_bound_ns": 6291456,
+              "upper_bound_ns": 6745077
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 30,
+            "saturated_observations": 0,
+            "total_ns": "80950457"
+          },
+          "checkpoint_batching": "half-credit",
+          "checkpoint_observation": {
+            "active": [],
+            "active_append": null,
+            "active_append_limit_hits": 0,
+            "active_capacity": 4,
+            "active_limit_hits": 0,
+            "anchor_monotonic_ns": null,
+            "anchor_unix_ns": null,
+            "clock": "CLOCK_MONOTONIC",
+            "enabled": false,
+            "events": [],
+            "history_capacity": 64,
+            "latest_event_id": 0,
+            "oldest_event_id": null,
+            "overwritten_events": 0,
+            "scope": "completed spans; sync wall includes filesystem/scheduling wait, not physical device latency; overlapping stages must not be summed",
+            "stages": {},
+            "version": 1
+          },
+          "checkpoints": 5,
+          "clock": "monotonic-duration",
+          "durable_pairs": 30,
+          "failed_calls": {},
+          "finish_total": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 47231157,
+            "mean_ns": 47231157.0,
+            "minimum_ns": 47231157,
+            "p50_ns": {
+              "lower_bound_ns": 47231157,
+              "upper_bound_ns": 47231157
+            },
+            "p95_ns": {
+              "lower_bound_ns": 47231157,
+              "upper_bound_ns": 47231157
+            },
+            "p99_ns": {
+              "lower_bound_ns": 47231157,
+              "upper_bound_ns": 47231157
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 1,
+            "saturated_observations": 0,
+            "total_ns": "47231157"
+          },
+          "fsync": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 101018392,
+            "mean_ns": 3682110.3870967743,
+            "minimum_ns": 96542,
+            "p50_ns": {
+              "lower_bound_ns": 245760,
+              "upper_bound_ns": 262143
+            },
+            "p95_ns": {
+              "lower_bound_ns": 2097152,
+              "upper_bound_ns": 2359295
+            },
+            "p99_ns": {
+              "lower_bound_ns": 100663296,
+              "upper_bound_ns": 101018392
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 31,
+            "saturated_observations": 0,
+            "total_ns": "114145422"
+          },
+          "index_buffer_capacity_peak_bytes": 65536,
+          "index_buffer_peak_bytes": 24456,
+          "index_flushes": 5,
+          "index_write_calls": 5,
+          "payload_files": 5,
+          "payload_write_calls": 30,
+          "pipelined_index_buffer_limit_bytes": 2097152,
+          "rename": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 621333,
+            "mean_ns": 408853.8333333333,
+            "minimum_ns": 248417,
+            "p50_ns": {
+              "lower_bound_ns": 327680,
+              "upper_bound_ns": 360447
+            },
+            "p95_ns": {
+              "lower_bound_ns": 589824,
+              "upper_bound_ns": 621333
+            },
+            "p99_ns": {
+              "lower_bound_ns": 589824,
+              "upper_bound_ns": 621333
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 6,
+            "saturated_observations": 0,
+            "total_ns": "2453123"
+          },
+          "scope": "native-writer-only; write-success-is-not-durability",
+          "uncommitted_pairs_peak": 11,
+          "uncommitted_payload_bytes_peak": 12408247,
+          "validation_buffer_peak_bytes": 65536,
+          "validation_image_bytes": 67584000,
+          "validation_imu_samples": 800,
+          "verification": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 36066086,
+            "mean_ns": 14394873.833333334,
+            "minimum_ns": 5460078,
+            "p50_ns": {
+              "lower_bound_ns": 8388608,
+              "upper_bound_ns": 9437183
+            },
+            "p95_ns": {
+              "lower_bound_ns": 33554432,
+              "upper_bound_ns": 36066086
+            },
+            "p99_ns": {
+              "lower_bound_ns": 33554432,
+              "upper_bound_ns": 36066086
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 6,
+            "saturated_observations": 0,
+            "total_ns": "86369243"
+          },
+          "write": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 4683453,
+            "mean_ns": 1389265.125,
+            "minimum_ns": 226625,
+            "p50_ns": {
+              "lower_bound_ns": 1179648,
+              "upper_bound_ns": 1310719
+            },
+            "p95_ns": {
+              "lower_bound_ns": 2883584,
+              "upper_bound_ns": 3145727
+            },
+            "p99_ns": {
+              "lower_bound_ns": 4194304,
+              "upper_bound_ns": 4683453
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 48,
+            "saturated_observations": 0,
+            "total_ns": "66684726"
+          }
+        },
+        "discarded_pairs": 0,
+        "fixture_sha256": "0cc1fe3995d8483f01b84d7f29ce98fc65693a14b68e4074154fe9fbb0dc2733",
+        "fps": 30,
+        "imu_hz_per_stream": 200,
+        "independent_readback": {
+          "expected_imu_samples": 400,
+          "pairs_per_pass": [
+            30,
+            30
+          ],
+          "passes": 2,
+          "per_frame_color_depth_evidence_hashes": true,
+          "wall_ns": 80904246
+        },
+        "input_sha256": "08f8e846c17818b5c93ee9f0cb1fd317c5b056c7d738ca23dfef807a5ffe11da",
+        "kind": "writer-contention-child-v1",
+        "ok": true,
+        "overflow": 0,
+        "pairs": 30,
+        "peak_rss_kib": 6120,
+        "peak_rss_scope": "isolated child including producer, writer and two extra materialized readers",
+        "producer_late_max_ns": 1270791,
+        "queue_capacity": 16,
+        "queue_final": {
+          "abort": false,
+          "capacity_pairs": 16,
+          "closed": true,
+          "dequeued_pairs": 30,
+          "high_water_pairs": 1,
+          "inflight_pairs": 0,
+          "inflight_sequence": null,
+          "oldest_queued_age_ns": null,
+          "queued_pairs": 0,
+          "scope": "modeled owned FIFO, excludes SDK/ROS queues"
+        },
+        "queue_peak": 1,
+        "queue_scope": "modeled nonblocking owned-whole-pair FIFO; 16 queued plus one in flight; overflow aborts rather than blocking capture",
+        "queue_wait_max_ns": 338916,
+        "queue_wait_p99_ns": 338916,
+        "reason": null,
+        "status_background_load": false,
+        "status_driver_sha256": null,
+        "status_persistence": null,
+        "submitted_pairs": 30,
+        "test_sink_delay_ms": 0,
+        "wall_seconds_including_independent_readers": 1.12987,
+        "writer_error": null,
+        "written_pairs": 30
+      },
+      "variant": "sync_all"
+    },
+    {
+      "fault": "eio",
+      "result": {
+        "actual_start_monotonic_ns": 72629836024831,
+        "actual_start_unix_ns": 1794585389455548418,
+        "append_max_ns": 5331744,
+        "append_p99_ns": 5331744,
+        "artifact_sha256": null,
+        "background_sampling": null,
+        "barrier_target_monotonic_ns": 72629835831616,
+        "barrier_target_unix_ns": 1794585389455356078,
+        "capture_cpu_cores": 0.09566012734007977,
+        "capture_cpu_seconds": 0.051134911000000005,
+        "capture_elapsed_ns": 534547804,
+        "capture_finished_monotonic_ns": 72630370577468,
+        "checkpoint_pipeline": true,
+        "color_bytes": 614400,
+        "common_driver_sha256": "eb81bf97aeee278864821cb4791ebfccc86f8cc4f89202a471c502fc5f7d6ea1",
+        "cpu_cores": 0.09566709985073037,
+        "cpu_scope": "process CPU from capture barrier through writer finish, two independent readers and background final critical cleanup; startup excluded; capture_cpu fields stop at fixed producer horizon",
+        "cpu_seconds": 0.051139244,
+        "credit_bytes": 16777216,
+        "credit_pairs": 32,
+        "depth_bytes": 512000,
+        "diagnostics": {
+          "append": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 5330202,
+            "mean_ns": 2654208.1875,
+            "minimum_ns": 14292,
+            "p50_ns": {
+              "lower_bound_ns": 2359296,
+              "upper_bound_ns": 2621439
+            },
+            "p95_ns": {
+              "lower_bound_ns": 5242880,
+              "upper_bound_ns": 5330202
+            },
+            "p99_ns": {
+              "lower_bound_ns": 5242880,
+              "upper_bound_ns": 5330202
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 16,
+            "saturated_observations": 0,
+            "total_ns": "42467331"
+          },
+          "checkpoint_batching": "half-credit",
+          "checkpoint_observation": {
+            "active": [],
+            "active_append": null,
+            "active_append_limit_hits": 0,
+            "active_capacity": 4,
+            "active_limit_hits": 0,
+            "anchor_monotonic_ns": null,
+            "anchor_unix_ns": null,
+            "clock": "CLOCK_MONOTONIC",
+            "enabled": false,
+            "events": [],
+            "history_capacity": 64,
+            "latest_event_id": 0,
+            "oldest_event_id": null,
+            "overwritten_events": 0,
+            "scope": "completed spans; sync wall includes filesystem/scheduling wait, not physical device latency; overlapping stages must not be summed",
+            "stages": {},
+            "version": 1
+          },
+          "checkpoints": 1,
+          "clock": "monotonic-duration",
+          "durable_pairs": 7,
+          "failed_calls": {
+            "append": 1,
+            "fsync": 1
+          },
+          "finish_total": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": null,
+            "mean_ns": null,
+            "minimum_ns": null,
+            "p50_ns": null,
+            "p95_ns": null,
+            "p99_ns": null,
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 0,
+            "saturated_observations": 0,
+            "total_ns": "0"
+          },
+          "fsync": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 1596998,
+            "mean_ns": 604638.2222222222,
+            "minimum_ns": 94292,
+            "p50_ns": {
+              "lower_bound_ns": 327680,
+              "upper_bound_ns": 360447
+            },
+            "p95_ns": {
+              "lower_bound_ns": 1572864,
+              "upper_bound_ns": 1596998
+            },
+            "p99_ns": {
+              "lower_bound_ns": 1572864,
+              "upper_bound_ns": 1596998
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 9,
+            "saturated_observations": 0,
+            "total_ns": "5441744"
+          },
+          "index_buffer_capacity_peak_bytes": 65536,
+          "index_buffer_peak_bytes": 24372,
+          "index_flushes": 2,
+          "index_write_calls": 2,
+          "payload_files": 3,
+          "payload_write_calls": 15,
+          "pipelined_index_buffer_limit_bytes": 2097152,
+          "rename": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 376291,
+            "mean_ns": 376291.0,
+            "minimum_ns": 376291,
+            "p50_ns": {
+              "lower_bound_ns": 376291,
+              "upper_bound_ns": 376291
+            },
+            "p95_ns": {
+              "lower_bound_ns": 376291,
+              "upper_bound_ns": 376291
+            },
+            "p99_ns": {
+              "lower_bound_ns": 376291,
+              "upper_bound_ns": 376291
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 1,
+            "saturated_observations": 0,
+            "total_ns": "376291"
+          },
+          "scope": "native-writer-only; write-success-is-not-durability",
+          "uncommitted_pairs_peak": 8,
+          "uncommitted_payload_bytes_peak": 9024178,
+          "validation_buffer_peak_bytes": 65536,
+          "validation_image_bytes": 7884800,
+          "validation_imu_samples": 92,
+          "verification": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 13971110,
+            "mean_ns": 13971110.0,
+            "minimum_ns": 13971110,
+            "p50_ns": {
+              "lower_bound_ns": 13971110,
+              "upper_bound_ns": 13971110
+            },
+            "p95_ns": {
+              "lower_bound_ns": 13971110,
+              "upper_bound_ns": 13971110
+            },
+            "p99_ns": {
+              "lower_bound_ns": 13971110,
+              "upper_bound_ns": 13971110
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 1,
+            "saturated_observations": 0,
+            "total_ns": "13971110"
+          },
+          "write": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 3142288,
+            "mean_ns": 1485527.391304348,
+            "minimum_ns": 404292,
+            "p50_ns": {
+              "lower_bound_ns": 1441792,
+              "upper_bound_ns": 1572863
+            },
+            "p95_ns": {
+              "lower_bound_ns": 2621440,
+              "upper_bound_ns": 2883583
+            },
+            "p99_ns": {
+              "lower_bound_ns": 2883584,
+              "upper_bound_ns": 3142288
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 23,
+            "saturated_observations": 0,
+            "total_ns": "34167130"
+          }
+        },
+        "discarded_pairs": 0,
+        "fixture_sha256": "0cc1fe3995d8483f01b84d7f29ce98fc65693a14b68e4074154fe9fbb0dc2733",
+        "fps": 30,
+        "imu_hz_per_stream": 200,
+        "independent_readback": null,
+        "input_sha256": "e543b15f389f834e9c2c13433d2902eb5ee2dd4fab51c8f8879a4362b9bee7d1",
+        "kind": "writer-contention-child-v1",
+        "ok": false,
+        "overflow": 0,
+        "pairs": 30,
+        "peak_rss_kib": 4980,
+        "peak_rss_scope": "isolated child including producer, writer and two extra materialized readers",
+        "producer_late_max_ns": 2133648,
+        "queue_capacity": 16,
+        "queue_final": {
+          "abort": true,
+          "capacity_pairs": 16,
+          "closed": true,
+          "dequeued_pairs": 16,
+          "high_water_pairs": 1,
+          "inflight_pairs": 0,
+          "inflight_sequence": null,
+          "oldest_queued_age_ns": null,
+          "queued_pairs": 0,
+          "scope": "modeled owned FIFO, excludes SDK/ROS queues"
+        },
+        "queue_peak": 1,
+        "queue_scope": "modeled nonblocking owned-whole-pair FIFO; 16 queued plus one in flight; overflow aborts rather than blocking capture",
+        "queue_wait_max_ns": 129334,
+        "queue_wait_p99_ns": 129334,
+        "reason": "RAW_STORAGE_OR_QUEUE_CLOSED",
+        "status_background_load": false,
+        "status_driver_sha256": null,
+        "status_persistence": null,
+        "submitted_pairs": 16,
+        "test_sink_delay_ms": 0,
+        "wall_seconds_including_independent_readers": 0.534554137,
+        "writer_error": "INPUT_OUTPUT_IO",
+        "written_pairs": 15
+      },
+      "variant": "sync_all"
+    },
+    {
+      "fault": "delay",
+      "result": {
+        "actual_start_monotonic_ns": 72630990270596,
+        "actual_start_unix_ns": 1794585390609794183,
+        "append_max_ns": 7353534,
+        "append_p99_ns": 7353534,
+        "artifact_sha256": {
+          "COMPLETE": "a91a2c8d80cf1e85e36ceea5c042e4d3eb5f49fb45201e4336e324f8a957cd4f",
+          "checkpoint.json": "0b0d9e3a356f262508311e721d4fe940c376b4f6a9eedcb5149590296d1adb12",
+          "manifest.json": "7e07f996468b3f4a19b2ec0002f3eb71fc64eef1842226747cb4781b6f420419",
+          "records.jsonl": "aa65d1cdaa42ab2fa8f4ef65512bfe72d16e9e2c3085e827c4acec943fbb19c1",
+          "snapshot.json": "c84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610"
+        },
+        "background_sampling": null,
+        "barrier_target_monotonic_ns": 72630990144798,
+        "barrier_target_unix_ns": 1794585390609669385,
+        "capture_cpu_cores": 0.10129579289189095,
+        "capture_cpu_seconds": 0.10130984900000001,
+        "capture_elapsed_ns": 1000138763,
+        "capture_finished_monotonic_ns": 72631990414068,
+        "checkpoint_pipeline": true,
+        "color_bytes": 614400,
+        "common_driver_sha256": "eb81bf97aeee278864821cb4791ebfccc86f8cc4f89202a471c502fc5f7d6ea1",
+        "cpu_cores": 0.1704362953264786,
+        "cpu_scope": "process CPU from capture barrier through writer finish, two independent readers and background final critical cleanup; startup excluded; capture_cpu fields stop at fixed producer horizon",
+        "cpu_seconds": 0.191208973,
+        "credit_bytes": 16777216,
+        "credit_pairs": 32,
+        "depth_bytes": 512000,
+        "diagnostics": {
+          "append": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 7351617,
+            "mean_ns": 2645149.933333333,
+            "minimum_ns": 1233249,
+            "p50_ns": {
+              "lower_bound_ns": 1966080,
+              "upper_bound_ns": 2097151
+            },
+            "p95_ns": {
+              "lower_bound_ns": 5767168,
+              "upper_bound_ns": 6291455
+            },
+            "p99_ns": {
+              "lower_bound_ns": 7340032,
+              "upper_bound_ns": 7351617
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 30,
+            "saturated_observations": 0,
+            "total_ns": "79354498"
+          },
+          "checkpoint_batching": "half-credit",
+          "checkpoint_observation": {
+            "active": [],
+            "active_append": null,
+            "active_append_limit_hits": 0,
+            "active_capacity": 4,
+            "active_limit_hits": 0,
+            "anchor_monotonic_ns": null,
+            "anchor_unix_ns": null,
+            "clock": "CLOCK_MONOTONIC",
+            "enabled": false,
+            "events": [],
+            "history_capacity": 64,
+            "latest_event_id": 0,
+            "oldest_event_id": null,
+            "overwritten_events": 0,
+            "scope": "completed spans; sync wall includes filesystem/scheduling wait, not physical device latency; overlapping stages must not be summed",
+            "stages": {},
+            "version": 1
+          },
+          "checkpoints": 5,
+          "clock": "monotonic-duration",
+          "durable_pairs": 30,
+          "failed_calls": {},
+          "finish_total": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 102278932,
+            "mean_ns": 23615523.5,
+            "minimum_ns": 96584,
+            "p50_ns": {
+              "lower_bound_ns": 163840,
+              "upper_bound_ns": 180223
+            },
+            "p95_ns": {
+              "lower_bound_ns": 100663296,
+              "upper_bound_ns": 102278932
+            },
+            "p99_ns": {
+              "lower_bound_ns": 100663296,
+              "upper_bound_ns": 102278932
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 6,
+            "saturated_observations": 0,
+            "total_ns": "141693141"
+          },
+          "fsync": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 2136123,
+            "mean_ns": 457393.6923076923,
+            "minimum_ns": 67583,
+            "p50_ns": {
+              "lower_bound_ns": 163840,
+              "upper_bound_ns": 180223
+            },
+            "p95_ns": {
+              "lower_bound_ns": 1966080,
+              "upper_bound_ns": 2097151
+            },
+            "p99_ns": {
+              "lower_bound_ns": 2097152,
+              "upper_bound_ns": 2136123
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 26,
+            "saturated_observations": 0,
+            "total_ns": "11892236"
+          },
+          "index_buffer_capacity_peak_bytes": 65536,
+          "index_buffer_peak_bytes": 24456,
+          "index_flushes": 5,
+          "index_write_calls": 5,
+          "payload_files": 5,
+          "payload_write_calls": 30,
+          "pipelined_index_buffer_limit_bytes": 2097152,
+          "rename": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 714665,
+            "mean_ns": 402971.8333333333,
+            "minimum_ns": 230625,
+            "p50_ns": {
+              "lower_bound_ns": 262144,
+              "upper_bound_ns": 294911
+            },
+            "p95_ns": {
+              "lower_bound_ns": 655360,
+              "upper_bound_ns": 714665
+            },
+            "p99_ns": {
+              "lower_bound_ns": 655360,
+              "upper_bound_ns": 714665
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 6,
+            "saturated_observations": 0,
+            "total_ns": "2417831"
+          },
+          "scope": "native-writer-only; write-success-is-not-durability",
+          "uncommitted_pairs_peak": 11,
+          "uncommitted_payload_bytes_peak": 12408247,
+          "validation_buffer_peak_bytes": 65536,
+          "validation_image_bytes": 67584000,
+          "validation_imu_samples": 800,
+          "verification": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 30856675,
+            "mean_ns": 12773049.0,
+            "minimum_ns": 3642830,
+            "p50_ns": {
+              "lower_bound_ns": 8388608,
+              "upper_bound_ns": 9437183
+            },
+            "p95_ns": {
+              "lower_bound_ns": 29360128,
+              "upper_bound_ns": 30856675
+            },
+            "p99_ns": {
+              "lower_bound_ns": 29360128,
+              "upper_bound_ns": 30856675
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 6,
+            "saturated_observations": 0,
+            "total_ns": "76638294"
+          },
+          "write": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 3148496,
+            "mean_ns": 1355707.7083333333,
+            "minimum_ns": 192208,
+            "p50_ns": {
+              "lower_bound_ns": 1048576,
+              "upper_bound_ns": 1179647
+            },
+            "p95_ns": {
+              "lower_bound_ns": 2883584,
+              "upper_bound_ns": 3145727
+            },
+            "p99_ns": {
+              "lower_bound_ns": 3145728,
+              "upper_bound_ns": 3148496
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 48,
+            "saturated_observations": 0,
+            "total_ns": "65073970"
+          }
+        },
+        "discarded_pairs": 0,
+        "fixture_sha256": "0cc1fe3995d8483f01b84d7f29ce98fc65693a14b68e4074154fe9fbb0dc2733",
+        "fps": 30,
+        "imu_hz_per_stream": 200,
+        "independent_readback": {
+          "expected_imu_samples": 400,
+          "pairs_per_pass": [
+            30,
+            30
+          ],
+          "passes": 2,
+          "per_frame_color_depth_evidence_hashes": true,
+          "wall_ns": 81504537
+        },
+        "input_sha256": "08f8e846c17818b5c93ee9f0cb1fd317c5b056c7d738ca23dfef807a5ffe11da",
+        "kind": "writer-contention-child-v1",
+        "ok": true,
+        "overflow": 0,
+        "pairs": 30,
+        "peak_rss_kib": 6112,
+        "peak_rss_scope": "isolated child including producer, writer and two extra materialized readers",
+        "producer_late_max_ns": 2023511,
+        "queue_capacity": 16,
+        "queue_final": {
+          "abort": false,
+          "capacity_pairs": 16,
+          "closed": true,
+          "dequeued_pairs": 30,
+          "high_water_pairs": 1,
+          "inflight_pairs": 0,
+          "inflight_sequence": null,
+          "oldest_queued_age_ns": null,
+          "queued_pairs": 0,
+          "scope": "modeled owned FIFO, excludes SDK/ROS queues"
+        },
+        "queue_peak": 1,
+        "queue_scope": "modeled nonblocking owned-whole-pair FIFO; 16 queued plus one in flight; overflow aborts rather than blocking capture",
+        "queue_wait_max_ns": 134750,
+        "queue_wait_p99_ns": 134750,
+        "reason": null,
+        "status_background_load": false,
+        "status_driver_sha256": null,
+        "status_persistence": null,
+        "submitted_pairs": 30,
+        "test_sink_delay_ms": 0,
+        "wall_seconds_including_independent_readers": 1.121879425,
+        "writer_error": null,
+        "written_pairs": 30
+      },
+      "variant": "sync_data"
+    },
+    {
+      "fault": "eio",
+      "result": {
+        "actual_start_monotonic_ns": 72632617252647,
+        "actual_start_unix_ns": 1794585392236776109,
+        "append_max_ns": 4883495,
+        "append_p99_ns": 4883495,
+        "artifact_sha256": null,
+        "background_sampling": null,
+        "barrier_target_monotonic_ns": 72632617186474,
+        "barrier_target_unix_ns": 1794585392236710977,
+        "capture_cpu_cores": 0.07119337100586869,
+        "capture_cpu_seconds": 0.038041965,
+        "capture_elapsed_ns": 534347011,
+        "capture_finished_monotonic_ns": 72633151603826,
+        "checkpoint_pipeline": true,
+        "color_bytes": 614400,
+        "common_driver_sha256": "eb81bf97aeee278864821cb4791ebfccc86f8cc4f89202a471c502fc5f7d6ea1",
+        "cpu_cores": 0.07120275421391285,
+        "cpu_scope": "process CPU from capture barrier through writer finish, two independent readers and background final critical cleanup; startup excluded; capture_cpu fields stop at fixed producer horizon",
+        "cpu_seconds": 0.038047506999999994,
+        "credit_bytes": 16777216,
+        "credit_pairs": 32,
+        "depth_bytes": 512000,
+        "diagnostics": {
+          "append": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 4883078,
+            "mean_ns": 2123218.8125,
+            "minimum_ns": 7167,
+            "p50_ns": {
+              "lower_bound_ns": 1703936,
+              "upper_bound_ns": 1835007
+            },
+            "p95_ns": {
+              "lower_bound_ns": 4718592,
+              "upper_bound_ns": 4883078
+            },
+            "p99_ns": {
+              "lower_bound_ns": 4718592,
+              "upper_bound_ns": 4883078
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 16,
+            "saturated_observations": 0,
+            "total_ns": "33971501"
+          },
+          "checkpoint_batching": "half-credit",
+          "checkpoint_observation": {
+            "active": [],
+            "active_append": null,
+            "active_append_limit_hits": 0,
+            "active_capacity": 4,
+            "active_limit_hits": 0,
+            "anchor_monotonic_ns": null,
+            "anchor_unix_ns": null,
+            "clock": "CLOCK_MONOTONIC",
+            "enabled": false,
+            "events": [],
+            "history_capacity": 64,
+            "latest_event_id": 0,
+            "oldest_event_id": null,
+            "overwritten_events": 0,
+            "scope": "completed spans; sync wall includes filesystem/scheduling wait, not physical device latency; overlapping stages must not be summed",
+            "stages": {},
+            "version": 1
+          },
+          "checkpoints": 1,
+          "clock": "monotonic-duration",
+          "durable_pairs": 7,
+          "failed_calls": {
+            "append": 1,
+            "fdatasync": 1
+          },
+          "finish_total": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 818416,
+            "mean_ns": 531353.5,
+            "minimum_ns": 244291,
+            "p50_ns": {
+              "lower_bound_ns": 244291,
+              "upper_bound_ns": 245759
+            },
+            "p95_ns": {
+              "lower_bound_ns": 786432,
+              "upper_bound_ns": 818416
+            },
+            "p99_ns": {
+              "lower_bound_ns": 786432,
+              "upper_bound_ns": 818416
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 2,
+            "saturated_observations": 0,
+            "total_ns": "1062707"
+          },
+          "fsync": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 1625540,
+            "mean_ns": 623791.1428571428,
+            "minimum_ns": 79917,
+            "p50_ns": {
+              "lower_bound_ns": 294912,
+              "upper_bound_ns": 327679
+            },
+            "p95_ns": {
+              "lower_bound_ns": 1572864,
+              "upper_bound_ns": 1625540
+            },
+            "p99_ns": {
+              "lower_bound_ns": 1572864,
+              "upper_bound_ns": 1625540
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 7,
+            "saturated_observations": 0,
+            "total_ns": "4366538"
+          },
+          "index_buffer_capacity_peak_bytes": 65536,
+          "index_buffer_peak_bytes": 24372,
+          "index_flushes": 2,
+          "index_write_calls": 2,
+          "payload_files": 3,
+          "payload_write_calls": 15,
+          "pipelined_index_buffer_limit_bytes": 2097152,
+          "rename": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 334417,
+            "mean_ns": 334417.0,
+            "minimum_ns": 334417,
+            "p50_ns": {
+              "lower_bound_ns": 334417,
+              "upper_bound_ns": 334417
+            },
+            "p95_ns": {
+              "lower_bound_ns": 334417,
+              "upper_bound_ns": 334417
+            },
+            "p99_ns": {
+              "lower_bound_ns": 334417,
+              "upper_bound_ns": 334417
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 1,
+            "saturated_observations": 0,
+            "total_ns": "334417"
+          },
+          "scope": "native-writer-only; write-success-is-not-durability",
+          "uncommitted_pairs_peak": 8,
+          "uncommitted_payload_bytes_peak": 9024178,
+          "validation_buffer_peak_bytes": 65536,
+          "validation_image_bytes": 7884800,
+          "validation_imu_samples": 92,
+          "verification": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 8183783,
+            "mean_ns": 8183783.0,
+            "minimum_ns": 8183783,
+            "p50_ns": {
+              "lower_bound_ns": 8183783,
+              "upper_bound_ns": 8183783
+            },
+            "p95_ns": {
+              "lower_bound_ns": 8183783,
+              "upper_bound_ns": 8183783
+            },
+            "p99_ns": {
+              "lower_bound_ns": 8183783,
+              "upper_bound_ns": 8183783
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 1,
+            "saturated_observations": 0,
+            "total_ns": "8183783"
+          },
+          "write": {
+            "duration_clipped_observations": 0,
+            "histogram_buckets": 513,
+            "maximum_ns": 2419872,
+            "mean_ns": 1148951.5652173914,
+            "minimum_ns": 309791,
+            "p50_ns": {
+              "lower_bound_ns": 1048576,
+              "upper_bound_ns": 1179647
+            },
+            "p95_ns": {
+              "lower_bound_ns": 1966080,
+              "upper_bound_ns": 2097151
+            },
+            "p99_ns": {
+              "lower_bound_ns": 2359296,
+              "upper_bound_ns": 2419872
+            },
+            "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+            "samples": 23,
+            "saturated_observations": 0,
+            "total_ns": "26425886"
+          }
+        },
+        "discarded_pairs": 0,
+        "fixture_sha256": "0cc1fe3995d8483f01b84d7f29ce98fc65693a14b68e4074154fe9fbb0dc2733",
+        "fps": 30,
+        "imu_hz_per_stream": 200,
+        "independent_readback": null,
+        "input_sha256": "e543b15f389f834e9c2c13433d2902eb5ee2dd4fab51c8f8879a4362b9bee7d1",
+        "kind": "writer-contention-child-v1",
+        "ok": false,
+        "overflow": 0,
+        "pairs": 30,
+        "peak_rss_kib": 4980,
+        "peak_rss_scope": "isolated child including producer, writer and two extra materialized readers",
+        "producer_late_max_ns": 2338540,
+        "queue_capacity": 16,
+        "queue_final": {
+          "abort": true,
+          "capacity_pairs": 16,
+          "closed": true,
+          "dequeued_pairs": 16,
+          "high_water_pairs": 1,
+          "inflight_pairs": 0,
+          "inflight_sequence": null,
+          "oldest_queued_age_ns": null,
+          "queued_pairs": 0,
+          "scope": "modeled owned FIFO, excludes SDK/ROS queues"
+        },
+        "queue_peak": 1,
+        "queue_scope": "modeled nonblocking owned-whole-pair FIFO; 16 queued plus one in flight; overflow aborts rather than blocking capture",
+        "queue_wait_max_ns": 114667,
+        "queue_wait_p99_ns": 114667,
+        "reason": "RAW_STORAGE_OR_QUEUE_CLOSED",
+        "status_background_load": false,
+        "status_driver_sha256": null,
+        "status_persistence": null,
+        "submitted_pairs": 16,
+        "test_sink_delay_ms": 0,
+        "wall_seconds_including_independent_readers": 0.534354428,
+        "writer_error": "INPUT_OUTPUT_IO",
+        "written_pairs": 15
+      },
+      "variant": "sync_data"
+    }
+  ],
+  "scope": "second index sync delayed or fails; separate AB runner exercises SIGKILL prefix recovery"
+}

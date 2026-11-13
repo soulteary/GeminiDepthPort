@@ -21,4 +21,18 @@ class ContentFaultTests(unittest.TestCase):
                     result=subprocess.run([sys.executable,'-c',"import os,sys;f=open(sys.argv[1],'r+b');os.fsync(f.fileno())",str(path)],env=env,capture_output=True)
                     self.assertEqual(marker.exists(),expected)
                     self.assertEqual(result.returncode!=0,expected,result.stderr.decode())
+    def test_fdatasync_failure_and_real_delay_are_observable(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);lib=root/'fault.so';path=root/'records.jsonl'
+            subprocess.run(['cc','-shared','-fPIC','-std=c11','-Wall','-Wextra','-Werror',str(ROOT/'tests/support/io_faults.c'),'-ldl','-o',str(lib)],check=True,capture_output=True)
+            path.write_bytes(b'index')
+            for delay in (False,True):
+                marker=root/str(delay)
+                env={k:v for k,v in os.environ.items() if not k.startswith('GDP_IO_') and k!='LD_PRELOAD'}
+                env.update(LD_PRELOAD=str(lib),GDP_IO_FAIL_OP='fdatasync',GDP_IO_FAIL_SUFFIX='/records.jsonl',GDP_IO_FAULT_MARKER=str(marker))
+                if delay:env['GDP_IO_DELAY_MS']='60'
+                result=subprocess.run([sys.executable,'-c',"import os,sys,time;t=time.monotonic();f=open(sys.argv[1],'r+b');os.fdatasync(f.fileno());assert time.monotonic()-t>=.05",str(path)],env=env,capture_output=True)
+                self.assertEqual(result.returncode==0,delay,result.stderr.decode())
+                self.assertEqual(marker.read_text(),'fdatasync')
+
 if __name__=='__main__':unittest.main()
