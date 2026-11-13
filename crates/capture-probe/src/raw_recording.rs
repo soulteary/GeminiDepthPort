@@ -301,7 +301,23 @@ fn monotonic_ns() -> Option<u64> {
         None
     }
 }
+const QUEUE_HISTORY: usize = 512;
+#[derive(Clone, Copy, serde::Serialize)]
+struct QueueEvent {
+    event_id: u64,
+    monotonic_ns: Option<u64>,
+    operation: &'static str,
+    queued_pairs: usize,
+    queued_payload_bytes: u64,
+    inflight_pairs: u64,
+    oldest_queued_age_ns: Option<u64>,
+    front_pair_sequence: Option<u64>,
+    inflight_pair_sequence: Option<u64>,
+}
 struct QueueState {
+    history: VecDeque<QueueEvent>,
+    history_enabled: bool,
+    next_event: u64,
     pairs: VecDeque<OwnedPair>,
     closed: bool,
     bytes: u64,
@@ -315,8 +331,40 @@ struct QueueState {
     wait: StageStats,
     first_overflow: Option<QueueOverflowSnapshot>,
 }
+impl QueueState {
+    fn observe(&mut self, operation: &'static str) {
+        if !self.history_enabled {
+            return;
+        }
+        self.next_event += 1;
+        let event = QueueEvent {
+            event_id: self.next_event,
+            monotonic_ns: monotonic_ns(),
+            operation,
+            queued_pairs: self.pairs.len(),
+            queued_payload_bytes: self.bytes,
+            inflight_pairs: self.inflight_pairs,
+            oldest_queued_age_ns: self
+                .pairs
+                .front()
+                .map(|p| p.enqueued.elapsed().as_nanos().min(u64::MAX as u128) as u64),
+            front_pair_sequence: self
+                .pairs
+                .front()
+                .map(|p| PairIdentity::of(p).pair_sequence),
+            inflight_pair_sequence: self.inflight_pair.map(|p| p.pair_sequence),
+        };
+        if self.history.len() == QUEUE_HISTORY {
+            self.history.pop_front();
+        }
+        self.history.push_back(event);
+    }
+}
 // Only bounded counters/histogram data; never clone queued frames or IMU arrays.
 struct QueueReport {
+    history: Vec<QueueEvent>,
+    history_enabled: bool,
+    latest_event_id: u64,
     queued_pairs: usize,
     queued_bytes: u64,
     oldest_age_ns: Option<u64>,
@@ -331,7 +379,7 @@ struct QueueReport {
 }
 impl QueueReport {
     fn report(self, capacity: usize) -> Value {
-        json!({"capacity_pairs":capacity,"queued_pairs":self.queued_pairs,"queued_payload_bytes":self.queued_bytes,
+        json!({"history":{"version":1,"clock":"CLOCK_MONOTONIC","enabled":self.history_enabled,"capacity":QUEUE_HISTORY,"latest_event_id":self.latest_event_id,"overwritten_events":self.latest_event_id.saturating_sub(self.history.len() as u64),"events":self.history,"scope":"internal queue transitions, independent of status publication time; retention is bounded, missing history is not zero backlog"},"capacity_pairs":capacity,"queued_pairs":self.queued_pairs,"queued_payload_bytes":self.queued_bytes,
             "oldest_queued_age_ns":self.oldest_age_ns,
             "high_water_pairs":self.high_water_pairs,"high_water_payload_bytes":self.high_water_bytes,
             "inflight_pairs":self.inflight_pairs,"inflight_payload_bytes":self.inflight_bytes,
@@ -351,9 +399,12 @@ struct RecordingQueue {
     report_gate: Mutex<Option<Arc<TestGate>>>,
 }
 impl RecordingQueue {
-    fn new(capacity: usize) -> Arc<Self> {
+    fn new(capacity: usize, observed: bool) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(QueueState {
+                history: VecDeque::with_capacity(if observed { QUEUE_HISTORY } else { 0 }),
+                history_enabled: observed,
+                next_event: 0,
                 pairs: VecDeque::with_capacity(capacity),
                 closed: false,
                 bytes: 0,
@@ -409,6 +460,7 @@ impl RecordingQueue {
                 state.first_overflow = Some(snapshot);
                 snapshot
             };
+            state.observe("overflow");
             drop(state);
             return Err(QueueSendError::Full(Box::new(snapshot)));
         }
@@ -416,6 +468,7 @@ impl RecordingQueue {
         state.pairs.push_back(pair);
         state.high_water_pairs = state.high_water_pairs.max(state.pairs.len());
         state.high_water_bytes = state.high_water_bytes.max(state.bytes);
+        state.observe("enqueue");
         self.available.notify_one();
         Ok(())
     }
@@ -430,6 +483,7 @@ impl RecordingQueue {
                 state.inflight_pair = Some(PairIdentity::of(&pair));
                 state.dequeued += 1;
                 state.wait.observe(pair.enqueued.elapsed());
+                state.observe("dequeue");
                 return Some(pair);
             }
             if state.closed {
@@ -446,9 +500,12 @@ impl RecordingQueue {
         state.inflight_pairs = 0;
         state.inflight_bytes = 0;
         state.inflight_pair = None;
+        state.observe("written");
     }
     fn close(&self) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).closed = true;
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.closed = true;
+        state.observe("close");
         self.available.notify_all();
     }
     fn abandon(&self) {
@@ -460,6 +517,7 @@ impl RecordingQueue {
         state.inflight_pairs = 0;
         state.inflight_bytes = 0;
         state.inflight_pair = None;
+        state.observe("abandon");
         drop(state);
         drop(abandoned);
         self.available.notify_all();
@@ -467,6 +525,9 @@ impl RecordingQueue {
     fn snapshot(&self) -> QueueReport {
         let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         QueueReport {
+            history: s.history.iter().copied().collect(),
+            history_enabled: s.history_enabled,
+            latest_event_id: s.next_event,
             queued_pairs: s.pairs.len(),
             queued_bytes: s.bytes,
             oldest_age_ns: s
@@ -663,7 +724,10 @@ impl RawRecorder {
         };
         let native = content.seal()?;
         self.guard = Some(BoundPairGuard::new(native.clone(), origin)?);
-        let queue = RecordingQueue::new(self.settings.queue_capacity);
+        let queue = RecordingQueue::new(
+            self.settings.queue_capacity,
+            self.settings.checkpoint_observation,
+        );
         let rx = Arc::clone(&queue);
         let tx = RecordingSender(Arc::clone(&queue));
         self.queue = Some(queue);
@@ -1262,8 +1326,47 @@ mod tests {
         }
     }
     #[test]
+    fn queue_history_retains_internal_transitions_across_stale_reports_and_stays_bounded() {
+        for observed in [true, false] {
+            let queue = RecordingQueue::new(1, observed);
+            let stale = queue.report();
+            for n in 1..=200 {
+                assert!(queue.send(owned_queue_pair(n)).is_ok());
+                let _pair = queue.recv().unwrap();
+                queue.written();
+            }
+            assert!(queue.send(owned_queue_pair(201)).is_ok());
+            let _ = full_verdict(&queue, owned_queue_pair(202));
+            queue.close();
+            queue.abandon();
+            let current = queue.report();
+            let events = current["history"]["events"].as_array().unwrap();
+            assert_eq!(stale["history"]["latest_event_id"], 0);
+            if observed {
+                assert_eq!(events.len(), QUEUE_HISTORY);
+                assert_eq!(current["history"]["latest_event_id"], 604);
+                assert_eq!(current["history"]["overwritten_events"], 92);
+                assert!(
+                    events
+                        .iter()
+                        .any(|e| e["operation"] == "overflow" && e["queued_pairs"] == 1)
+                );
+                assert!(
+                    events
+                        .windows(2)
+                        .all(|v| v[0]["event_id"].as_u64().unwrap() + 1
+                            == v[1]["event_id"].as_u64().unwrap())
+                );
+                assert!(events.iter().all(|e| e["monotonic_ns"].is_u64()));
+            } else {
+                assert!(events.is_empty());
+                assert_eq!(current["history"]["latest_event_id"], 0);
+            }
+        }
+    }
+    #[test]
     fn overflow_verdict_freezes_exact_rejected_identity_and_fifo_accounting_once() {
-        let queue = RecordingQueue::new(2);
+        let queue = RecordingQueue::new(2, true);
         let first = owned_queue_pair(1);
         let color_pointer = first.color.as_ptr();
         let depth_pointer = first.depth.as_ptr();
@@ -1323,7 +1426,7 @@ mod tests {
     }
     #[test]
     fn nonfull_and_closed_queues_do_not_invent_overflow_observations() {
-        let queue = RecordingQueue::new(1);
+        let queue = RecordingQueue::new(1, true);
         assert!(queue.state.lock().unwrap().first_overflow.is_none());
         assert!(queue.send(owned_queue_pair(1)).is_ok());
         let pair = queue.recv().unwrap();
@@ -1341,7 +1444,7 @@ mod tests {
     fn overflow_writer_context_is_captured_after_unlock_and_first_snapshot_survives_cleanup() {
         let dir = directory();
         let mut sink = RawRecorder::new(settings(&dir, 9, 1_000_000), "overflow-context");
-        let queue = RecordingQueue::new(1);
+        let queue = RecordingQueue::new(1, true);
         sink.queue = Some(queue.clone());
         assert_eq!(sink.status()["overflow_observation"], Value::Null);
         assert!(queue.send(owned_queue_pair(1)).is_ok());
@@ -1479,7 +1582,7 @@ mod tests {
     fn paused_queue_report_does_not_hold_recording_state_and_queue_snapshot_is_owned() {
         let dir = directory();
         let mut sink = RawRecorder::new(settings(&dir, 2, 1_000_000), "report-test");
-        let queue = RecordingQueue::new(2);
+        let queue = RecordingQueue::new(2, true);
         sink.queue = Some(queue.clone());
         let gate = Arc::new(TestGate {
             started: std::sync::Barrier::new(2),
@@ -2174,7 +2277,7 @@ mod tests {
                 enqueued: Instant::now(),
             }
         };
-        let queue = RecordingQueue::new(1);
+        let queue = RecordingQueue::new(1, true);
         assert!(queue.send(make()).is_ok());
         assert!(matches!(queue.send(make()), Err(QueueSendError::Full(_))));
         assert_eq!(pool.free.lock().unwrap().len(), 2);
@@ -2188,7 +2291,7 @@ mod tests {
         queue.written();
         assert!(queue.recv().is_none());
         assert_eq!(pool.free.lock().unwrap().len(), 3);
-        let queue = RecordingQueue::new(1);
+        let queue = RecordingQueue::new(1, true);
         assert!(queue.send(make()).is_ok());
         queue.abandon();
         assert_eq!(pool.free.lock().unwrap().len(), 3);

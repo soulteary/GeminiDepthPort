@@ -77,7 +77,7 @@ def point(row, entry, source, name):
     result = {'source': source, 'sample_kind': row.get('kind'), 'target': name, 'source_epoch': entry.get('epoch'),
             'monotonic_ns': at, 'unix_ns': row.get('unix_ns'), 'phase': row.get('phase'),
             'identity': identity, 'process': process, 'rates': entry.get('rates'),
-            'raw': raw, 'writer_queue': status.get('writer_queue') or raw.get('writer_queue'),
+            'raw': raw, 'status_updated_unix_ms':status.get('updated_unix_ms'), 'writer_queue': status.get('writer_queue') or raw.get('writer_queue'),
             'active': (status.get('observation') or {}).get('active', []),
             'disks': row.get('disks', {}), 'error': entry.get('error')}
     observation = status.get('observation') or {}
@@ -146,6 +146,39 @@ def credit_snapshot(value):
     return {key: integer(value[key], 'CREDIT_SCHEMA') for key in fields}
 
 
+def internal_queue_history(samples, start, end):
+    histories = {}
+    for sample in samples:
+        history = (sample.get('writer_queue') or {}).get('history') or {}
+        if history.get('enabled') is not True:continue
+        key = (sample['target'],sample['epoch'])
+        group = histories.setdefault(key, {'target':key[0], 'epoch':key[1], 'events':{}, 'retained_ranges':[]})
+        rows = history.get('events',[])
+        require(type(rows) is list and len(rows)<=512, 'QUEUE_HISTORY_BOUND')
+        ids=[]
+        for row in rows:
+            require(type(row) is dict and row.get('operation') in ('enqueue','dequeue','written','overflow','close','abandon'), 'QUEUE_EVENT_SCHEMA')
+            event_id=integer(row.get('event_id'),'QUEUE_EVENT_ID'); at=row.get('monotonic_ns')
+            if at is None:continue
+            integer(at,'QUEUE_EVENT_CLOCK');ids.append((event_id,at))
+            if start<=at<=end:
+                old=group['events'].setdefault(event_id,row)
+                require(old==row,'CONFLICTING_QUEUE_EVENT')
+        if ids and ids[-1][1]>=start and ids[0][1]<=end:group['retained_ranges'].append({'first_id':ids[0][0],'last_id':ids[-1][0],
+            'first_monotonic_ns':ids[0][1],'last_monotonic_ns':ids[-1][1], 'sample_id':sample['sample_id']})
+    output=[]
+    for group in histories.values():
+        rows=[group['events'][i] for i in sorted(group['events'])]
+        group['events']=rows
+        ids=[r['event_id'] for r in rows]
+        group['missing_between_selected_events']=sum(max(0,b-a-1) for a,b in zip(ids,ids[1:]))
+        ranges=group['retained_ranges']
+        group['window_bracketed']=any(v['first_monotonic_ns']<=start for v in ranges) and any(v['last_monotonic_ns']>=end for v in ranges)
+        group['scope']='internal transition clocks; separate from sampled publication age; bounded retention and explicit missing events'
+        output.append(group)
+    return output
+
+
 def wait_chain(samples, groups, failure):
     # Prefer the once-locked overflow timestamp to the later polling clock.
     frozen = failure['raw'].get('overflow_observation') or {}
@@ -183,6 +216,7 @@ def wait_chain(samples, groups, failure):
         'writer_context_at_detection':frozen.get('writer_context'),
         'events':sorted(timeline,key=lambda v:(v['start_monotonic_ns'],v['target'],v['event_id'])),
         'wait_links':links, 'queue_samples':queues,
+        'internal_queue_history':internal_queue_history(samples,start,end),
         'scope':'Credits belong to one writer, not a cross-process pool. Join completion is observed, not a credit transfer between writers. Same-checkpoint overlapping phases are task context, not proven exclusive causes. Sample times are not atomic with queue detection. Missing events/CPU/kernel traces remain missing; no unique storage or scheduling attribution.'}
 
 

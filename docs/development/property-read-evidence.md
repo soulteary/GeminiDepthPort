@@ -41,3 +41,29 @@ checkpoint 的 `verify_wait` 新增 `credit_at_wait`，记录 join 开始前该 
 自己的 pending/active pair 与字节数及原有限额。它是标签，不参与额度判定，
 也不是跨三进程的共享池。完成事件的结束时间与 ok 表示该次 join 返回，不能
 推断为向另一个 writer 转移额度。失败瞬间的活跃上下文也包含这份有界快照。
+
+## 队列历史与主机身份关联
+
+开启 checkpoint_observation 时，完整 pair 队列在原互斥区内记录 enqueue、dequeue、
+written、overflow、close、abandon 的单调时钟、队列深度、字节占用、最老队龄和
+pair 序号。历史固定 512 条，预先分配，不复制像素或 IMU，不在这些操作中写文件。
+关闭观测时不记录。状态发布仍走既有后台持久化；历史中的事件时刻与状态读取时刻
+分别保留。历史被覆盖或没有包围所选窗口时，分析不能声称重建完整积压过程。
+
+host_kernel_trace.py 与 host_trace_analysis.py 将现场使用的主机工具整理为受控入口。
+采集要求显式指定源提交、文件系统 UUID、磁盘和新目录；默认仅采集 fsync/fdatasync
+及 scheduler/lifecycle，不采 writev。主机流由观察器种子和实际绑定 writer TID 过滤，
+event-fork 跟随后代；helper 后代也可能出现，只有经 proc 身份和生命周期证明的
+writer 线程才能关联。设备流保留 ext4/jbd2/block 的整设备上下文及内核线程。
+
+新线程 fork 事件到达时立即尝试读取稳定的 proc 身份和 NSpid，检查 worker 起始
+时刻、TGID、PID namespace 与容器 cgroup，减少短命 checkpoint 线程被周期盘点漏过。
+读取失败仍明确保留，不按 comm 或父进程猜 namespace TID。重复库存只为已知线程
+读取轻量 start_ticks；PID 重用会建立新代际。窗口外身份缺口单列但不删除，窗口内
+缺口仍阻止完整关联。空 errors 对象和数组兼容；单个观察器的早期历史不冒充最终
+合并事件丢失，实际 lost_events_after_start 和合并缺口继续检查。
+
+checkpoint 同线程 fsync 缺失、内部队列历史不完整都会阻止完整关联。上述工具
+不授予录制、两轮读回、哈希或恢复通过结论。新增三 writer 连续 index_sync 屏障
+测试在前序积压后施加至少 400 ms 延迟并保持屏障至原队列溢出，再检查收尾与
+两轮 prefix 恢复读取；合成结果不代替实机验收。

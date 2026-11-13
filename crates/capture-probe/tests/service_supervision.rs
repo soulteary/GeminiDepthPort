@@ -4083,12 +4083,19 @@ fn assert_raw_overflow_context_frozen_during_critical_fsync(held_phase: &str) {
 
 #[test]
 fn three_writers_consecutive_payload_fences_keep_local_credits_and_recover_prefixes() {
+    three_writer_fences("payload_sync");
+}
+#[test]
+fn three_writers_consecutive_index_sync_tails_keep_queue_history_and_recover_prefixes() {
+    three_writer_fences("index_sync");
+}
+fn three_writer_fences(phase: &str) {
     let ready = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     thread::scope(|scope| {
         let children: Vec<_> = (0..3)
             .map(|_| {
                 let ready = ready.clone();
-                scope.spawn(move || run_raw_overflow_fault("payload_sync", Some(ready)))
+                scope.spawn(move || run_raw_overflow_fault(phase, Some(ready)))
             })
             .collect();
         for child in children {
@@ -4141,7 +4148,7 @@ fn run_raw_overflow_fault(
         "if(hold) {",
         "const char *hold_armed=getenv(\"GDP_IO_HOLD_ARMED\");if(hold && hold_armed && access(hold_armed,F_OK)==0) {",
     );
-    if held_phase == "payload_sync" {
+    if matches!(held_phase, "payload_sync" | "index_sync") {
         // A second, independent barrier holds the real payload fsync. The
         // existing fail_fd hook still gates only the raw-failed status fsync.
         replace(
@@ -4176,6 +4183,28 @@ fn run_raw_overflow_fault(
             }
             int (*first_sync)(int)=dlsym(RTLD_NEXT,"fsync");return first_sync(fd);
         }"#,
+        );
+    }
+    if held_phase == "index_sync" {
+        replace(
+            &mut hook,
+            "int fsync(int fd) {",
+            r#"static int index_sync_fd(int fd) {
+            char link[64],path[4096];snprintf(link,sizeof(link),"/proc/self/fd/%d",fd);
+            ssize_t n=readlink(link,path,sizeof(path)-1);if(n<0)return 0;path[n]=0;
+            return strstr(path,"/records.jsonl")!=NULL;
+        }
+        int fsync(int fd) {"#,
+        );
+        replace(
+            &mut hook,
+            "access(armed,F_OK)==0 && payload_fd(fd)",
+            "access(armed,F_OK)==0 && index_sync_fd(fd)",
+        );
+        replace(
+            &mut hook,
+            "const char *marker=getenv(\"GDP_IO_HOLD_MARKER\"),*release=getenv(\"GDP_IO_HOLD_RELEASE\");",
+            "usleep(400000); const char *marker=getenv(\"GDP_IO_HOLD_MARKER\"),*release=getenv(\"GDP_IO_HOLD_RELEASE\");",
         );
     }
     let local_hook = f.root.join("armed-checkpoint-hook.c");
@@ -4342,6 +4371,21 @@ fn run_raw_overflow_fault(
         .expect("critical status tempfile must retain the first overflow before fsync release");
     let frozen =
         assert_raw_overflow_context(&pending, held_phase, raw_overflow_test_monotonic_ns());
+    let history = &pending["raw_recording"]["writer_queue"]["history"];
+    assert_eq!(history["enabled"], true);
+    let events = history["events"].as_array().unwrap();
+    assert!(events.len() <= 512);
+    assert!(
+        events
+            .iter()
+            .any(|e| e["operation"] == "overflow" && e["queued_pairs"] == 16)
+    );
+    assert!(
+        events
+            .windows(2)
+            .all(|e| e[0]["event_id"].as_u64().unwrap() + 1 == e[1]["event_id"].as_u64().unwrap())
+    );
+
     assert!(
         !Path::new(pending["raw_recording"]["partial_path"].as_str().unwrap())
             .join("COMPLETE")

@@ -152,3 +152,38 @@ fsync/ext4/jbd2/block/flush 追踪及丢失计数、分析输出与 SHA256。观
 屏障：首次屏障在队列有积压后释放，第二次保持至原队列溢出。检查额度、失败
 状态、IMU 排空及收尾，再对持久化 prefix 做两次恢复读取。它验证故障处理与
 观测契约，不替代真实 600 秒录制或独立 SIGKILL 验收。
+
+### 有界主机追踪与开销对照
+
+使用 `run_host_observation.py` 包装原复测命令。输出、正式运行根和源码目录应互相
+独立，均采用新的测试目录。传入完整提交号、现场文件系统 UUID 和对应磁盘；脚本
+不会沿用上一轮机器路径或身份。以下参数是占位示例，实际复测计划保持原样：
+
+```sh
+python3 experiments/sdk-2.10.6-diagnostics/run_host_observation.py \
+  --execute --observer on --source /srv/GDP-SOURCE \
+  --revision FULL_40_CHARACTER_COMMIT --filesystem-uuid ACTUAL_UUID --disk ACTUAL_DISK \
+  --recording-path /srv/sdk-test --retest-root /srv/sdk-test/NEW-RUN \
+  --output /srv/sdk-test/NEW-OBSERVER --max-seconds 21600 --max-bytes 1073741824 \
+  -- python3 experiments/sdk-2.10.6-diagnostics/run_retest.py --help
+```
+
+执行时将 `--` 后的命令整体换成已核对的正式复测命令；上面的 help 仅展示参数
+边界，不会运行相机。观察器失效或触及 1 GiB 上限时停止观察、标记不完整，原驱动
+继续依据自己的失败停止规则收尾；观察错误和驱动退出码分别记录。默认总 ring
+预算 64 MiB、每 CPU 256 KiB，丢失仍逐周期核对。完整 600 秒窗口、收尾及独立
+SIGKILL 验收保持原要求，不能把较小追踪预算耗尽判为取证通过。
+
+开销对照在两个新目录分别使用 `--observer on` 和 `--observer off`，保持相同源
+提交、SDK diagnostics、相机、录制和追踪以外的采样配置。这里的 observer on/off
+与六组中的 SDK diagnostics on/off 是两个独立维度。原失败停止规则不变，失败组
+不能继续凑通过数量。`result.json` 保存驱动退出码、观察器结果、wrapper/观察线程
+的 user/system CPU 秒及 wall time；maxrss 保留操作系统原生单位，Linux 为 KiB。
+另结合原资源采样比较三 writer CPU、追加 P99、内存和追踪字节数，不将观察器 CPU
+归到相机进程，也不把 off 组视作正式验收的替代。
+
+原始主机流、身份 JSONL、两实例逐 CPU 丢失计数和 SHA256SUMS 保留后，用
+`host_trace_analysis.py --source ... --trace ... --official-analysis ... --output ...`
+在另一个新目录分析。前述 application 分析仍先运行并保留原结果。缺少完整原始流
+的精简包只能核对现有结论，不用于从零重建内核链。新分析会保留窗口外缺口，严格
+区分同 namespace TID 的 fsync 匹配、时间重叠和未知来源。
