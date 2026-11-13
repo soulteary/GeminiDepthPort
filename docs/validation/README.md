@@ -8,6 +8,8 @@
 
 - [固定 checkpoint 8 MiB／6 MiB 对照](fixed-checkpoint-target.md)：同屏障同目标、实际批次、同步频率与 credit／队龄观测。
 
+- [宿主 PID filter 身份绑定修正](pid-filter-identity-binding.md)：EINVAL 定点模型、失败 syscall 上下文、非空身份完整性与生命周期回归。
+
 ## 原生持续录制的最近结论
 
 截至包含 `dde3e1a` 的主线，三相机原生持续录制的 `RAW_QUEUE_OVERFLOW` 尚未关闭，新的六组正式长测及独立相机恢复验收仍未完成。

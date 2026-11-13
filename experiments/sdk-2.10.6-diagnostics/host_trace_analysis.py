@@ -358,6 +358,27 @@ def split_generation_gaps(gaps, start, end):
     return inside,outside
 
 
+
+def identity_history_status(generations, summary, expected):
+    owned={(r['owner']['camera'],r['owner']['worker_host_pid'],r['owner']['worker_start_ticks'])
+           for r in generations.rows if r['owner']}
+    bound={(r['camera'],r['worker_host_pid'],r['start_ticks']) for r in summary.get('bound_workers',[])}
+    reasons=[]
+    if type(summary.get('identity_samples')) is not int or summary['identity_samples']<=0:
+        reasons.append('zero-or-invalid-identity-samples')
+    if type(summary.get('identity_errors')) is not int or summary['identity_errors']!=0:
+        reasons.append('identity-capture-errors-or-unavailable-count')
+    if {r[0] for r in expected}!={'a','b','c'} or not expected<=owned or not expected<=bound:
+        reasons.append('expected-writer-identities-not-all-proven')
+    if 'identity_binding_complete' in summary and summary['identity_binding_complete'] is not True:
+        reasons.append('capture-identity-binding-incomplete')
+    binding_complete=not reasons
+    if generations.gaps or any('birth unknown' in r['basis'] for r in generations.rows):
+        reasons.append('generation-history-gaps-or-unknown-births')
+    return {'complete':not reasons,'binding_complete':binding_complete,'reasons':reasons,'expected_workers':len(expected),
+            'proven_workers':len(owned),'capture_bound_workers':len(bound)}
+
+
 def analyze(source, trace, official, output, max_output=256 * 1024**2):
     source, trace, official, output = map(lambda p: Path(p).resolve(), (source, trace, official, output))
     require(not output.exists() and not output.is_relative_to(trace)
@@ -424,7 +445,10 @@ def analyze(source, trace, official, output, max_output=256 * 1024**2):
         application_gaps = original_observer_gaps(original)
         interval_start, interval_end = chain["window_start_monotonic_ns"], chain["window_end_monotonic_ns"]
         window_gaps, outside_gaps = split_generation_gaps(generations.gaps, interval_start, interval_end)
+        identity_status=identity_history_status(generations,summary,expected)
         gaps = window_gaps + association.gaps + application_gaps
+        if not identity_status["binding_complete"]:
+            gaps.append({"reason":"identity-history-incomplete", "details":identity_status})
         interval_start, interval_end = chain["window_start_monotonic_ns"], chain["window_end_monotonic_ns"]
         queue_brackets = {}
         for name in "abc":
@@ -512,7 +536,8 @@ def analyze(source, trace, official, output, max_output=256 * 1024**2):
         value = {"schema": "gdp-independent-host-association-v1", "revision": ready["revision"], "analysis_only": True,
             "outside_window_identity_gaps":outside_gaps,
             "observer_history_notes":original.get("source_summaries"),
-            "overall_identity_history_complete":not generations.gaps and not any("birth unknown" in r["basis"] for r in generations.rows),
+            "overall_identity_history_complete":identity_status["complete"],
+            "identity_history":identity_status,
             "association_complete": not gaps, "state": "complete" if not gaps else "incomplete",
             "hardware_acceptance_verified": False, "original_analysis_unchanged": True,
             "input_sha256": refs, "three_writer_wait_chain": chain, "gaps": gaps,

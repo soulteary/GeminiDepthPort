@@ -7,6 +7,7 @@ every 0.2 s, and retains the original driver's writer cleanup on trace failure.
 It calls finish after that cleanup. This module never signals a target or uses Docker.
 """
 import argparse
+import errno
 import hashlib
 import importlib.util
 import json
@@ -42,6 +43,48 @@ SCOPE = (
     "associated with writers. Device overlap is not unique SSD attribution. "
     "Read syscalls are disabled to prevent trace_pipe reader self-excitation. "
     "Each writer owns its own credit limits; no cross-writer credit pool.")
+
+
+class PidFilterError(OSError):
+    def __init__(self, error, context):
+        super().__init__(error.errno, error.strerror or str(error), context['path'])
+        self.syscall_context = context
+
+
+def seed_pid_filter(path, tids, maximum):
+    """tracefs adds PID tokens without O_TRUNC; never use buffered append/seek."""
+    require(type(maximum) is int and 1<=maximum<=65536 and isinstance(tids,(list,tuple))
+            and 0<len(tids)<=maximum and all(type(t) is int and t>0 for t in tids), 'PID_FILTER_TID_BOUND')
+    tids=sorted(set(tids))
+    raw=(' '.join(map(str,tids))+'\n').encode('ascii')
+    flags=os.O_WRONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    context={'path':str(path),'operation':'open','open_flags':flags,
+             'requested_bytes':len(raw),'written_bytes':None,'tid_count':len(tids),
+             'requested_tids_first_64':tids[:64],'payload_sha256':hashlib.sha256(raw).hexdigest(),
+             'observer_pid':os.getpid(),'observer_tid':threading.get_native_id(),
+             'started_monotonic_ns':time.monotonic_ns()}
+    fd=None
+    try:
+        fd=os.open(path,flags)
+        context['operation']='write'
+        count=os.write(fd,raw);context['written_bytes']=count
+        if count!=len(raw):
+            context.update(failure_kind='short_write',errno_source='observer_validation')
+            raise OSError(errno.EIO,'short PID filter write; not retried across token boundaries')
+        context['operation']='close'
+        closing=fd;fd=None;os.close(closing)
+        context['finished_monotonic_ns']=time.monotonic_ns()
+        context['ok']=True
+        return context
+    except OSError as error:
+        context.setdefault('errno_source','os_error')
+        context.update(errno=error.errno,error_type=type(error).__name__,error=str(error),ok=False,
+                       finished_monotonic_ns=time.monotonic_ns())
+        raise PidFilterError(error,context) from error
+    finally:
+        if fd is not None:
+            try:os.close(fd)
+            except OSError:pass
 
 
 def stream_sha(stream):
@@ -693,11 +736,8 @@ class HostKernelTrace:
                         require(row["tgid"] == worker and row["pid_namespace"] == root_identity["pid_namespace"]
                                 and row["cgroup"] == root_identity["cgroup"], "THREAD_WORKER_BINDING_CHANGED")
                         key = (row["tid"], row["start_ticks"])
-                        self.mapping_keys.add(key)
-                        require(len(self.mapping_keys) <= self.max_generations, "DISTINCT_THREAD_MAPPING_LIMIT")
+                        require(len(self.mapping_keys) + len(threads) < self.max_generations, "DISTINCT_THREAD_MAPPING_LIMIT")
                         threads.append(row)
-                        self.known_threads[key] = row
-                        self.thread_pins[row["tid"]] = (group, label, pin)
 
                     require(stable_identity(Path("/proc") / str(worker))["start_ticks"] == process["worker_start_ticks"],
                             "WORKER_CHANGED_DURING_THREAD_ENUMERATION")
@@ -710,12 +750,20 @@ class HostKernelTrace:
                         host = next(instance for instance in self.instances if instance.name == "host")
                         tids = [int(entry.name) for entry in thread_dir.iterdir() if entry.name.isdigit()]
                         require(len(tids) <= self.max_processes, "WORKER_THREAD_MAPPING_LIMIT")
-                        with (host.path / "set_event_pid").open("a") as selected:
-                            selected.write(" ".join(map(str,tids))+"\n")
-                        self.seeded_workers.add(worker_generation)
+                        receipt = seed_pid_filter(host.path / "set_event_pid", tids, self.max_processes)
+                        require(stable_identity(Path("/proc") / str(worker))["start_ticks"] == process["worker_start_ticks"],
+                                "WORKER_CHANGED_DURING_PID_FILTER_WRITE")
                         self.budget.json("identities.jsonl", {"kind":"pid-filter-seeded","worker":worker,
-                            "monotonic_ns":time.monotonic_ns(),"host_tids":tids,"scope":"existing tasks seeded; event-fork follows future children"})
+                            "monotonic_ns":time.monotonic_ns(),"host_tids":tids,"syscall_receipt":receipt,"scope":"existing tasks seeded; event-fork follows future children"})
+                        self.seeded_workers.add(worker_generation)
+                    for proven in threads:
+                        key=(proven["tid"],proven["start_ticks"])
+                        self.mapping_keys.add(key)
+                        self.known_threads[key]=proven
+                        self.thread_pins[proven["tid"]]=(group,label,pin)
+                    require(len(self.mapping_keys) <= self.max_generations, "DISTINCT_THREAD_MAPPING_LIMIT")
                     self.bound[(group, label)] = {"worker_host_pid": worker, "start_ticks": process["worker_start_ticks"]}
+                    row["sample_finished_monotonic_ns"] = time.monotonic_ns()
                     self.identity_samples += 1
                 except (FileNotFoundError, ProcessLookupError):
                     # Exited workers are expected during normal cleanup; retained
@@ -741,7 +789,10 @@ class HostKernelTrace:
                     self.identity_gaps += 1
                     row = {"kind": "identity-error", "group": group, "camera": label,
                            "sample_started_monotonic_ns": began, "sample_finished_monotonic_ns": time.monotonic_ns(),
-                           "reason": type(error).__name__ + ":" + str(error)}
+                           "reason": type(error).__name__ + ":" + str(error),
+                           "syscall_context":getattr(error,"syscall_context",None),
+                           "worker_host_pid":process.get("worker_host_pid") if process else None,
+                           "worker_start_ticks":process.get("worker_start_ticks") if process else None}
                     self.fail("IDENTITY_ERROR:" + group + ":" + label + ":" + str(error))
                 self.budget.json("identities.jsonl", row)
 
@@ -817,8 +868,14 @@ class HostKernelTrace:
                 rows.append(instance.finish())
             except Exception as error:
                 self.fail("FINISH_ERROR:" + instance.name + ":" + str(error))
-        capture_ok = self.failure is None and len(rows) == 2 and all(
+        identity_ok = (self.identity_samples > 0 and self.identity_gaps == 0
+                       and {key[1] for key in self.bound} == {"a","b","c"}
+                       and all((v["worker_host_pid"],v["start_ticks"]) in self.seeded_workers for v in self.bound.values()))
+        if not identity_ok:
+            self.fail("WRITER_IDENTITY_BINDING_INCOMPLETE")
+        raw_ok = len(rows) == 2 and all(
             row["complete_initial_and_final_counters"] and row["removed"] for row in rows)
+        capture_ok = self.failure is None and raw_ok and identity_ok
         try:
             source_after = self.source_proof() if self.source_hashes else {}
         except Exception as error:
@@ -827,6 +884,7 @@ class HostKernelTrace:
             self.fail("HELPER_OR_SOURCE_CHANGED_DURING_TRACE")
             capture_ok = False
         result = {"schema": "gdp-independent-host-trace-v1", "capture_complete": capture_ok,
+            "raw_counters_and_removal_complete":raw_ok,"identity_binding_complete":identity_ok,
             "state": "raw-capture-complete-pending-identity-analysis" if capture_ok else "incomplete",
             "association_complete": False, "association_status": "requires-independent-offline-analysis",
             "hardware_acceptance_verified": False, "failure": self.failure, "errors": self.errors,
