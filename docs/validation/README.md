@@ -2,6 +2,8 @@
 
 部署前先看[当前能力与已知限制](../guides/current-status.md)。本页提供正在使用的验收入口；按提交冻结的流程、失败记录和性能实验统一从[历史索引](history.md)查阅。
 
+- [索引 sync_all／sync_data 隔离实验](index-sync-experiment.md)：固定生产 half-credit，候选只存在于独立源码副本；含故障注入、短时对照结果和测试者长测命令。
+
 ## 原生持续录制的最近结论
 
 截至包含 `dde3e1a` 的主线，三相机原生持续录制的 `RAW_QUEUE_OVERFLOW` 尚未关闭，新的六组正式长测及独立相机恢复验收仍未完成。
