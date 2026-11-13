@@ -4,6 +4,8 @@
 
 - [索引 sync_all／sync_data 隔离实验](index-sync-experiment.md)：固定生产 half-credit，候选只存在于独立源码副本；含故障注入、短时对照结果和测试者长测命令。
 
+- [首次 checkpoint 错峰实验](first-checkpoint-phase.md)：同屏障启动、首批 3／5／7、相位观测及故障恢复对照。
+
 ## 原生持续录制的最近结论
 
 截至包含 `dde3e1a` 的主线，三相机原生持续录制的 `RAW_QUEUE_OVERFLOW` 尚未关闭，新的六组正式长测及独立相机恢复验收仍未完成。

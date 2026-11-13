@@ -1,0 +1,68 @@
+{
+  "build": {
+    "collector": "identical bounded in-memory collector in both variants; no sampling sleeps",
+    "commit": "61642b8b8757ba4b7d223992545c4ac61c53b007",
+    "common_driver_sha256": "54728fd55bce14e6c13e95c797001d4d1dfb28414b9a3fc0487b55414bd9646c",
+    "patched_files": [
+      "crates/offline-depth/src/recording/chunked.rs",
+      "crates/offline-depth/tests/writer_contention_benchmark.rs"
+    ],
+    "production_modified": false,
+    "rustc": "rustc 1.90.0 (1159e78c4 2025-09-14)\nbinary: rustc\ncommit-hash: 1159e78c4747b02ef996e55082b704c09b970588\ncommit-date: 2025-09-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.90.0\nLLVM version: 20.1.8\n",
+    "tool_sha256": "cf2d41500188dd1ce1a725de8c7461d22b9427291082fd72395ae508ab892a36",
+    "variants": {
+      "aligned": {
+        "binary": "/work/gdp-first-phase-build-20261114/aligned.bin",
+        "binary_sha256": "cfd25b2faaf964a4c40242463567d1915f4314e11264fee5a9f14828cfcd18c7",
+        "payload": "/work/gdp-first-phase-build-20261114/phase.elf",
+        "payload_sha256": "d3914a45112bd271b8e2c216ab4ed17edc6ff899733a53e22ccf2e43dc454b71"
+      },
+      "first3": {
+        "binary": "/work/gdp-first-phase-build-20261114/first3.bin",
+        "binary_sha256": "1ef294001a678e9cfa9f0f01167c0631ac3840d603b9d5ecbaf3a09523119142",
+        "payload": "/work/gdp-first-phase-build-20261114/phase.elf",
+        "payload_sha256": "d3914a45112bd271b8e2c216ab4ed17edc6ff899733a53e22ccf2e43dc454b71"
+      },
+      "first5": {
+        "binary": "/work/gdp-first-phase-build-20261114/first5.bin",
+        "binary_sha256": "3b4bb74ec656ffa0709b9e864acc01f8a7db61efb437d5f33fd1a0e07e4f37f3",
+        "payload": "/work/gdp-first-phase-build-20261114/phase.elf",
+        "payload_sha256": "d3914a45112bd271b8e2c216ab4ed17edc6ff899733a53e22ccf2e43dc454b71"
+      },
+      "first7": {
+        "binary": "/work/gdp-first-phase-build-20261114/first7.bin",
+        "binary_sha256": "cfd25b2faaf964a4c40242463567d1915f4314e11264fee5a9f14828cfcd18c7",
+        "payload": "/work/gdp-first-phase-build-20261114/phase.elf",
+        "payload_sha256": "d3914a45112bd271b8e2c216ab4ed17edc6ff899733a53e22ccf2e43dc454b71"
+      },
+      "staggered": {
+        "binary": "/work/gdp-first-phase-build-20261114/staggered.bin",
+        "binary_sha256": "ecd445f50a267e3041eb07fc93a64484accdb7388448a0714b08e1e0b42932a7",
+        "payload": "/work/gdp-first-phase-build-20261114/phase.elf",
+        "payload_sha256": "d3914a45112bd271b8e2c216ab4ed17edc6ff899733a53e22ccf2e43dc454b71"
+      }
+    }
+  },
+  "common_barrier": true,
+  "credit_bytes": 16777216,
+  "credit_pairs": 32,
+  "filesystem": {
+    "filesystem": "overlay",
+    "limits": "mountinfo identifies this namespace only; ext4 name alone does not verify physical device or MiniPC",
+    "major_minor": "0:202",
+    "mount_options": "rw,relatime",
+    "mountpoint": "/",
+    "physical_ext4_verified": false,
+    "source": "overlay",
+    "st_dev": 202,
+    "super_options": [
+      "rw,context=\"system_u:object_r:container_file_t:s0:c564,c636\",lowerdir=/var/lib/containers/storage/overlay/l/YZ27O3YDTEU3GCCY35QM4S45TG:/var/lib/containers/storage/overlay/l/TCENRRR77TWLROFCY4H7YROUXQ:/var/lib/containers/storage/overlay/l/U2523NG3V4FSZ5KTODIGDLK5VJ:/var/lib/containers/storage/overlay/l/PBLPTVDSGVJI5WU3RCECF4TMAL:/var/lib/containers/storage/overlay/l/2RS5SGE7JE4YPMBGRNBMIL4VHU:/var/lib/containers/storage/overlay/l/FYSY5MREOS53YHS5IMBHU2PMVM,upperdir=/var/lib/containers/storage/overlay/dd6ced919be78c0dae581b4b42b5b6c4f2413751a2851aa8a141b9be295a0300/diff,workdir=/var/lib/containers/storage/overlay/dd6ced919be78c0dae581b4b42b5b6c4f2413751a2851aa8a141b9be295a0300/work,redirect_dir=on,uuid=on,metacopy=on,fsync=volatile"
+    ]
+  },
+  "limits": "Synthetic storage-only experiment, no SDK/ROS/heartbeats or production status load; identical bounded collector in both; no hardware acceptance",
+  "planned_bytes": 1512767488,
+  "queue_capacity": 16,
+  "repeats": 3,
+  "seconds": 1,
+  "status_background_load": false
+}

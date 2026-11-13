@@ -1,0 +1,36 @@
+{
+  "dispatch_offsets_ns": [
+    [
+      86309869,
+      346342972,
+      577578545,
+      809570790,
+      1006421720
+    ],
+    [
+      141745416,
+      414977757,
+      641979724,
+      873856759,
+      1005965759
+    ],
+    [
+      209512988,
+      471610394,
+      707647660,
+      937097932,
+      1003752331
+    ]
+  ],
+  "first_pairs": [
+    3,
+    5,
+    7
+  ],
+  "index_sync_concurrency_wall_ns": {
+    "1": 28961,
+    "2": 0,
+    "3": 0
+  },
+  "scope": "application spans across same-host CLOCK_MONOTONIC; not block-device latency"
+}

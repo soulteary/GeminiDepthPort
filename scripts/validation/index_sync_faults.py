@@ -11,7 +11,7 @@ import time
 import writer_contention_ab as ab
 
 
-def run(build, output):
+def run(build, output, variants=(('sync_all', 'fsync'), ('sync_data', 'fdatasync'))):
     if sys.platform != 'linux':
         raise ValueError('LINUX_REQUIRED')
     manifest = json.loads((build / 'build-manifest.json').read_text())
@@ -21,7 +21,7 @@ def run(build, output):
     subprocess.run(['cc', '-shared', '-fPIC', '-std=c11', '-Wall', '-Wextra', '-Werror',
                     str(source), '-ldl', '-o', str(library)], check=True)
     rows = []
-    for variant, operation in (('sync_all', 'fsync'), ('sync_data', 'fdatasync')):
+    for variant, operation in variants:
         binary = Path(manifest['variants'][variant]['binary'])
         if (ab.sha256(binary) != manifest['variants'][variant]['binary_sha256']
                 or ab.sha256(manifest['variants'][variant]['payload']) != manifest['variants'][variant]['payload_sha256']):

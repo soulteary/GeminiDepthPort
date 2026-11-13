@@ -1,0 +1,2456 @@
+{
+  "directory": "round-00-staggered",
+  "repeat": 0,
+  "resource_diagnostic_complete": true,
+  "resource_gap_max_ns": 343673594,
+  "resource_gaps": {},
+  "resource_log_bytes": 32186,
+  "resource_log_limit_bytes": 8388608,
+  "resource_sample_errors": [],
+  "resource_samples": 35,
+  "simultaneous_rss_peak_bytes": 50835456,
+  "start_skew_ns": 7337123,
+  "variant": "staggered",
+  "writer_count": 3,
+  "writers": [
+    {
+      "actual_start_monotonic_ns": 75824269476969,
+      "actual_start_unix_ns": 1794588583889000555,
+      "append_max_ns": 161169615,
+      "append_p99_ns": 160187859,
+      "artifact_sha256": {
+        "COMPLETE": "a91a2c8d80cf1e85e36ceea5c042e4d3eb5f49fb45201e4336e324f8a957cd4f",
+        "checkpoint.json": "ec4cef45d171f4542cc23f5d351c0d405e82104c4d8c2931bb19fc70a014494d",
+        "manifest.json": "2a5683ff50f314ff8f2415fc2f3c91bf35311b085083794e22c9fb7da4e3dad0",
+        "records.jsonl": "d51519baaffaef63fb4406ad60bf18d9d9cc82b1212e4abc953ff0a651a422ac",
+        "snapshot.json": "c84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610"
+      },
+      "background_sampling": null,
+      "barrier_target_monotonic_ns": 75824260529305,
+      "barrier_target_unix_ns": 1794588583880059309,
+      "capture_cpu_cores": 0.2422537043099324,
+      "capture_cpu_seconds": 1.211394696,
+      "capture_elapsed_ns": 5000520836,
+      "capture_finished_monotonic_ns": 75829270005430,
+      "checkpoint_pipeline": true,
+      "color_bytes": 614400,
+      "common_driver_sha256": "54728fd55bce14e6c13e95c797001d4d1dfb28414b9a3fc0487b55414bd9646c",
+      "cpu_cores": 0.3615408543813111,
+      "cpu_scope": "process CPU from capture barrier through writer finish, two independent readers and background final critical cleanup; startup excluded; capture_cpu fields stop at fixed producer horizon",
+      "cpu_seconds": 2.6090612550000003,
+      "credit_bytes": 16777216,
+      "credit_pairs": 32,
+      "depth_bytes": 512000,
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 161159407,
+          "mean_ns": 13963633.266666668,
+          "minimum_ns": 1045923,
+          "p50_ns": {
+            "lower_bound_ns": 3932160,
+            "upper_bound_ns": 4194303
+          },
+          "p95_ns": {
+            "lower_bound_ns": 67108864,
+            "upper_bound_ns": 75497471
+          },
+          "p99_ns": {
+            "lower_bound_ns": 150994944,
+            "upper_bound_ns": 161159407
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 150,
+          "saturated_observations": 0,
+          "total_ns": "2094544990"
+        },
+        "checkpoint_batching": "half-credit",
+        "checkpoint_observation": {
+          "active": [],
+          "active_append": null,
+          "active_append_limit_hits": 0,
+          "active_capacity": 4,
+          "active_limit_hits": 0,
+          "anchor_monotonic_ns": null,
+          "anchor_unix_ns": null,
+          "clock": "CLOCK_MONOTONIC",
+          "enabled": false,
+          "events": [],
+          "history_capacity": 64,
+          "latest_event_id": 0,
+          "oldest_event_id": null,
+          "overwritten_events": 0,
+          "scope": "completed spans; sync wall includes filesystem/scheduling wait, not physical device latency; overlapping stages must not be summed",
+          "stages": {},
+          "version": 1
+        },
+        "checkpoints": 22,
+        "clock": "monotonic-duration",
+        "durable_pairs": 150,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 475499427,
+          "mean_ns": 475499427.0,
+          "minimum_ns": 475499427,
+          "p50_ns": {
+            "lower_bound_ns": 475499427,
+            "upper_bound_ns": 475499427
+          },
+          "p95_ns": {
+            "lower_bound_ns": 475499427,
+            "upper_bound_ns": 475499427
+          },
+          "p99_ns": {
+            "lower_bound_ns": 475499427,
+            "upper_bound_ns": 475499427
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "475499427"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 538253,
+          "mean_ns": 22069.077586206895,
+          "minimum_ns": 625,
+          "p50_ns": {
+            "lower_bound_ns": 4096,
+            "upper_bound_ns": 4607
+          },
+          "p95_ns": {
+            "lower_bound_ns": 73728,
+            "upper_bound_ns": 81919
+          },
+          "p99_ns": {
+            "lower_bound_ns": 196608,
+            "upper_bound_ns": 212991
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 116,
+          "saturated_observations": 0,
+          "total_ns": "2560013"
+        },
+        "index_buffer_capacity_peak_bytes": 65536,
+        "index_buffer_peak_bytes": 24571,
+        "index_flushes": 22,
+        "index_write_calls": 22,
+        "payload_files": 22,
+        "payload_write_calls": 150,
+        "pipelined_index_buffer_limit_bytes": 2097152,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 4156814,
+          "mean_ns": 407453.347826087,
+          "minimum_ns": 54417,
+          "p50_ns": {
+            "lower_bound_ns": 73728,
+            "upper_bound_ns": 81919
+          },
+          "p95_ns": {
+            "lower_bound_ns": 3145728,
+            "upper_bound_ns": 3407871
+          },
+          "p99_ns": {
+            "lower_bound_ns": 3932160,
+            "upper_bound_ns": 4156814
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 23,
+          "saturated_observations": 0,
+          "total_ns": "9371427"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "uncommitted_pairs_peak": 14,
+        "uncommitted_payload_bytes_peak": 15792406,
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 337920000,
+        "validation_imu_samples": 4000,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 464466326,
+          "mean_ns": 52584231.47826087,
+          "minimum_ns": 4595941,
+          "p50_ns": {
+            "lower_bound_ns": 18874368,
+            "upper_bound_ns": 20971519
+          },
+          "p95_ns": {
+            "lower_bound_ns": 134217728,
+            "upper_bound_ns": 150994943
+          },
+          "p99_ns": {
+            "lower_bound_ns": 436207616,
+            "upper_bound_ns": 464466326
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 23,
+          "saturated_observations": 0,
+          "total_ns": "1209437324"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 158009640,
+          "mean_ns": 7354503.698630137,
+          "minimum_ns": 46625,
+          "p50_ns": {
+            "lower_bound_ns": 655360,
+            "upper_bound_ns": 720895
+          },
+          "p95_ns": {
+            "lower_bound_ns": 50331648,
+            "upper_bound_ns": 54525951
+          },
+          "p99_ns": {
+            "lower_bound_ns": 75497472,
+            "upper_bound_ns": 83886079
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 219,
+          "saturated_observations": 0,
+          "total_ns": "1610636310"
+        }
+      },
+      "discarded_pairs": 0,
+      "experiment_phase": {
+        "capacity": 131072,
+        "clock": "CLOCK_MONOTONIC",
+        "dropped": 0,
+        "events": [
+          {
+            "checkpoint": 1,
+            "monotonic_ns": 75824340466141,
+            "pairs": 3,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 1,
+            "monotonic_ns": 75824341211270,
+            "pairs": 3,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 1,
+            "monotonic_ns": 75824341216604,
+            "pairs": 3,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 1,
+            "monotonic_ns": 75824341218270,
+            "pairs": 3,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 1,
+            "monotonic_ns": 75824346105921,
+            "pairs": 3,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 2,
+            "monotonic_ns": 75824606743570,
+            "pairs": 10,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 2,
+            "monotonic_ns": 75824613212813,
+            "pairs": 10,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 2,
+            "monotonic_ns": 75824613217980,
+            "pairs": 10,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 2,
+            "monotonic_ns": 75824613219772,
+            "pairs": 10,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 2,
+            "monotonic_ns": 75824626198175,
+            "pairs": 10,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 3,
+            "monotonic_ns": 75824838781399,
+            "pairs": 17,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 3,
+            "monotonic_ns": 75824846724775,
+            "pairs": 17,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 3,
+            "monotonic_ns": 75824846740691,
+            "pairs": 17,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 3,
+            "monotonic_ns": 75824846743900,
+            "pairs": 17,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 3,
+            "monotonic_ns": 75824858788506,
+            "pairs": 17,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 4,
+            "monotonic_ns": 75825073191240,
+            "pairs": 24,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 4,
+            "monotonic_ns": 75825074138162,
+            "pairs": 24,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 4,
+            "monotonic_ns": 75825074149120,
+            "pairs": 24,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 4,
+            "monotonic_ns": 75825074151537,
+            "pairs": 24,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 4,
+            "monotonic_ns": 75825091306837,
+            "pairs": 24,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 5,
+            "monotonic_ns": 75825305416611,
+            "pairs": 31,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 5,
+            "monotonic_ns": 75825305987031,
+            "pairs": 31,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 5,
+            "monotonic_ns": 75825305991198,
+            "pairs": 31,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 5,
+            "monotonic_ns": 75825305992323,
+            "pairs": 31,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 5,
+            "monotonic_ns": 75825321892283,
+            "pairs": 31,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 6,
+            "monotonic_ns": 75825541477003,
+            "pairs": 38,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 6,
+            "monotonic_ns": 75825541821672,
+            "pairs": 38,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 6,
+            "monotonic_ns": 75825541835339,
+            "pairs": 38,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 6,
+            "monotonic_ns": 75825541836672,
+            "pairs": 38,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 6,
+            "monotonic_ns": 75825611309211,
+            "pairs": 38,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 7,
+            "monotonic_ns": 75825774568463,
+            "pairs": 45,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 7,
+            "monotonic_ns": 75825781597542,
+            "pairs": 45,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 7,
+            "monotonic_ns": 75825781605584,
+            "pairs": 45,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 7,
+            "monotonic_ns": 75825781609042,
+            "pairs": 45,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 7,
+            "monotonic_ns": 75825795631367,
+            "pairs": 45,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 8,
+            "monotonic_ns": 75826017441974,
+            "pairs": 52,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 8,
+            "monotonic_ns": 75826021606872,
+            "pairs": 52,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 8,
+            "monotonic_ns": 75826021614038,
+            "pairs": 52,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 8,
+            "monotonic_ns": 75826021615913,
+            "pairs": 52,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 8,
+            "monotonic_ns": 75826039655593,
+            "pairs": 52,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 9,
+            "monotonic_ns": 75826245577824,
+            "pairs": 59,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 9,
+            "monotonic_ns": 75826249253427,
+            "pairs": 59,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 9,
+            "monotonic_ns": 75826249260343,
+            "pairs": 59,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 9,
+            "monotonic_ns": 75826249262593,
+            "pairs": 59,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 9,
+            "monotonic_ns": 75826291420570,
+            "pairs": 59,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 10,
+            "monotonic_ns": 75826487017119,
+            "pairs": 66,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 10,
+            "monotonic_ns": 75826488420669,
+            "pairs": 66,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 10,
+            "monotonic_ns": 75826488429252,
+            "pairs": 66,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 10,
+            "monotonic_ns": 75826488432544,
+            "pairs": 66,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 10,
+            "monotonic_ns": 75826523552690,
+            "pairs": 66,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 11,
+            "monotonic_ns": 75826889310362,
+            "pairs": 73,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 11,
+            "monotonic_ns": 75826890342159,
+            "pairs": 73,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 11,
+            "monotonic_ns": 75826890353242,
+            "pairs": 73,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 11,
+            "monotonic_ns": 75826890355659,
+            "pairs": 73,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 11,
+            "monotonic_ns": 75827037444365,
+            "pairs": 73,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 12,
+            "monotonic_ns": 75827320875136,
+            "pairs": 80,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 12,
+            "monotonic_ns": 75827400188020,
+            "pairs": 80,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 12,
+            "monotonic_ns": 75827400194770,
+            "pairs": 80,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 12,
+            "monotonic_ns": 75827400204978,
+            "pairs": 80,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 12,
+            "monotonic_ns": 75827459866299,
+            "pairs": 80,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 13,
+            "monotonic_ns": 75827470588564,
+            "pairs": 87,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 13,
+            "monotonic_ns": 75827471558903,
+            "pairs": 87,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 13,
+            "monotonic_ns": 75827471565695,
+            "pairs": 87,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 13,
+            "monotonic_ns": 75827471567528,
+            "pairs": 87,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 13,
+            "monotonic_ns": 75827491219050,
+            "pairs": 87,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 14,
+            "monotonic_ns": 75827515935516,
+            "pairs": 94,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 14,
+            "monotonic_ns": 75827516440269,
+            "pairs": 94,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 14,
+            "monotonic_ns": 75827516445727,
+            "pairs": 94,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 14,
+            "monotonic_ns": 75827516446936,
+            "pairs": 94,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 14,
+            "monotonic_ns": 75827540927817,
+            "pairs": 94,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 15,
+            "monotonic_ns": 75827669201589,
+            "pairs": 101,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 15,
+            "monotonic_ns": 75827796341229,
+            "pairs": 101,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 15,
+            "monotonic_ns": 75827796351313,
+            "pairs": 101,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 15,
+            "monotonic_ns": 75827796353938,
+            "pairs": 101,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 15,
+            "monotonic_ns": 75827839302793,
+            "pairs": 101,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 16,
+            "monotonic_ns": 75827986069248,
+            "pairs": 108,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 16,
+            "monotonic_ns": 75827987250129,
+            "pairs": 108,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 16,
+            "monotonic_ns": 75827987254337,
+            "pairs": 108,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 16,
+            "monotonic_ns": 75827987255546,
+            "pairs": 108,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 16,
+            "monotonic_ns": 75828074435472,
+            "pairs": 108,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 17,
+            "monotonic_ns": 75828120633720,
+            "pairs": 115,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 17,
+            "monotonic_ns": 75828122299645,
+            "pairs": 115,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 17,
+            "monotonic_ns": 75828122303395,
+            "pairs": 115,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 17,
+            "monotonic_ns": 75828122304520,
+            "pairs": 115,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 17,
+            "monotonic_ns": 75828175196221,
+            "pairs": 115,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 18,
+            "monotonic_ns": 75828345563552,
+            "pairs": 122,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 18,
+            "monotonic_ns": 75828348172983,
+            "pairs": 122,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 18,
+            "monotonic_ns": 75828348180233,
+            "pairs": 122,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 18,
+            "monotonic_ns": 75828348181858,
+            "pairs": 122,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 18,
+            "monotonic_ns": 75828363085938,
+            "pairs": 122,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 19,
+            "monotonic_ns": 75828613522032,
+            "pairs": 129,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 19,
+            "monotonic_ns": 75828618192307,
+            "pairs": 129,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 19,
+            "monotonic_ns": 75828618199307,
+            "pairs": 129,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 19,
+            "monotonic_ns": 75828618201140,
+            "pairs": 129,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 19,
+            "monotonic_ns": 75828636566405,
+            "pairs": 129,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 20,
+            "monotonic_ns": 75828811847263,
+            "pairs": 136,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 20,
+            "monotonic_ns": 75828817494126,
+            "pairs": 136,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 20,
+            "monotonic_ns": 75828817504835,
+            "pairs": 136,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 20,
+            "monotonic_ns": 75828817507626,
+            "pairs": 136,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 20,
+            "monotonic_ns": 75828850109343,
+            "pairs": 136,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 21,
+            "monotonic_ns": 75829120576378,
+            "pairs": 143,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 21,
+            "monotonic_ns": 75829123231892,
+            "pairs": 143,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 21,
+            "monotonic_ns": 75829123236517,
+            "pairs": 143,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 21,
+            "monotonic_ns": 75829123238017,
+            "pairs": 143,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 21,
+            "monotonic_ns": 75829137123133,
+            "pairs": 143,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 22,
+            "monotonic_ns": 75829270066430,
+            "pairs": 150,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 22,
+            "monotonic_ns": 75829270663850,
+            "pairs": 150,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 22,
+            "monotonic_ns": 75829270666808,
+            "pairs": 150,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 22,
+            "monotonic_ns": 75829270667642,
+            "pairs": 150,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 22,
+            "monotonic_ns": 75829280560445,
+            "pairs": 150,
+            "phase": "commit_end"
+          }
+        ]
+      },
+      "fixture_sha256": "0cc1fe3995d8483f01b84d7f29ce98fc65693a14b68e4074154fe9fbb0dc2733",
+      "fps": 30,
+      "imu_hz_per_stream": 200,
+      "independent_readback": {
+        "expected_imu_samples": 2000,
+        "pairs_per_pass": [
+          150,
+          150
+        ],
+        "passes": 2,
+        "per_frame_color_depth_evidence_hashes": true,
+        "wall_ns": 1734683851
+      },
+      "input_sha256": "373c50d4f2600dfb2182ef6c4199f7d486e3a19fda6ded48399125c61fca22c3",
+      "kind": "writer-contention-child-v1",
+      "ok": true,
+      "overflow": 0,
+      "pairs": 150,
+      "peak_rss_kib": 14372,
+      "peak_rss_scope": "isolated child including producer, writer and two extra materialized readers",
+      "producer_late_max_ns": 237819375,
+      "queue_capacity": 16,
+      "queue_final": {
+        "abort": false,
+        "capacity_pairs": 16,
+        "closed": true,
+        "dequeued_pairs": 150,
+        "high_water_pairs": 8,
+        "inflight_pairs": 0,
+        "inflight_sequence": null,
+        "oldest_queued_age_ns": null,
+        "queued_pairs": 0,
+        "scope": "modeled owned FIFO, excludes SDK/ROS queues"
+      },
+      "queue_peak": 8,
+      "queue_scope": "modeled nonblocking owned-whole-pair FIFO; 16 queued plus one in flight; overflow aborts rather than blocking capture",
+      "queue_wait_max_ns": 197333184,
+      "queue_wait_p99_ns": 190185146,
+      "reason": null,
+      "status_background_load": false,
+      "status_driver_sha256": null,
+      "status_persistence": null,
+      "submitted_pairs": 150,
+      "test_sink_delay_ms": 0,
+      "wall_seconds_including_independent_readers": 7.216504645,
+      "writer_error": null,
+      "written_pairs": 150
+    },
+    {
+      "actual_start_monotonic_ns": 75824265771824,
+      "actual_start_unix_ns": 1794588583885295827,
+      "append_max_ns": 350703048,
+      "append_p99_ns": 350703048,
+      "artifact_sha256": null,
+      "background_sampling": null,
+      "barrier_target_monotonic_ns": 75824260529305,
+      "barrier_target_unix_ns": 1794588583880059309,
+      "capture_cpu_cores": 0.21194035189523533,
+      "capture_cpu_seconds": 0.702173952,
+      "capture_elapsed_ns": 3313073446,
+      "capture_finished_monotonic_ns": 75827578913646,
+      "checkpoint_pipeline": true,
+      "color_bytes": 614400,
+      "common_driver_sha256": "54728fd55bce14e6c13e95c797001d4d1dfb28414b9a3fc0487b55414bd9646c",
+      "cpu_cores": 0.20324328946120532,
+      "cpu_scope": "process CPU from capture barrier through writer finish, two independent readers and background final critical cleanup; startup excluded; capture_cpu fields stop at fixed producer horizon",
+      "cpu_seconds": 0.718931121,
+      "credit_bytes": 16777216,
+      "credit_pairs": 32,
+      "depth_bytes": 512000,
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 350695965,
+          "mean_ns": 16945313.024390243,
+          "minimum_ns": 1087423,
+          "p50_ns": {
+            "lower_bound_ns": 4718592,
+            "upper_bound_ns": 5242879
+          },
+          "p95_ns": {
+            "lower_bound_ns": 54525952,
+            "upper_bound_ns": 58720255
+          },
+          "p99_ns": {
+            "lower_bound_ns": 335544320,
+            "upper_bound_ns": 350695965
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 82,
+          "saturated_observations": 0,
+          "total_ns": "1389515668"
+        },
+        "checkpoint_batching": "half-credit",
+        "checkpoint_observation": {
+          "active": [],
+          "active_append": null,
+          "active_append_limit_hits": 0,
+          "active_capacity": 4,
+          "active_limit_hits": 0,
+          "anchor_monotonic_ns": null,
+          "anchor_unix_ns": null,
+          "clock": "CLOCK_MONOTONIC",
+          "enabled": false,
+          "events": [],
+          "history_capacity": 64,
+          "latest_event_id": 0,
+          "oldest_event_id": null,
+          "overwritten_events": 0,
+          "scope": "completed spans; sync wall includes filesystem/scheduling wait, not physical device latency; overlapping stages must not be summed",
+          "stages": {},
+          "version": 1
+        },
+        "checkpoints": 12,
+        "clock": "monotonic-duration",
+        "durable_pairs": 82,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": null,
+          "mean_ns": null,
+          "minimum_ns": null,
+          "p50_ns": null,
+          "p95_ns": null,
+          "p99_ns": null,
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 0,
+          "saturated_observations": 0,
+          "total_ns": "0"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 81042,
+          "mean_ns": 11901.935483870968,
+          "minimum_ns": 334,
+          "p50_ns": {
+            "lower_bound_ns": 3328,
+            "upper_bound_ns": 3583
+          },
+          "p95_ns": {
+            "lower_bound_ns": 40960,
+            "upper_bound_ns": 45055
+          },
+          "p99_ns": {
+            "lower_bound_ns": 73728,
+            "upper_bound_ns": 81042
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 62,
+          "saturated_observations": 0,
+          "total_ns": "737920"
+        },
+        "index_buffer_capacity_peak_bytes": 65536,
+        "index_buffer_peak_bytes": 24562,
+        "index_flushes": 12,
+        "index_write_calls": 12,
+        "payload_files": 12,
+        "payload_write_calls": 82,
+        "pipelined_index_buffer_limit_bytes": 2097152,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 165774931,
+          "mean_ns": 13989283.25,
+          "minimum_ns": 50333,
+          "p50_ns": {
+            "lower_bound_ns": 61440,
+            "upper_bound_ns": 65535
+          },
+          "p95_ns": {
+            "lower_bound_ns": 150994944,
+            "upper_bound_ns": 165774931
+          },
+          "p99_ns": {
+            "lower_bound_ns": 150994944,
+            "upper_bound_ns": 165774931
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 12,
+          "saturated_observations": 0,
+          "total_ns": "167871399"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "uncommitted_pairs_peak": 11,
+        "uncommitted_payload_bytes_peak": 12408319,
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 92364800,
+        "validation_imu_samples": 1092,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 190248354,
+          "mean_ns": 48817897.583333336,
+          "minimum_ns": 8304170,
+          "p50_ns": {
+            "lower_bound_ns": 18874368,
+            "upper_bound_ns": 20971519
+          },
+          "p95_ns": {
+            "lower_bound_ns": 184549376,
+            "upper_bound_ns": 190248354
+          },
+          "p99_ns": {
+            "lower_bound_ns": 184549376,
+            "upper_bound_ns": 190248354
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 12,
+          "saturated_observations": 0,
+          "total_ns": "585814771"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 349684169,
+          "mean_ns": 9315714.516666668,
+          "minimum_ns": 51958,
+          "p50_ns": {
+            "lower_bound_ns": 589824,
+            "upper_bound_ns": 655359
+          },
+          "p95_ns": {
+            "lower_bound_ns": 41943040,
+            "upper_bound_ns": 46137343
+          },
+          "p99_ns": {
+            "lower_bound_ns": 125829120,
+            "upper_bound_ns": 134217727
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 120,
+          "saturated_observations": 0,
+          "total_ns": "1117885742"
+        }
+      },
+      "discarded_pairs": 16,
+      "experiment_phase": {
+        "capacity": 131072,
+        "clock": "CLOCK_MONOTONIC",
+        "dropped": 0,
+        "events": [
+          {
+            "checkpoint": 1,
+            "monotonic_ns": 75824404880612,
+            "pairs": 5,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 1,
+            "monotonic_ns": 75824407407625,
+            "pairs": 5,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 1,
+            "monotonic_ns": 75824407412375,
+            "pairs": 5,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 1,
+            "monotonic_ns": 75824407413875,
+            "pairs": 5,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 1,
+            "monotonic_ns": 75824423110835,
+            "pairs": 5,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 2,
+            "monotonic_ns": 75824670325870,
+            "pairs": 12,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 2,
+            "monotonic_ns": 75824674976103,
+            "pairs": 12,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 2,
+            "monotonic_ns": 75824674982770,
+            "pairs": 12,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 2,
+            "monotonic_ns": 75824674984770,
+            "pairs": 12,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 2,
+            "monotonic_ns": 75824683630649,
+            "pairs": 12,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 3,
+            "monotonic_ns": 75824901125233,
+            "pairs": 19,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 3,
+            "monotonic_ns": 75824902609283,
+            "pairs": 19,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 3,
+            "monotonic_ns": 75824902614950,
+            "pairs": 19,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 3,
+            "monotonic_ns": 75824902616866,
+            "pairs": 19,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 3,
+            "monotonic_ns": 75824933705575,
+            "pairs": 19,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 4,
+            "monotonic_ns": 75825136183745,
+            "pairs": 26,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 4,
+            "monotonic_ns": 75825138130255,
+            "pairs": 26,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 4,
+            "monotonic_ns": 75825138137464,
+            "pairs": 26,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 4,
+            "monotonic_ns": 75825138138589,
+            "pairs": 26,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 4,
+            "monotonic_ns": 75825154651302,
+            "pairs": 26,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 5,
+            "monotonic_ns": 75825367935864,
+            "pairs": 33,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 5,
+            "monotonic_ns": 75825369887374,
+            "pairs": 33,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 5,
+            "monotonic_ns": 75825369893582,
+            "pairs": 33,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 5,
+            "monotonic_ns": 75825369895582,
+            "pairs": 33,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 5,
+            "monotonic_ns": 75825388032430,
+            "pairs": 33,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 6,
+            "monotonic_ns": 75825610065246,
+            "pairs": 40,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 6,
+            "monotonic_ns": 75825613149763,
+            "pairs": 40,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 6,
+            "monotonic_ns": 75825613155930,
+            "pairs": 40,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 6,
+            "monotonic_ns": 75825613157513,
+            "pairs": 40,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 6,
+            "monotonic_ns": 75825633279413,
+            "pairs": 40,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 7,
+            "monotonic_ns": 75825834433075,
+            "pairs": 47,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 7,
+            "monotonic_ns": 75825836303752,
+            "pairs": 47,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 7,
+            "monotonic_ns": 75825836308336,
+            "pairs": 47,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 7,
+            "monotonic_ns": 75825836311294,
+            "pairs": 47,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 7,
+            "monotonic_ns": 75825852004586,
+            "pairs": 47,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 8,
+            "monotonic_ns": 75826071991100,
+            "pairs": 54,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 8,
+            "monotonic_ns": 75826074137279,
+            "pairs": 54,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 8,
+            "monotonic_ns": 75826074143654,
+            "pairs": 54,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 8,
+            "monotonic_ns": 75826074145862,
+            "pairs": 54,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 8,
+            "monotonic_ns": 75826189436147,
+            "pairs": 54,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 9,
+            "monotonic_ns": 75826329913818,
+            "pairs": 61,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 9,
+            "monotonic_ns": 75826331882703,
+            "pairs": 61,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 9,
+            "monotonic_ns": 75826331890287,
+            "pairs": 61,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 9,
+            "monotonic_ns": 75826331892120,
+            "pairs": 61,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 9,
+            "monotonic_ns": 75826352219729,
+            "pairs": 61,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 10,
+            "monotonic_ns": 75826658936125,
+            "pairs": 68,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 10,
+            "monotonic_ns": 75826659875339,
+            "pairs": 68,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 10,
+            "monotonic_ns": 75826659880255,
+            "pairs": 68,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 10,
+            "monotonic_ns": 75826659881714,
+            "pairs": 68,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 10,
+            "monotonic_ns": 75826683649716,
+            "pairs": 68,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 11,
+            "monotonic_ns": 75827016243543,
+            "pairs": 75,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 11,
+            "monotonic_ns": 75827017705967,
+            "pairs": 75,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 11,
+            "monotonic_ns": 75827017711509,
+            "pairs": 75,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 11,
+            "monotonic_ns": 75827017712926,
+            "pairs": 75,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 11,
+            "monotonic_ns": 75827299685522,
+            "pairs": 75,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 12,
+            "monotonic_ns": 75827595549860,
+            "pairs": 82,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 12,
+            "monotonic_ns": 75827595755695,
+            "pairs": 82,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 12,
+            "monotonic_ns": 75827595759528,
+            "pairs": 82,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 12,
+            "monotonic_ns": 75827595760278,
+            "pairs": 82,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 12,
+            "monotonic_ns": 75827786410009,
+            "pairs": 82,
+            "phase": "commit_end"
+          }
+        ]
+      },
+      "fixture_sha256": "0cc1fe3995d8483f01b84d7f29ce98fc65693a14b68e4074154fe9fbb0dc2733",
+      "fps": 30,
+      "imu_hz_per_stream": 200,
+      "independent_readback": null,
+      "input_sha256": "2ae52cb656c9207b5b374ed8d8a9d420e95cf5c3abf761abb7f88e1ed0fd74cf",
+      "kind": "writer-contention-child-v1",
+      "ok": false,
+      "overflow": 1,
+      "pairs": 150,
+      "peak_rss_kib": 23656,
+      "peak_rss_scope": "isolated child including producer, writer and two extra materialized readers",
+      "producer_late_max_ns": 185627871,
+      "queue_capacity": 16,
+      "queue_final": {
+        "abort": true,
+        "capacity_pairs": 16,
+        "closed": true,
+        "dequeued_pairs": 82,
+        "high_water_pairs": 16,
+        "inflight_pairs": 0,
+        "inflight_sequence": null,
+        "oldest_queued_age_ns": null,
+        "queued_pairs": 0,
+        "scope": "modeled owned FIFO, excludes SDK/ROS queues"
+      },
+      "queue_peak": 16,
+      "queue_scope": "modeled nonblocking owned-whole-pair FIFO; 16 queued plus one in flight; overflow aborts rather than blocking capture",
+      "queue_wait_max_ns": 584249552,
+      "queue_wait_p99_ns": 584249552,
+      "reason": "RAW_QUEUE_OVERFLOW",
+      "status_background_load": false,
+      "status_driver_sha256": null,
+      "status_persistence": null,
+      "submitted_pairs": 98,
+      "test_sink_delay_ms": 0,
+      "wall_seconds_including_independent_readers": 3.537293275,
+      "writer_error": null,
+      "written_pairs": 82
+    },
+    {
+      "actual_start_monotonic_ns": 75824262139846,
+      "actual_start_unix_ns": 1794588583881663516,
+      "append_max_ns": 176573739,
+      "append_p99_ns": 165461430,
+      "artifact_sha256": {
+        "COMPLETE": "a91a2c8d80cf1e85e36ceea5c042e4d3eb5f49fb45201e4336e324f8a957cd4f",
+        "checkpoint.json": "e3d73d5c7a660681d29b36613ea547798b783fe0d79296001499750e0edd2286",
+        "manifest.json": "499917d6966241410f7ac9ec5a1868578e7490e28ef457e3ac224b602da1086e",
+        "records.jsonl": "a5428f7c9e1d3497433f033e51a5728d272866c5032557613a858f1a62e104cc",
+        "snapshot.json": "c84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610"
+      },
+      "background_sampling": null,
+      "barrier_target_monotonic_ns": 75824260529305,
+      "barrier_target_unix_ns": 1794588583880059309,
+      "capture_cpu_cores": 0.2508376387063981,
+      "capture_cpu_seconds": 1.2542235199999998,
+      "capture_elapsed_ns": 5000140834,
+      "capture_finished_monotonic_ns": 75829262289055,
+      "checkpoint_pipeline": true,
+      "color_bytes": 614400,
+      "common_driver_sha256": "54728fd55bce14e6c13e95c797001d4d1dfb28414b9a3fc0487b55414bd9646c",
+      "cpu_cores": 0.3666512512373345,
+      "cpu_scope": "process CPU from capture barrier through writer finish, two independent readers and background final critical cleanup; startup excluded; capture_cpu fields stop at fixed producer horizon",
+      "cpu_seconds": 2.680673624,
+      "credit_bytes": 16777216,
+      "credit_pairs": 32,
+      "depth_bytes": 512000,
+      "diagnostics": {
+        "append": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 176570197,
+          "mean_ns": 15600333.446666667,
+          "minimum_ns": 1149465,
+          "p50_ns": {
+            "lower_bound_ns": 5767168,
+            "upper_bound_ns": 6291455
+          },
+          "p95_ns": {
+            "lower_bound_ns": 67108864,
+            "upper_bound_ns": 75497471
+          },
+          "p99_ns": {
+            "lower_bound_ns": 150994944,
+            "upper_bound_ns": 167772159
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 150,
+          "saturated_observations": 0,
+          "total_ns": "2340050017"
+        },
+        "checkpoint_batching": "half-credit",
+        "checkpoint_observation": {
+          "active": [],
+          "active_append": null,
+          "active_append_limit_hits": 0,
+          "active_capacity": 4,
+          "active_limit_hits": 0,
+          "anchor_monotonic_ns": null,
+          "anchor_unix_ns": null,
+          "clock": "CLOCK_MONOTONIC",
+          "enabled": false,
+          "events": [],
+          "history_capacity": 64,
+          "latest_event_id": 0,
+          "oldest_event_id": null,
+          "overwritten_events": 0,
+          "scope": "completed spans; sync wall includes filesystem/scheduling wait, not physical device latency; overlapping stages must not be summed",
+          "stages": {},
+          "version": 1
+        },
+        "checkpoints": 22,
+        "clock": "monotonic-duration",
+        "durable_pairs": 150,
+        "failed_calls": {},
+        "finish_total": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 492001140,
+          "mean_ns": 492001140.0,
+          "minimum_ns": 492001140,
+          "p50_ns": {
+            "lower_bound_ns": 492001140,
+            "upper_bound_ns": 492001140
+          },
+          "p95_ns": {
+            "lower_bound_ns": 492001140,
+            "upper_bound_ns": 492001140
+          },
+          "p99_ns": {
+            "lower_bound_ns": 492001140,
+            "upper_bound_ns": 492001140
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 1,
+          "saturated_observations": 0,
+          "total_ns": "492001140"
+        },
+        "fsync": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 5219528,
+          "mean_ns": 67273.36206896552,
+          "minimum_ns": 458,
+          "p50_ns": {
+            "lower_bound_ns": 4608,
+            "upper_bound_ns": 5119
+          },
+          "p95_ns": {
+            "lower_bound_ns": 98304,
+            "upper_bound_ns": 106495
+          },
+          "p99_ns": {
+            "lower_bound_ns": 524288,
+            "upper_bound_ns": 589823
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 116,
+          "saturated_observations": 0,
+          "total_ns": "7803710"
+        },
+        "index_buffer_capacity_peak_bytes": 65536,
+        "index_buffer_peak_bytes": 24569,
+        "index_flushes": 22,
+        "index_write_calls": 22,
+        "payload_files": 22,
+        "payload_write_calls": 150,
+        "pipelined_index_buffer_limit_bytes": 2097152,
+        "rename": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 328210,
+          "mean_ns": 98172.65217391304,
+          "minimum_ns": 50583,
+          "p50_ns": {
+            "lower_bound_ns": 73728,
+            "upper_bound_ns": 81919
+          },
+          "p95_ns": {
+            "lower_bound_ns": 294912,
+            "upper_bound_ns": 327679
+          },
+          "p99_ns": {
+            "lower_bound_ns": 327680,
+            "upper_bound_ns": 328210
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 23,
+          "saturated_observations": 0,
+          "total_ns": "2257971"
+        },
+        "scope": "native-writer-only; write-success-is-not-durability",
+        "uncommitted_pairs_peak": 14,
+        "uncommitted_payload_bytes_peak": 15792445,
+        "validation_buffer_peak_bytes": 65536,
+        "validation_image_bytes": 337920000,
+        "validation_imu_samples": 4000,
+        "verification": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 479881575,
+          "mean_ns": 54691748.17391305,
+          "minimum_ns": 8781839,
+          "p50_ns": {
+            "lower_bound_ns": 25165824,
+            "upper_bound_ns": 27262975
+          },
+          "p95_ns": {
+            "lower_bound_ns": 134217728,
+            "upper_bound_ns": 150994943
+          },
+          "p99_ns": {
+            "lower_bound_ns": 469762048,
+            "upper_bound_ns": 479881575
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 23,
+          "saturated_observations": 0,
+          "total_ns": "1257910208"
+        },
+        "write": {
+          "duration_clipped_observations": 0,
+          "histogram_buckets": 513,
+          "maximum_ns": 163766171,
+          "mean_ns": 7027590.611872146,
+          "minimum_ns": 43500,
+          "p50_ns": {
+            "lower_bound_ns": 786432,
+            "upper_bound_ns": 851967
+          },
+          "p95_ns": {
+            "lower_bound_ns": 46137344,
+            "upper_bound_ns": 50331647
+          },
+          "p99_ns": {
+            "lower_bound_ns": 75497472,
+            "upper_bound_ns": 83886079
+          },
+          "quantile_method": "fixed-log2-eight-sub-buckets-interval",
+          "samples": 219,
+          "saturated_observations": 0,
+          "total_ns": "1539042344"
+        }
+      },
+      "discarded_pairs": 0,
+      "experiment_phase": {
+        "capacity": 131072,
+        "clock": "CLOCK_MONOTONIC",
+        "dropped": 0,
+        "events": [
+          {
+            "checkpoint": 1,
+            "monotonic_ns": 75824472926144,
+            "pairs": 7,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 1,
+            "monotonic_ns": 75824476319162,
+            "pairs": 7,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 1,
+            "monotonic_ns": 75824476325912,
+            "pairs": 7,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 1,
+            "monotonic_ns": 75824476327620,
+            "pairs": 7,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 1,
+            "monotonic_ns": 75824488483061,
+            "pairs": 7,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 2,
+            "monotonic_ns": 75824734272296,
+            "pairs": 14,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 2,
+            "monotonic_ns": 75824741081166,
+            "pairs": 14,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 2,
+            "monotonic_ns": 75824741091125,
+            "pairs": 14,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 2,
+            "monotonic_ns": 75824741093166,
+            "pairs": 14,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 2,
+            "monotonic_ns": 75824758012382,
+            "pairs": 14,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 3,
+            "monotonic_ns": 75824968274552,
+            "pairs": 21,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 3,
+            "monotonic_ns": 75824969256807,
+            "pairs": 21,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 3,
+            "monotonic_ns": 75824969267974,
+            "pairs": 21,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 3,
+            "monotonic_ns": 75824969269766,
+            "pairs": 21,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 3,
+            "monotonic_ns": 75824989078497,
+            "pairs": 21,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 4,
+            "monotonic_ns": 75825198968165,
+            "pairs": 28,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 4,
+            "monotonic_ns": 75825214352998,
+            "pairs": 28,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 4,
+            "monotonic_ns": 75825214360414,
+            "pairs": 28,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 4,
+            "monotonic_ns": 75825214362039,
+            "pairs": 28,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 4,
+            "monotonic_ns": 75825246753338,
+            "pairs": 28,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 5,
+            "monotonic_ns": 75825434362345,
+            "pairs": 35,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 5,
+            "monotonic_ns": 75825438022823,
+            "pairs": 35,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 5,
+            "monotonic_ns": 75825438030323,
+            "pairs": 35,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 5,
+            "monotonic_ns": 75825438032615,
+            "pairs": 35,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 5,
+            "monotonic_ns": 75825487730840,
+            "pairs": 35,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 6,
+            "monotonic_ns": 75825676786438,
+            "pairs": 42,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 6,
+            "monotonic_ns": 75825681871632,
+            "pairs": 42,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 6,
+            "monotonic_ns": 75825681878715,
+            "pairs": 42,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 6,
+            "monotonic_ns": 75825681880465,
+            "pairs": 42,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 6,
+            "monotonic_ns": 75825691756643,
+            "pairs": 42,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 7,
+            "monotonic_ns": 75825899175798,
+            "pairs": 49,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 7,
+            "monotonic_ns": 75825907495884,
+            "pairs": 49,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 7,
+            "monotonic_ns": 75825907501468,
+            "pairs": 49,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 7,
+            "monotonic_ns": 75825907505426,
+            "pairs": 49,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 7,
+            "monotonic_ns": 75825922878133,
+            "pairs": 49,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 8,
+            "monotonic_ns": 75826155944634,
+            "pairs": 56,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 8,
+            "monotonic_ns": 75826210861346,
+            "pairs": 56,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 8,
+            "monotonic_ns": 75826210869929,
+            "pairs": 56,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 8,
+            "monotonic_ns": 75826210871679,
+            "pairs": 56,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 8,
+            "monotonic_ns": 75826246731330,
+            "pairs": 56,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 9,
+            "monotonic_ns": 75826369912491,
+            "pairs": 63,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 9,
+            "monotonic_ns": 75826371956335,
+            "pairs": 63,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 9,
+            "monotonic_ns": 75826371964169,
+            "pairs": 63,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 9,
+            "monotonic_ns": 75826371965960,
+            "pairs": 63,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 9,
+            "monotonic_ns": 75826387299084,
+            "pairs": 63,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 10,
+            "monotonic_ns": 75826601990986,
+            "pairs": 70,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 10,
+            "monotonic_ns": 75826605927757,
+            "pairs": 70,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 10,
+            "monotonic_ns": 75826605931716,
+            "pairs": 70,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 10,
+            "monotonic_ns": 75826605933382,
+            "pairs": 70,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 10,
+            "monotonic_ns": 75826640270358,
+            "pairs": 70,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 11,
+            "monotonic_ns": 75827110625466,
+            "pairs": 77,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 11,
+            "monotonic_ns": 75827188410467,
+            "pairs": 77,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 11,
+            "monotonic_ns": 75827188455759,
+            "pairs": 77,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 11,
+            "monotonic_ns": 75827188459925,
+            "pairs": 77,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 11,
+            "monotonic_ns": 75827308078817,
+            "pairs": 77,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 12,
+            "monotonic_ns": 75827528650709,
+            "pairs": 84,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 12,
+            "monotonic_ns": 75827534221031,
+            "pairs": 84,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 12,
+            "monotonic_ns": 75827534229781,
+            "pairs": 84,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 12,
+            "monotonic_ns": 75827534232573,
+            "pairs": 84,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 12,
+            "monotonic_ns": 75827672771525,
+            "pairs": 84,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 13,
+            "monotonic_ns": 75827742452315,
+            "pairs": 91,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 13,
+            "monotonic_ns": 75827801151172,
+            "pairs": 91,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 13,
+            "monotonic_ns": 75827801160755,
+            "pairs": 91,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 13,
+            "monotonic_ns": 75827801163547,
+            "pairs": 91,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 13,
+            "monotonic_ns": 75827856050550,
+            "pairs": 91,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 14,
+            "monotonic_ns": 75828024777247,
+            "pairs": 98,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 14,
+            "monotonic_ns": 75828026618882,
+            "pairs": 98,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 14,
+            "monotonic_ns": 75828026623924,
+            "pairs": 98,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 14,
+            "monotonic_ns": 75828026625507,
+            "pairs": 98,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 14,
+            "monotonic_ns": 75828093408907,
+            "pairs": 98,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 15,
+            "monotonic_ns": 75828160324141,
+            "pairs": 105,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 15,
+            "monotonic_ns": 75828168646102,
+            "pairs": 105,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 15,
+            "monotonic_ns": 75828168653227,
+            "pairs": 105,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 15,
+            "monotonic_ns": 75828168655269,
+            "pairs": 105,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 15,
+            "monotonic_ns": 75828194413991,
+            "pairs": 105,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 16,
+            "monotonic_ns": 75828211882418,
+            "pairs": 112,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 16,
+            "monotonic_ns": 75828242787417,
+            "pairs": 112,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 16,
+            "monotonic_ns": 75828242791584,
+            "pairs": 112,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 16,
+            "monotonic_ns": 75828242793209,
+            "pairs": 112,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 16,
+            "monotonic_ns": 75828271322445,
+            "pairs": 112,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 17,
+            "monotonic_ns": 75828345971929,
+            "pairs": 119,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 17,
+            "monotonic_ns": 75828351229916,
+            "pairs": 119,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 17,
+            "monotonic_ns": 75828351237624,
+            "pairs": 119,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 17,
+            "monotonic_ns": 75828351239916,
+            "pairs": 119,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 17,
+            "monotonic_ns": 75828392790264,
+            "pairs": 119,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 18,
+            "monotonic_ns": 75828511462484,
+            "pairs": 126,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 18,
+            "monotonic_ns": 75828511883611,
+            "pairs": 126,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 18,
+            "monotonic_ns": 75828511893069,
+            "pairs": 126,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 18,
+            "monotonic_ns": 75828511895695,
+            "pairs": 126,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 18,
+            "monotonic_ns": 75828546987175,
+            "pairs": 126,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 19,
+            "monotonic_ns": 75828700316539,
+            "pairs": 133,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 19,
+            "monotonic_ns": 75828701911964,
+            "pairs": 133,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 19,
+            "monotonic_ns": 75828701919173,
+            "pairs": 133,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 19,
+            "monotonic_ns": 75828701920964,
+            "pairs": 133,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 19,
+            "monotonic_ns": 75828721916197,
+            "pairs": 133,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 20,
+            "monotonic_ns": 75828966809011,
+            "pairs": 140,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 20,
+            "monotonic_ns": 75828968329727,
+            "pairs": 140,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 20,
+            "monotonic_ns": 75828968334644,
+            "pairs": 140,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 20,
+            "monotonic_ns": 75828968336102,
+            "pairs": 140,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 20,
+            "monotonic_ns": 75828985420569,
+            "pairs": 140,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 21,
+            "monotonic_ns": 75829178194604,
+            "pairs": 147,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 21,
+            "monotonic_ns": 75829179138109,
+            "pairs": 147,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 21,
+            "monotonic_ns": 75829179145692,
+            "pairs": 147,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 21,
+            "monotonic_ns": 75829179147359,
+            "pairs": 147,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 21,
+            "monotonic_ns": 75829195426404,
+            "pairs": 147,
+            "phase": "commit_end"
+          },
+          {
+            "checkpoint": 22,
+            "monotonic_ns": 75829266457036,
+            "pairs": 150,
+            "phase": "dispatch"
+          },
+          {
+            "checkpoint": 22,
+            "monotonic_ns": 75829268904590,
+            "pairs": 150,
+            "phase": "payload_start"
+          },
+          {
+            "checkpoint": 22,
+            "monotonic_ns": 75829268918382,
+            "pairs": 150,
+            "phase": "index_start"
+          },
+          {
+            "checkpoint": 22,
+            "monotonic_ns": 75829268920757,
+            "pairs": 150,
+            "phase": "index_end"
+          },
+          {
+            "checkpoint": 22,
+            "monotonic_ns": 75829278238266,
+            "pairs": 150,
+            "phase": "commit_end"
+          }
+        ]
+      },
+      "fixture_sha256": "0cc1fe3995d8483f01b84d7f29ce98fc65693a14b68e4074154fe9fbb0dc2733",
+      "fps": 30,
+      "imu_hz_per_stream": 200,
+      "independent_readback": {
+        "expected_imu_samples": 2000,
+        "pairs_per_pass": [
+          150,
+          150
+        ],
+        "passes": 2,
+        "per_frame_color_depth_evidence_hashes": true,
+        "wall_ns": 1811811766
+      },
+      "input_sha256": "373c50d4f2600dfb2182ef6c4199f7d486e3a19fda6ded48399125c61fca22c3",
+      "kind": "writer-contention-child-v1",
+      "ok": true,
+      "overflow": 0,
+      "pairs": 150,
+      "peak_rss_kib": 17820,
+      "peak_rss_scope": "isolated child including producer, writer and two extra materialized readers",
+      "producer_late_max_ns": 411797742,
+      "queue_capacity": 16,
+      "queue_final": {
+        "abort": false,
+        "capacity_pairs": 16,
+        "closed": true,
+        "dequeued_pairs": 150,
+        "high_water_pairs": 11,
+        "inflight_pairs": 0,
+        "inflight_sequence": null,
+        "oldest_queued_age_ns": null,
+        "queued_pairs": 0,
+        "scope": "modeled owned FIFO, excludes SDK/ROS queues"
+      },
+      "queue_peak": 11,
+      "queue_scope": "modeled nonblocking owned-whole-pair FIFO; 16 queued plus one in flight; overflow aborts rather than blocking capture",
+      "queue_wait_max_ns": 432301111,
+      "queue_wait_p99_ns": 418718663,
+      "reason": null,
+      "status_background_load": false,
+      "status_driver_sha256": null,
+      "status_persistence": null,
+      "submitted_pairs": 150,
+      "test_sink_delay_ms": 0,
+      "wall_seconds_including_independent_readers": 7.311235445,
+      "writer_error": null,
+      "written_pairs": 150
+    }
+  ]
+}

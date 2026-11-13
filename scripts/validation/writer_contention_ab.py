@@ -474,7 +474,8 @@ def summarize_groups(rows, variants):
                 for child in row["writers"]:
                     report = {k: child.get(k) for k in ("cpu_seconds", "cpu_cores", "peak_rss_kib", "append_p99_ns", "append_max_ns", "queue_peak", "overflow", "queue_wait_p99_ns", "producer_late_max_ns")}
                     report["verification_ns"] = child.get("diagnostics", {}).get("verification", {}).get("total_ns")
-                    report["extra_two_readers_ns"] = child.get("independent_readback", {}).get("wall_ns")
+                    readback = child.get("independent_readback")
+                    report["extra_two_readers_ns"] = readback.get("wall_ns") if isinstance(readback, dict) else None
                     processes.append(report)
             groups.append({"variant": variant, "writer_count": count, "runs": len(selected),
                 "median_group_peak_rss_bytes": statistics.median(rss) if rss else None,

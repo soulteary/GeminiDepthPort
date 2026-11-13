@@ -1,0 +1,10 @@
+--- crates/offline-depth/tests/writer_contention_benchmark.rs
++++ crates/offline-depth/tests/writer_contention_benchmark.rs
+@@ -635,6 +635,7 @@
+     report["cpu_scope"] = json!(
+         "process CPU from capture barrier through writer finish, two independent readers and background final critical cleanup; startup excluded; capture_cpu fields stop at fixed producer horizon"
+     );
++    report["experiment_phase"] = RawRecordingWriter::experiment_phase_report();
+     report["queue_final"] = progress.queue.observation();
+     fs::write(
+         root.join("result.json"),

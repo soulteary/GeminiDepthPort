@@ -1,0 +1,88 @@
+--- crates/offline-depth/src/recording/chunked.rs
++++ crates/offline-depth/src/recording/chunked.rs
+@@ -17,6 +17,7 @@
+     pub index_buffer: Vec<u8>,
+     pipeline: bool,
+     full_credit_batches: bool,
++    experiment_first_pairs: u64,
+     pending: Option<PendingCheckpoint>,
+     checkpoint_bytes: u64,
+     verified: Option<VerifiedPrefix>,
+@@ -298,6 +299,9 @@
+             .chunked
+             .as_mut()
+             .ok_or(OfflineError::Invalid("RECORDING_PIPELINE_REQUIRES_V3"))?;
++        state.experiment_first_pairs = std::env::var("GDP_EXPERIMENT_FIRST_PAIRS")
++            .unwrap_or_else(|_| "7".into()).parse().expect("first pairs integer");
++        assert!([3,5,7].contains(&state.experiment_first_pairs));
+         state.pipeline = true;
+         state.full_credit_batches = false;
+         self.diagnostics
+@@ -348,7 +352,8 @@
+             .as_ref()
+             .is_some_and(|s| s.pipeline && !s.full_credit_batches)
+         {
+-            (CHUNK_PAIRS / 2, CHUNK_BYTES / 2)
++            let first = self.chunked.as_ref().unwrap();
++            (if first.chunks <= 1 { first.experiment_first_pairs } else { CHUNK_PAIRS / 2 }, CHUNK_BYTES / 2)
+         } else {
+             (CHUNK_PAIRS, CHUNK_BYTES)
+         }
+@@ -505,6 +510,7 @@
+             self.flush_index()?;
+             return Ok(());
+         };
++        experiment_event("dispatch", info);
+         let diagnostics = self.diagnostics.clone();
+         diagnostics
+             .1
+@@ -540,12 +546,15 @@
+         let checkpoint_bytes = raw.len() as u64;
+         let work_diagnostics = diagnostics.clone();
+         let work = move || -> Result<VerifiedPrefix> {
++            experiment_event("payload_start", info);
+             work_diagnostics.1.measure(info, Phase::PayloadSync, || {
+                 work_diagnostics.measure("fsync", || chunk.file.sync_all())
+             })?;
++            experiment_event("index_start", info);
+             work_diagnostics.1.measure(info, Phase::IndexSync, || {
+                 work_diagnostics.measure("fsync", || records.sync_all())
+             })?;
++            experiment_event("index_end", info);
+             work_diagnostics.1.measure(info, Phase::DirectorySync, || {
+                 work_diagnostics.measure("fsync", || fs::File::open(&stage)?.sync_all())
+             })?;
+@@ -557,6 +566,7 @@
+                 info,
+             )?;
+             persist_checkpoint(&stage, &checkpoint, &raw, &work_diagnostics, info)?;
++            experiment_event("commit_end", info);
+             Ok(verified)
+         };
+         if asynchronous {
+@@ -914,3 +924,25 @@
+         assert_eq!(calls, 0);
+     }
+ }
++
++// Experimental process-local bounded observations, serialized only after finish.
++#[derive(Clone, serde::Serialize)]
++struct ExperimentEvent { phase: &'static str, checkpoint: u64, pairs: u64, monotonic_ns: u64 }
++static EXPERIMENT_EVENTS: std::sync::Mutex<Vec<ExperimentEvent>> = std::sync::Mutex::new(Vec::new());
++static EXPERIMENT_DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++fn experiment_event(phase: &'static str, info: CheckpointInfo) {
++    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
++    assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) }, 0);
++    let row = ExperimentEvent { phase, checkpoint: info.checkpoint_id, pairs: info.prefix_pairs,
++        monotonic_ns: ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64 };
++    let mut rows = EXPERIMENT_EVENTS.lock().unwrap();
++    if rows.len() < 131072 { rows.push(row); }
++    else { EXPERIMENT_DROPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
++}
++impl RawRecordingWriter {
++    pub fn experiment_phase_report() -> serde_json::Value {
++        serde_json::json!({"clock":"CLOCK_MONOTONIC", "capacity":131072,
++            "dropped":EXPERIMENT_DROPPED.load(std::sync::atomic::Ordering::Relaxed),
++            "events": &*EXPERIMENT_EVENTS.lock().unwrap()})
++    }
++}

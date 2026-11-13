@@ -1,0 +1,101 @@
+{
+  "error": null,
+  "ok": true,
+  "results": {
+    "first3": {
+      "after_explicit_durable_checkpoint": true,
+      "limits": "independent process-crash test; not an arbitrary kill point or physical power cut",
+      "ok": true,
+      "readback": {
+        "common_driver_sha256": "54728fd55bce14e6c13e95c797001d4d1dfb28414b9a3fc0487b55414bd9646c",
+        "expected_imu_samples": 426,
+        "fixture_sha256": "0cc1fe3995d8483f01b84d7f29ce98fc65693a14b68e4074154fe9fbb0dc2733",
+        "ordinary_reader_rejected": true,
+        "pairs_per_pass": [
+          32,
+          32
+        ],
+        "passes": 2,
+        "per_frame_color_depth_evidence_hashes": true,
+        "status_background_load": false,
+        "status_driver_sha256": null,
+        "wall_ns": 303825962
+      },
+      "signal": "SIGKILL",
+      "source_unchanged_sha256": {
+        "checkpoint.json": "223eda5b4896213ab2c16288bd8881f4fd1ae1994a8dd8211b334afec1f87f6d",
+        "payload-00000000000000000001.bin": "ab4d6838cb374328276c55fb46de4a029772b68c0b4c1bd1eb01db5f23acc065",
+        "payload-00000000000000000002.bin": "1f9a33491b5faacff3544b14bd6e49668d7ef64e62e86398836177d14543525b",
+        "payload-00000000000000000003.bin": "34a908a14530c99c984ca5a57e395ae1d3327c35fa4f698146aec1a81018328f",
+        "payload-00000000000000000004.bin": "20b55de0e6215d717cacb124ac88814a3e9e259cc06bd41a9606a87376bd5c83",
+        "payload-00000000000000000005.bin": "df06ca57a5134f447670eaf3f37f95d1096cb69b660112ed43e9eb98bd487e0a",
+        "payload-00000000000000000006.bin": "c7c7b2d9fbe400f4c7c4a66b70010c5c40e3a50ccd8f3127b054f80f9db465c6",
+        "records.jsonl": "076c4920bf6e972c287607d6869ea8a15946033acdefd31f81ab3fe90387c81f",
+        "snapshot.json": "c84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610"
+      }
+    },
+    "first5": {
+      "after_explicit_durable_checkpoint": true,
+      "limits": "independent process-crash test; not an arbitrary kill point or physical power cut",
+      "ok": true,
+      "readback": {
+        "common_driver_sha256": "54728fd55bce14e6c13e95c797001d4d1dfb28414b9a3fc0487b55414bd9646c",
+        "expected_imu_samples": 426,
+        "fixture_sha256": "0cc1fe3995d8483f01b84d7f29ce98fc65693a14b68e4074154fe9fbb0dc2733",
+        "ordinary_reader_rejected": true,
+        "pairs_per_pass": [
+          32,
+          32
+        ],
+        "passes": 2,
+        "per_frame_color_depth_evidence_hashes": true,
+        "status_background_load": false,
+        "status_driver_sha256": null,
+        "wall_ns": 228856353
+      },
+      "signal": "SIGKILL",
+      "source_unchanged_sha256": {
+        "checkpoint.json": "37a4b3d123b1737f6996a44e1dca402d0a826a07146fab2fcd86f2b6f8b7a294",
+        "payload-00000000000000000001.bin": "7b8a74d39d3f12a9bb5b8e493571816bc6c7f3fcdfc7052a0c361bc064ec511a",
+        "payload-00000000000000000002.bin": "59bb66ad8b4c6655f57ec676de4b7f60cd2e7670e6eb52cc2c9f8d612348e537",
+        "payload-00000000000000000003.bin": "19c481e1aa68b17a893e35851683dfb8fb78557cf85d359271421b8ecdf5db69",
+        "payload-00000000000000000004.bin": "9b03f93a244d7eaa676a3375a4da723335702534e4cd2506bd0d56a27d2d6436",
+        "payload-00000000000000000005.bin": "f1924d8cd09c287c4bebb9780df72202f3ad48815c4edb5b4003ad6c0701791f",
+        "records.jsonl": "d8768490d08e368452179ead0127bca1a9875afa9a7bcc3fd4275c5379b73a84",
+        "snapshot.json": "c84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610"
+      }
+    },
+    "first7": {
+      "after_explicit_durable_checkpoint": true,
+      "limits": "independent process-crash test; not an arbitrary kill point or physical power cut",
+      "ok": true,
+      "readback": {
+        "common_driver_sha256": "54728fd55bce14e6c13e95c797001d4d1dfb28414b9a3fc0487b55414bd9646c",
+        "expected_imu_samples": 426,
+        "fixture_sha256": "0cc1fe3995d8483f01b84d7f29ce98fc65693a14b68e4074154fe9fbb0dc2733",
+        "ordinary_reader_rejected": true,
+        "pairs_per_pass": [
+          32,
+          32
+        ],
+        "passes": 2,
+        "per_frame_color_depth_evidence_hashes": true,
+        "status_background_load": false,
+        "status_driver_sha256": null,
+        "wall_ns": 237431940
+      },
+      "signal": "SIGKILL",
+      "source_unchanged_sha256": {
+        "checkpoint.json": "35e7645242bb74ceccbed0a81080af993c0cba6b77266770a21365689cab507b",
+        "payload-00000000000000000001.bin": "702c3c2d166c42c485b1e198edfacc45ef3fe535d6a380d0302f80524d2fe1f0",
+        "payload-00000000000000000002.bin": "98e3b295195f73a2db410fde31b69bf483a589caad2f45b81cbd241d5b072dfb",
+        "payload-00000000000000000003.bin": "fe67215e701e687779ba236da1088e2e50102bc433980b961372674388a3bbd8",
+        "payload-00000000000000000004.bin": "1cf2096bf4c20c6e0f6fd3f019e4b560350ccb9f6865dc91246ae5688ae9a0b3",
+        "payload-00000000000000000005.bin": "8fe5e270362b1001d0509c4b260021407a01640cfb81427a7732038bc4402d51",
+        "records.jsonl": "fb913431a94b4acde61af518a50ef2995df78e727329e4af5d3b1fec2817269c",
+        "snapshot.json": "c84c1f9b0f77bcbbe901cb0ca62b3ac7763e8931c8eb6f2b8979460a358c1610"
+      }
+    }
+  },
+  "scope": "independent synthetic recovery regression; does not accept a failed performance group"
+}
