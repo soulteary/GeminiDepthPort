@@ -705,13 +705,14 @@ class HostKernelTrace:
                         "sample_started_monotonic_ns": began, "sample_finished_monotonic_ns": time.monotonic_ns(),
                         "runtime_identity": pin, "threads": threads, "thread_race_count": thread_race_count,
                         "thread_races_first_64": thread_races}
-                    if worker not in self.seeded_workers:
+                    worker_generation = (worker, process["worker_start_ticks"])
+                    if worker_generation not in self.seeded_workers:
                         host = next(instance for instance in self.instances if instance.name == "host")
                         tids = [int(entry.name) for entry in thread_dir.iterdir() if entry.name.isdigit()]
                         require(len(tids) <= self.max_processes, "WORKER_THREAD_MAPPING_LIMIT")
                         with (host.path / "set_event_pid").open("a") as selected:
                             selected.write(" ".join(map(str,tids))+"\n")
-                        self.seeded_workers.add(worker)
+                        self.seeded_workers.add(worker_generation)
                         self.budget.json("identities.jsonl", {"kind":"pid-filter-seeded","worker":worker,
                             "monotonic_ns":time.monotonic_ns(),"host_tids":tids,"scope":"existing tasks seeded; event-fork follows future children"})
                     self.bound[(group, label)] = {"worker_host_pid": worker, "start_ticks": process["worker_start_ticks"]}
