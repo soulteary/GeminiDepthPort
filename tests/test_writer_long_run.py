@@ -40,7 +40,13 @@ import json,os,pathlib,time
 root=pathlib.Path(os.environ['GDP_CONTENTION_ROOT']);pairs=int(os.environ['GDP_CONTENTION_PAIRS'])
 mode=os.environ['GDP_CONTENTION_MODE'];on=os.environ['GDP_CONTENTION_STATUS_LOAD']=='1';behavior=BEHAVIOR
 hashes=HASHES
-def write(name,value): (root/name).write_text(json.dumps(value))
+def write(name,value):
+    path=root/name
+    if name=='state/status.json':
+        pending=path.with_name('status.publish.tmp')
+        pending.write_text(json.dumps(value))
+        pending.replace(path)
+    else: path.write_text(json.dumps(value))
 def proof(periodic):
     return {'errors':0,'submission_errors':0,'pump_errors':0,'submitted_sequence':periodic+2,'completed_sequence':periodic+2,
         'pending_snapshots':0,'protected_sequence':None,'start_critical_ack':True,'final_critical_ack':True,'checkpoint_critical_ack':True,
@@ -345,14 +351,21 @@ class LongProcessTests(unittest.TestCase):
     def test_runtime_trace_failure_still_enforces_status_heartbeat_deadline(self):
         class RuntimeLostTrace(LostTrace):
             def poll(self):self.failure='controlled loss before heartbeat stalls'
-        with tempfile.TemporaryDirectory() as d:
-            root=Path(d);a=args(root,fake_binary(root/'driver','late-stale-status'));a.output.mkdir()
-            with self.assertRaisesRegex(ValueError,'HEARTBEAT_STALE'):
-                long.run_batch(a.binary,a.output/'failed',30,True,a,time.monotonic()+5,RuntimeLostTrace,.01)
-            side=json.loads((a.output/'failed/batch-failure.json').read_text())
-            self.assertIsNotNone(side['trace_failure']);self.assertIn('HEARTBEAT_STALE',side['first_failure'])
-            self.assertEqual(side['cleanup_errors'],[])
-            self.assertTrue(all(code is not None for code in side['child_returncodes']))
+        for publish_pause in (False,True):
+            with self.subTest(pause_before_atomic_publish=publish_pause),tempfile.TemporaryDirectory() as d:
+                root=Path(d);binary=fake_binary(root/'driver','late-stale-status')
+                if publish_pause:
+                    # The controller must keep seeing valid old JSON while a
+                    # replacement is fully written but not published yet.
+                    binary.write_text(binary.read_text().replace('        pending.replace(path)',
+                        '        time.sleep(.1)\n        pending.replace(path)'))
+                a=args(root,binary);a.output.mkdir()
+                with self.assertRaisesRegex(ValueError,'HEARTBEAT_STALE'):
+                    long.run_batch(a.binary,a.output/'failed',30,True,a,time.monotonic()+5,RuntimeLostTrace,.01)
+                side=json.loads((a.output/'failed/batch-failure.json').read_text())
+                self.assertIsNotNone(side['trace_failure']);self.assertIn('HEARTBEAT_STALE',side['first_failure'])
+                self.assertEqual(side['cleanup_errors'],[])
+                self.assertTrue(all(code is not None for code in side['child_returncodes']))
 
     def test_successful_first_trace_does_not_certify_an_omitted_failed_group(self):
         with tempfile.TemporaryDirectory() as d:
