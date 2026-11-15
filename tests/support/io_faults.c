@@ -99,7 +99,9 @@ __attribute__((destructor)) static void save_write_counts(void) {
     int fd=open(path,O_WRONLY|O_CREAT|O_TRUNC,0600);
     if(fd>=0){ssize_t (*real)(int,const void*,size_t)=dlsym(RTLD_NEXT,"write");(void)real(fd,raw,(size_t)n);close(fd);}
 }
+static void r02_index_write(int fd);
 ssize_t writev(int fd,const struct iovec *iov,int count_iov) {
+    r02_index_write(fd);
     trace_write(fd,1);
     if(fail_fd("writev",fd))return -1;
     ssize_t (*real)(int,const struct iovec*,int)=dlsym(RTLD_NEXT,"writev");
@@ -115,6 +117,7 @@ ssize_t writev(int fd,const struct iovec *iov,int count_iov) {
     return real(fd,iov,count_iov);
 }
 ssize_t write(int fd,const void *buf,size_t n) {
+    r02_index_write(fd);
     trace_write(fd,0);
     if(fail_fd("write",fd))return -1;
     ssize_t (*real)(int,const void*,size_t)=dlsym(RTLD_NEXT,"write");
@@ -162,7 +165,47 @@ static void tail_delay(const char *phase,unsigned delay) {
         int output=open(log,O_WRONLY|O_CREAT|O_APPEND|O_NOFOLLOW,0600);
         if(output>=0){ssize_t (*write_real)(int,const void*,size_t)=dlsym(RTLD_NEXT,"write");(void)write_real(output,row,(size_t)len);close(output);}}
 }
+static int r02_model(void) {
+    const char *m=getenv("GDP_IO_SYNC_TAIL_MODEL");
+    if(!m)return 0;
+    if(!strcmp(m,"r02-a"))return 1;
+    if(!strcmp(m,"r02-b"))return 2;
+    if(!strcmp(m,"r02-c"))return 3;
+    return 0;
+}
+static int tail_relative(int fd,char *path,size_t size,const char **relative) {
+    const char *root=getenv("GDP_IO_SYNC_TAIL_ROOT"),*armed=getenv("GDP_IO_SYNC_TAIL_ARM");
+    if(!root||!armed||access(armed,F_OK)!=0)return 0;
+    char link[64];snprintf(link,sizeof(link),"/proc/self/fd/%d",fd);
+    ssize_t n=readlink(link,path,size-1);if(n<0)return 0;path[n]=0;
+    size_t length=strlen(root);if(strncmp(path,root,length)||path[length]!='/')return 0;
+    *relative=path+length+1;return 1;
+}
+static void r02_index_write(int fd) {
+    if(r02_model()!=2)return;
+    char path[4096];const char *relative;unsigned n=atomic_load(&tail_payloads);
+    if(n>=1&&n<=5&&tail_relative(fd,path,sizeof(path),&relative)&&!strcmp(relative,"capture.partial/records.jsonl"))
+        tail_delay("index_flush",132);
+}
+static void r02_sync_tail(int fd,int role) {
+    char path[4096];const char *relative;
+    if(!tail_relative(fd,path,sizeof(path),&relative))return;
+    unsigned n=atomic_load(&tail_payloads),delay=0;const char *phase=NULL;
+    if(!strncmp(relative,"capture.partial/payload-",24)) {
+        n=atomic_fetch_add(&tail_payloads,1)+1;atomic_store(&tail_after_rename,0);
+        if(n<=5){phase="payload_sync";delay=role==2?(n==1?141:150):(n==1?33:role==3?274:264);}
+    } else if(n>0&&n<=5&&!strcmp(relative,"capture.partial/records.jsonl")) {
+        phase="index_sync";delay=role==2?(n==1?15:139):145;
+    } else if(n>0&&n<=5&&!strcmp(relative,"capture.partial/.checkpoint.tmp")) {
+        phase="checkpoint_write";delay=role==2?(n==1?15:139):(n==1?135:139);
+    } else if(n>0&&n<=5&&!strcmp(relative,"capture.partial")) {
+        if(atomic_exchange(&tail_after_rename,0)){phase="checkpoint_directory_sync";delay=role==2?(n==1?18:162):(n==1?152:269);}
+        else {phase="directory_sync";delay=role==2?(n==1?137:134):12;}
+    }
+    if(delay)tail_delay(phase,delay);
+}
 static void sync_tail(int fd) {
+    int role=r02_model();if(role){r02_sync_tail(fd,role);return;}
     const char *model=getenv("GDP_IO_SYNC_TAIL_MODEL"),*root=getenv("GDP_IO_SYNC_TAIL_ROOT"),*armed=getenv("GDP_IO_SYNC_TAIL_ARM");
     if(!model||!root||!armed||access(armed,F_OK)!=0)return;
     int half=!strcmp(model,"half-serial"),full=!strcmp(model,"full-repeated");
@@ -260,6 +303,10 @@ int mkdir(const char *path,mode_t mode) {
 }
 int rename(const char *oldpath,const char *newpath) {
     if(fail("rename",newpath))return -1;
+    if(r02_model()==2&&atomic_load(&tail_payloads)==1) {
+        const char *root=getenv("GDP_IO_SYNC_TAIL_ROOT"),*armed=getenv("GDP_IO_SYNC_TAIL_ARM");
+        if(root&&armed&&access(armed,F_OK)==0&&strstr(newpath,root)==newpath&&!strcmp(newpath+strlen(root),"/capture.partial/checkpoint.json"))tail_delay("checkpoint_rename",122);
+    }
     int (*real)(const char*,const char*)=dlsym(RTLD_NEXT,"rename");
     int result=real(oldpath,newpath);
     const char *model=getenv("GDP_IO_SYNC_TAIL_MODEL");

@@ -6,6 +6,7 @@ and original analysis are never rewritten. No process, tracefs or Docker access.
 """
 import argparse
 from bisect import bisect_right
+from collections import Counter
 import hashlib
 import json
 import os
@@ -219,15 +220,67 @@ class Generations:
                 row["identity_observed_bracket_ns"] = [start, end]
 
 
+class TraceCensus:
+    """Constant-size event/byte counters; context is not causal attribution."""
+    def __init__(self, observer_pid, chain):
+        self.observer_pid=observer_pid
+        self.start,self.end=chain['window_start_monotonic_ns'],chain['window_end_monotonic_ns']
+        self.lines=self.bytes=0
+        self.classes={name:{'events':0,'bytes':0,'window_events':0,'kinds':Counter()} for name in
+            ('proven_writer_context','observer_numeric_pid_match','unbound_context')}
+    def observe(self, event, size, generations):
+        self.lines+=1;self.bytes+=size
+        if event is None:return
+        tid,cpu,at,resolution,kind,fields=event
+        row=generations.at(tid,at)
+        name=('proven_writer_context' if row and row['owner'] else
+              'observer_numeric_pid_match' if tid==self.observer_pid else 'unbound_context')
+        bucket=self.classes[name];bucket['events']+=1;bucket['bytes']+=size
+        bucket['window_events']+=int(self.start<=at<=self.end)
+        allowed={'sched_switch','sched_wakeup','sched_process_fork','sched_process_exec','sched_process_exit',
+                 'sys_enter_fsync','sys_exit_fsync','sys_enter_fdatasync','sys_exit_fdatasync'}
+        bucket['kinds'][kind if kind in allowed else 'other']+=1
+    def report(self):
+        return {'raw_lines':self.lines,'raw_bytes':self.bytes,'classes':self.classes,
+                'scope':'Context PID only: observer numeric match is not a proven generation or its descendants. '
+                        'Unbound context includes idle/kernel/other tasks. Counts are not observer causal overhead.'}
+
+
 class Association:
-    def __init__(self, syscalls, generations, chain, emit):
+    def __init__(self, syscalls, generations, chain, emit, gap_emit=None):
         self.syscalls, self.generations, self.chain, self.emit = syscalls, generations, chain, emit
         self.start, self.end = chain["window_start_monotonic_ns"], chain["window_end_monotonic_ns"]
         self.calls, self.offcpu, self.wakes = {}, {}, {}
         self.strict_sync = set()
         self.gaps = []
+        self.outside_gaps = []
+        self.gap_emit = gap_emit
+        self.gap_counts = Counter()
+        self.window_gap_count = self.outside_gap_count = 0
         self.events = self.intervals = 0
         self.by_camera = {name: {"syscall_intervals": 0, "fsync_intervals": 0, "scheduler_events": 0} for name in "abc"}
+
+    def gap(self, reason, **context):
+        first=context.get('affected_start_monotonic_ns',context.get('at',self.start))
+        last=context.get('affected_end_monotonic_ns',first)
+        require(type(first) is int and type(last) is int and first<=last, 'GAP_CLOCK_SCHEMA')
+        relevant=last>=self.start and first<=self.end
+        row={'reason':reason,**context,'affected_start_monotonic_ns':first,
+             'affected_end_monotonic_ns':last,'overlaps_analysis_window':relevant}
+        self.gap_counts[reason]+=1
+        if relevant:self.window_gap_count+=1
+        else:self.outside_gap_count+=1
+        history=self.gaps if relevant else self.outside_gaps
+        if len(history)<1024:history.append(row)
+        if self.gap_emit:self.gap_emit(row)
+
+    def gap_report(self):
+        return {'counts_by_reason':dict(self.gap_counts),'window_count':self.window_gap_count,
+                'outside_window_count':self.outside_gap_count,'history_capacity_per_scope':1024,
+                'window_history_omitted':max(0,self.window_gap_count-len(self.gaps)),
+                'outside_window_history_omitted':max(0,self.outside_gap_count-len(self.outside_gaps)),
+                'outside_window_examples':self.outside_gaps,
+                'scope':'Every gap is streamed when gap_emit is enabled; incomplete pairs never yield corrected latency.'}
 
     def owner(self, tid, at):
         generation = self.generations.at(tid, at)
@@ -244,16 +297,18 @@ class Association:
             for event in self.chain["events"] if event["target"] == owner["camera"]
             and event["start_monotonic_ns"] <= last
             and event["start_monotonic_ns"] + event["wall_ns"] >= first]
-        if value.get("syscall") in ("fsync","fdatasync"):
+        if (value.get("syscall") in ("fsync","fdatasync") and value.get("syscall_pair_proven") is True
+                and type(value.get("return_value")) is int and value["return_value"]==0):
             for link in value["checkpoint_temporal_overlaps"]:
                 if link["same_namespace_tid"] and link["phase"] in ("payload_sync","index_sync","directory_sync","checkpoint_directory_sync"):
                     self.strict_sync.add((owner["camera"],link["event_id"]))
         self.emit(value)
         self.events += 1
 
-    def event(self, tid, cpu, at, resolution, kind, fields):
+    def event(self, tid, cpu, at, resolution, kind, fields, source=None):
         scalar = self.syscalls.scalar
         base = {"kind": kind, "monotonic_ns": at, "cpu": cpu, "printed_resolution_ns": resolution}
+        if source is not None:base["source"]=source
         if kind.startswith(("sys_enter_", "sys_exit_")):
             row = self.owner(tid, at)
             if row is None:
@@ -262,14 +317,21 @@ class Association:
             name = kind.replace("sys_enter_", "").replace("sys_exit_", "")
             if kind.startswith("sys_enter_"):
                 if key in self.calls:
-                    self.gaps.append({"reason": "syscall-entry-without-exit", "generation": key, "at": at})
-                self.calls[key] = (name, at, scalar(fields, "fd"))
+                    prior=self.calls[key]
+                    self.gap("syscall-entry-without-exit",generation=key,at=at,source=source,prior_entry_source=prior[5],
+                        affected_start_monotonic_ns=min(prior[1],at),affected_end_monotonic_ns=max(prior[1],at))
+                self.calls[key] = (name, at, scalar(fields, "fd"),cpu,resolution,source)
             else:
                 entry = self.calls.pop(key, None)
                 if entry is None:
-                    self.gaps.append({"reason": "syscall-exit-without-entry", "generation": key, "at": at})
+                    self.gap("syscall-exit-without-entry",generation=key,at=at,source=source)
                     return
-                require(entry[0] == name and at >= entry[1], "SYSCALL_PAIR_MISMATCH")
+                if entry[0]!=name or at<entry[1]:
+                    self.gap('syscall-pair-unproven',generation=key,at=at,entry_name=entry[0],exit_name=name,
+                        entry_monotonic_ns=entry[1],entry_cpu=entry[3],exit_cpu=cpu,
+                        entry_source=entry[5],exit_source=source,
+                        affected_start_monotonic_ns=min(entry[1],at),affected_end_monotonic_ns=max(entry[1],at))
+                    return
                 result = re.search(r"(?:\bret\s*(?:=|:)\s*)?(-?(?:0x[0-9a-fA-F]+|\d+))\s*$", fields)
                 require(result is not None, "SYSCALL_RETURN_SCHEMA")
                 raw = result[1]
@@ -277,7 +339,8 @@ class Association:
                 if result >= 2**63:
                     result -= 2**64
                 value = {**base, "syscall": name, "fd": entry[2], "entry_monotonic_ns": entry[1],
-                         "duration_ns": at - entry[1], "return_value": result,
+                         "duration_ns": at - entry[1], "return_value": result, "syscall_pair_proven":True,
+                         "entry_source":entry[5],
                          "scope": "Syscall wall time overlaps scheduler intervals; never sum them."}
                 self.output(value, row, entry[1], at)
                 if at >= self.start and entry[1] <= self.end:
@@ -292,8 +355,11 @@ class Association:
                 state = re.search(r"\bprev_state=(\S+)", fields)
                 require(state is not None, "SCHED_STATE_SCHEMA")
                 if prior["generation"] in self.offcpu:
-                    self.gaps.append({"reason": "switch-out-without-resume", "generation": prior["generation"], "at": at})
-                self.offcpu[prior["generation"]] = (at, state[1])
+                    self.gap('switch-out-without-resume',generation=prior['generation'],at=at,
+                        prior_switch_out=self.offcpu[prior['generation']],source=source,
+                        affected_start_monotonic_ns=min(self.offcpu[prior['generation']][0],at),
+                        affected_end_monotonic_ns=max(self.offcpu[prior['generation']][0],at))
+                self.offcpu[prior["generation"]] = (at,state[1],cpu,resolution,source)
                 self.wakes.pop(prior["generation"], None)
                 self.output({**base, "direction": "switch-out", "prev_state": state[1],
                              "peer_host_tid": following}, prior, at, at)
@@ -304,35 +370,52 @@ class Association:
                 start = self.offcpu.pop(key, None)
                 wake = self.wakes.pop(key, None)
                 value = {**base, "direction": "switch-in", "peer_host_tid": previous}
+                first=min(start[0],at) if start else at
+                last=max(start[0],at) if start else at
                 if start:
-                    require(at >= start[0], "SCHED_CLOCK_REGRESSION")
-                    value.update(off_cpu_start_monotonic_ns=start[0], off_cpu_ns=at - start[0], previous_state=start[1])
+                    value.update(off_cpu_start_monotonic_ns=start[0],previous_state=start[1],
+                                 switch_out_cpu=start[2],switch_out_source=start[4])
+                    if at>=start[0]:
+                        value.update(off_cpu_ns=at-start[0],off_cpu_interval_proven=True)
+                    else:
+                        value['off_cpu_interval_proven']=False
+                        self.gap('switch-in-before-switch-out',generation=key,at=at,switch_out=start,
+                            switch_in_source=source,affected_start_monotonic_ns=first,affected_end_monotonic_ns=last)
                     if wake is not None:
-                        require(start[0] <= wake <= at, "WAKE_CLOCK_REGRESSION")
-                        value["wakeup_to_run_ns"] = at - wake
+                        value.update(wakeup_monotonic_ns=wake[0],wakeup_cpu=wake[1],wakeup_source=wake[3])
+                        if start[0]<=wake[0]<=at:
+                            value.update(wakeup_to_run_ns=at-wake[0],wakeup_pair_proven=True)
+                        else:
+                            value['wakeup_pair_proven']=False
+                            self.gap('wake-outside-offcpu-interval',generation=key,at=at,
+                                switch_out=start,wakeup=wake,switch_in_monotonic_ns=at,switch_in_cpu=cpu,
+                                switch_in_source=source,printed_resolution_ns=resolution,
+                                affected_start_monotonic_ns=min(first,wake[0]),
+                                affected_end_monotonic_ns=max(last,wake[0]))
                 else:
                     value["left_censored_off_cpu"] = True
-                self.output(value, after, start[0] if start else at, at)
-                if at >= self.start and (start[0] if start else at) <= self.end:
+                self.output(value, after, first, last)
+                if last >= self.start and first <= self.end:
                     self.by_camera[after["owner"]["camera"]]["scheduler_events"] += 1
         elif kind == "sched_wakeup":
             woken = scalar(fields, "pid")
             row = self.owner(woken, at)
             if row:
                 if row["generation"] in self.offcpu:
-                    self.wakes.setdefault(row["generation"], at)
+                    self.wakes.setdefault(row["generation"], (at,cpu,resolution,source))
                 self.output(base, row, at, at)
-        require(len(self.gaps) <= 1024, "ASSOCIATION_GAP_LIMIT")
 
     def finish(self):
-        for generation, (name, at, fd) in self.calls.items():
+        for generation, entry in self.calls.items():
+            name,at,fd=entry[:3]
             row = self.generations.rows[generation - 1]
             end = row["end"] if row["end"] is not None else self.end
             if end >= self.start and at <= self.end:
-                self.gaps.append({"reason": "right-censored-syscall", "generation": generation, "at": at})
+                self.gap("right-censored-syscall",generation=generation,at=at,entry_source=entry[5],
+                    affected_start_monotonic_ns=at,affected_end_monotonic_ns=end)
                 self.output({"kind": "right-censored-syscall", "syscall": name, "fd": fd,
                              "entry_monotonic_ns": at, "observed_until_monotonic_ns": end,
-                             "return_value": None}, row, at, end)
+                             "return_value": None,"syscall_pair_proven":False}, row, at, end)
 
 
 def parse(syscalls, line):
@@ -419,11 +502,18 @@ def analyze(source, trace, official, output, max_output=256 * 1024**2):
     budget = Budget(output, max_output)
     try:
         generations.resolve_parents()
-        association = Association(syscalls, generations, chain, lambda row: budget.json("writer-events.jsonl", row))
-        for line in raw_lines(trace / "host-raw.trace"):
+        association = Association(syscalls, generations, chain, lambda row: budget.json("writer-events.jsonl", row),
+                                  gap_emit=lambda row:budget.json("association-gaps.jsonl",row))
+        census=TraceCensus(ready.get('observer_pid'),chain)
+        offset=0
+        for number,line in enumerate(raw_lines(trace / "host-raw.trace"),1):
+            raw=(line+'\n').encode('utf-8')
             event = parse(syscalls, line)
+            census.observe(event,len(raw),generations)
             if event:
-                association.event(*event)
+                source_ref={'line_number':number,'byte_offset':offset,'line_bytes':len(raw)}
+                association.event(*event,source=source_ref)
+            offset+=len(raw)
         association.finish()
         storage_count = 0
         def storage_emit(row):
@@ -538,6 +628,8 @@ def analyze(source, trace, official, output, max_output=256 * 1024**2):
             "observer_history_notes":original.get("source_summaries"),
             "overall_identity_history_complete":identity_status["complete"],
             "identity_history":identity_status,
+            "analysis_scan_complete":True,"association_scope":"selected_wait_chain_window",
+            "association_pair_history_complete":not bool(association.gap_counts),
             "association_complete": not gaps, "state": "complete" if not gaps else "incomplete",
             "hardware_acceptance_verified": False, "original_analysis_unchanged": True,
             "input_sha256": refs, "three_writer_wait_chain": chain, "gaps": gaps,
@@ -545,7 +637,8 @@ def analyze(source, trace, official, output, max_output=256 * 1024**2):
             "verified_original_analysis_manifest_sha256": official_manifest_sha, "per_writer_credit_checks": credit_checks,
             "queue_resource_brackets": queue_brackets,
             "application_observer_complete": not application_gaps, "application_observer_gaps": application_gaps,
-            "generation_gap_count": generations.gap_count, "unbound_descendants_in_window": len(unbound),
+            "generation_gap_count": generations.gap_count,
+            "association_gap_report":association.gap_report(),"host_event_census":census.report(), "unbound_descendants_in_window": len(unbound),
             "by_camera": association.by_camera, "associated_events": association.events,
             "device_events": storage_count, "storage_decoder": decoder.report(),
             "limits": {"max_output_bytes": max_output, "generation_limit": generations.maximum},
@@ -575,8 +668,9 @@ def main():
     parser.add_argument("--trace", type=Path, required=True)
     parser.add_argument("--official-analysis", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--max-output-bytes", type=int, default=256*1024**2)
     args = parser.parse_args()
-    result = analyze(args.source, args.trace, args.official_analysis, args.output)
+    result = analyze(args.source, args.trace, args.official_analysis, args.output, max_output=args.max_output_bytes)
     print(json.dumps({"state": result["state"], "output": str(args.output),
                       "association_complete": result["association_complete"]}))
     return 0 if result["association_complete"] else 2

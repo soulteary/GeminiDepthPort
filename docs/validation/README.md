@@ -53,3 +53,5 @@ python3 scripts/validation/imu_long_test.py --help
 CI 包含 Rust、Python、前端、Shell、Compose、管理生命周期、固定官方驱动构建和 ROS 合成交付；不打开真实设备。构建和检查见[贡献指南](../../CONTRIBUTING.md#开发检查)。
 
 其他方法：[消费与 ROSbag2 验收](consumer-acceptance.md)、[基础语义](semantics.md)、[性能对照协议](benchmarking.md)、[验证工具](../../tools/validation/README.md)。
+
+- [R02 调度关联与观察器开销复核](r02-association-and-observer.md)：窗口外时钟缺口、独立等待链、三 writer 多阶段故障模型及只读 on/off 对照。

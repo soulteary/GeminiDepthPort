@@ -15,7 +15,7 @@ import signal
 import resource
 import subprocess
 import time
-from host_kernel_trace import HostKernelTrace, stream_sha
+from host_kernel_trace import HostKernelTrace, stream_sha, document
 
 
 def source_identity(source,revision):
@@ -27,6 +27,46 @@ def source_identity(source,revision):
     return head
 
 
+
+def workload_receipt(args):
+    """Conservative, read-only equivalence receipt for the official retest command."""
+    try:
+        command=list(args.command)
+        script=Path(args.source)/'experiments/sdk-2.10.6-diagnostics/run_retest.py'
+        if len(command)<3 or Path(command[1]).resolve()!=script.resolve() or command[2]!='run':
+            return {'supported':False,'reason':'not-the-official-retest-command'}
+        normalized=[Path(command[0]).name,script.name,'run'];tokens=command[3:]
+        if tokens.count('--plan')!=1 or tokens.count('--root')!=1:
+            return {'supported':False,'reason':'plan-or-root-not-unique'}
+        plan_path=Path(tokens[tokens.index('--plan')+1])
+        root=Path(tokens[tokens.index('--root')+1]).resolve()
+        if not root.is_relative_to(Path(args.recording_path).resolve()):
+            return {'supported':False,'reason':'retest-root-outside-recording-device-path'}
+        plan=document(plan_path)
+        if {c['name'] for c in plan['cameras']}!={'a','b','c'} or len(plan['cameras'])!=3:
+            return {'supported':False,'reason':'three-camera-plan-required'}
+        files=[]
+        for camera in sorted(plan['cameras'],key=lambda c:c['name']):
+            row={'name':camera['name'],'additional_plan_fields':{k:v for k,v in camera.items() if k not in ('name','capture_config','health_config')}}
+            for field in ('capture_config','health_config'):
+                path=Path(camera[field])
+                if path.is_symlink() or not path.is_file() or not 0<path.stat().st_size<=4*1024**2:
+                    return {'supported':False,'reason':'frozen-config-file-unavailable-or-unbounded'}
+                with path.open('rb') as stream:row[field+'_sha256']=stream_sha(stream)
+            files.append(row)
+        for i,token in enumerate(tokens):
+            normalized.append('<fresh-root>' if i and tokens[i-1]=='--root' else
+                              '<frozen-plan>' if i and tokens[i-1]=='--plan' else token)
+        profile={'source_revision':args.revision,'disk':args.disk,'filesystem_uuid':args.filesystem_uuid,
+                 'recording_st_dev':Path(args.recording_path).stat().st_dev,'command':normalized,'camera_inputs':files,
+                 'additional_plan_fields':{k:v for k,v in plan.items() if k!='cameras'}}
+        fingerprint=hashlib.sha256(json.dumps(profile,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        return {'supported':True,'fingerprint':fingerprint,'profile':profile,
+                'scope':'Exact command/config bytes with only fresh root/plan paths normalized; no external-load or cache-state proof.'}
+    except (OSError,ValueError,KeyError,IndexError,TypeError) as error:
+        return {'supported':False,'reason':'workload-receipt-unavailable','error':type(error).__name__+':'+str(error)}
+
+
 def run(args):
     if not args.execute or not args.command:raise ValueError('EXPLICIT_EXECUTE_AND_COMMAND_REQUIRED')
     output=args.output.absolute()
@@ -36,6 +76,7 @@ def run(args):
     output.mkdir(parents=True,mode=0o700)
     observer=None;child=None;trace=None;began=time.monotonic();failure=None
     usage_before=resource.getrusage(resource.RUSAGE_SELF)
+    receipt_before=workload_receipt(args)
     try:
         if args.observer=='on':
             observer=HostKernelTrace(args.source,output/'trace',args.recording_path,args.retest_root,
@@ -66,8 +107,11 @@ def run(args):
             try:trace=observer.finish()
             except Exception as error:
                 trace={'capture_complete':False,'finalization_error':type(error).__name__+':'+str(error)}
+        receipt_after=workload_receipt(args)
         usage_after=resource.getrusage(resource.RUSAGE_SELF)
-        result={'observer_user_cpu_seconds':usage_after.ru_utime-usage_before.ru_utime,
+        result={'workload_receipt':receipt_before,
+            'workload_unchanged':receipt_before==receipt_after if receipt_before.get('supported') else None,
+            'observer_user_cpu_seconds':usage_after.ru_utime-usage_before.ru_utime,
             'observer_system_cpu_seconds':usage_after.ru_stime-usage_before.ru_stime,
             'observer_maxrss_native_units':usage_after.ru_maxrss,
             'cpu_scope':'wrapper plus its observer threads only; excludes driver, Docker workers and kernel threads',
@@ -76,6 +120,10 @@ def run(args):
             'driver_failure':failure,'observation':trace,'hardware_acceptance_verified':False,
             'wall_seconds':time.monotonic()-began,
             'scope':'driver and observer conclusions remain separate; original acceptance reports are authoritative'}
+        cpu=result['observer_user_cpu_seconds']+result['observer_system_cpu_seconds']
+        result['observer_cpu_cores']=cpu/result['wall_seconds']
+        rows=trace.get('instances',[]) if isinstance(trace,dict) else []
+        result['raw_trace_bytes']=(sum(r['raw_bytes'] for r in rows) if len(rows)==2 and all(type(r.get('raw_bytes')) is int and r['raw_bytes']>=0 for r in rows) else None) if observer else 0
         path=output/'result.json'
         fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
         with os.fdopen(fd,'w') as stream:json.dump(result,stream,indent=2);stream.write('\n')

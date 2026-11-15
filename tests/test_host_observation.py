@@ -49,10 +49,10 @@ class HostObservationTests(unittest.TestCase):
         chain={'window_start_monotonic_ns':100,'window_end_monotonic_ns':500,
                'events':[{'target':'a','event_id':7,'checkpoint_id':8,'phase':'index_sync','tid':64,'start_monotonic_ns':130,'wall_ns':100}]}
         rows=[];a=analysis.Association(sc,g,chain,rows.append)
-        a.output({'syscall':'fsync'},g.at(20,140),140,200)
+        a.output({'syscall':'fsync','syscall_pair_proven':True,'return_value':0},g.at(20,140),140,200)
         self.assertIn(('a',7),a.strict_sync)
         chain['events'][0]['tid']=65
-        a=analysis.Association(sc,g,chain,rows.append);a.output({'syscall':'fsync'},g.at(20,140),140,200)
+        a=analysis.Association(sc,g,chain,rows.append);a.output({'syscall':'fsync','syscall_pair_proven':True,'return_value':0},g.at(20,140),140,200)
         self.assertEqual(a.strict_sync,set())
         g.event('sched_process_exit','pid=20',250,sc.scalar)
         g.event('sched_process_fork','parent_pid=99 child_pid=20',300,sc.scalar)
