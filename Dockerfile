@@ -1,4 +1,8 @@
 FROM rust:1.85.1-bullseye AS observer-build
+# Keep the glibc baseline compatible with ROS Humble while updating Rust.
+ARG RUST_VERSION=1.100.0
+RUN rustup toolchain install "$RUST_VERSION" --profile minimal \
+    && rustup default "$RUST_VERSION"
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src

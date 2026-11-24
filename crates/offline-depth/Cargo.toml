@@ -17,5 +17,5 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 ring = "0.17"
 [dev-dependencies]
 tempfile = "3"
-png = "0.17"
+png = "0.18"
 tar = "0.4"

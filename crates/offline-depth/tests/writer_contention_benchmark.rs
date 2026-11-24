@@ -353,7 +353,11 @@ pub(crate) fn run_child_with_background(
     factory: Option<BackgroundFactory>,
     adapter_sha: Option<&str>,
 ) {
-    assert!(cfg!(target_os = "linux"), "Linux release child required");
+    assert_eq!(
+        std::env::consts::OS,
+        "linux",
+        "Linux release child required"
+    );
     let root = PathBuf::from(std::env::var_os("GDP_CONTENTION_ROOT").unwrap());
     let mode = std::env::var("GDP_CONTENTION_MODE").unwrap_or_else(|_| "run".into());
     let pairs: u64 = std::env::var("GDP_CONTENTION_PAIRS")

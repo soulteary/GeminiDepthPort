@@ -23,7 +23,7 @@ done
 # its output directory and performs the capacity and trace capability checks.
 writer_build_root=$(mktemp -d "${TMPDIR:-/tmp}/gdp-writer-long-build.XXXXXX")
 echo "Release build logs: $writer_build_root" >&2
-cargo +1.90.0 test --locked --release -p capture-probe --lib --no-run \
+cargo +1.100.0 test --locked --release -p capture-probe --lib --no-run \
   --message-format=json > "$writer_build_root/compiler.jsonl" 2> "$writer_build_root/build.log"
 writer_binary=$(python3 - "$writer_build_root/compiler.jsonl" <<'PY'
 import json

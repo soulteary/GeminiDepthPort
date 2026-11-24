@@ -623,8 +623,10 @@ mod tests {
                 record(),
             )
             .unwrap();
-            let mut reader = png::Decoder::new(e.png.as_slice()).read_info().unwrap();
-            let mut out = vec![0; reader.output_buffer_size()];
+            let mut reader = png::Decoder::new(std::io::Cursor::new(e.png.as_slice()))
+                .read_info()
+                .unwrap();
+            let mut out = vec![0; reader.output_buffer_size().unwrap()];
             let info = reader.next_frame(&mut out).unwrap();
             assert_eq!(info.bit_depth, png::BitDepth::Sixteen);
             assert_eq!(info.color_type, png::ColorType::Grayscale);
@@ -953,8 +955,10 @@ mod tests {
         assert_eq!(bytes, frame.png_bytes());
         assert_eq!(row["png_sha256"], frame.png_sha256());
         assert_eq!(row["pixel_sha256"], frame.pixel_sha256());
-        let mut decoder = png::Decoder::new(bytes.as_slice()).read_info().unwrap();
-        let mut pixels = vec![0; decoder.output_buffer_size()];
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes.as_slice()))
+            .read_info()
+            .unwrap();
+        let mut pixels = vec![0; decoder.output_buffer_size().unwrap()];
         decoder.next_frame(&mut pixels).unwrap();
         assert_eq!(pixels, [0, 0, 255, 255, 0, 1]);
     }
