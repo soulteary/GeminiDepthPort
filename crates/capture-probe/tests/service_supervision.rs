@@ -4499,6 +4499,11 @@ fn run_raw_overflow_fault(
 #[test]
 fn invalid_imu_timestamps_during_a_critical_fence_remain_terminal() {
     let f = normal_rate_wait_fixture(31);
+    // Isolate timestamp failure from unrelated shared-runner ROS publish stalls.
+    // Separate tests retain the 200 Hz load and real queue-capacity checks.
+    let mut config: Value = serde_json::from_slice(&fs::read(&f.config).unwrap()).unwrap();
+    config["imu"] = imu_policy();
+    fs::write(&f.config, config.to_string()).unwrap();
     let source = f.root.join("mock-sdk.c");
     let mut text = fs::read_to_string(&source).unwrap();
     replace(
