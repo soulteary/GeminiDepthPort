@@ -183,3 +183,33 @@ pub(crate) fn advance(report: &RunReport, stats: Option<&Value>) -> Result<()> {
     })?;
     checkpoint()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dependency_boundary_final_progress_write_failure_does_not_report_completion() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("progress.jsonl");
+        let control = JobControl::new(Some(&path)).unwrap();
+        let result = control.execute(|| {
+            // A read-only descriptor gives a deterministic real write error after
+            // the initial progress record, without filling a filesystem.
+            control.state.lock().unwrap().progress = Some(File::open(&path).unwrap());
+            Ok(())
+        });
+        assert_eq!(
+            result.unwrap_err().code(),
+            "PROGRESS_FINALIZATION_UNCERTAIN"
+        );
+        let progress = std::fs::read_to_string(&path).unwrap();
+        let events = progress
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["state"], "running");
+        assert!(ACTIVE.with(|active| active.borrow().is_none()));
+    }
+}

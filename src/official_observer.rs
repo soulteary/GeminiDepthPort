@@ -359,6 +359,19 @@ mod tests {
         );
     }
     #[test]
+    fn observer_policy_rejects_a_camera_absent_from_the_inventory() {
+        let (p, _) = fixture();
+        let mut missing = p["inventory"]["cameras"][0].clone();
+        missing["name"] = json!("missing-camera");
+        assert!(
+            policy(&p["inventory"], &missing, &"d".repeat(32))
+                .unwrap_err()
+                .to_string()
+                .starts_with("OBSERVER_CAMERA_BINDING")
+        );
+    }
+
+    #[test]
     fn bootstrap_requires_observed_schema_and_native_color_format() {
         let (p, o) = fixture();
         let mut invalid = p.clone();

@@ -656,6 +656,7 @@ fn cli_argument_conflicts_and_unwritable_progress_report_stable_codes() {
     for (args, code) in [
         (vec!["--unknown"], "UNKNOWN_ARGUMENT"),
         (vec!["--pair", "not-a-number"], "PAIR_ARGUMENT"),
+        (vec!["--capacity", "not-a-number"], "QUEUE_CAPACITY"),
         (vec!["--mode", "invalid"], "MODE_ARGUMENT"),
         (
             vec!["--preserve-counts", "--normalize-mm"],
@@ -698,4 +699,37 @@ fn cli_argument_conflicts_and_unwritable_progress_report_stable_codes() {
                 .success()
         );
     }
+}
+
+#[test]
+fn dependency_boundary_tar_only_export_is_complete_without_png_directory() {
+    let input = tempfile::tempdir().unwrap();
+    fixture(input.path(), false, 0.);
+    let output = tempfile::tempdir().unwrap();
+    let result = cli(
+        input.path(),
+        &[
+            "--output",
+            output.path().to_str().unwrap(),
+            "--job",
+            "tar-only",
+            "--mode",
+            "tar",
+        ],
+    );
+    assert!(result.status.success(), "{result:?}");
+    let job = output.path().join("tar-only");
+    assert!(job.join("COMPLETE").is_file());
+    assert!(!job.join("frames").exists());
+    let mut archive = tar::Archive::new(fs::File::open(job.join("depth.tar")).unwrap());
+    let entries = archive
+        .entries()
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0].path().unwrap().as_ref(),
+        Path::new("00000000000000000000.png")
+    );
 }

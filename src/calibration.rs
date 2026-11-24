@@ -300,3 +300,31 @@ pub fn export(ctl: &Controller) -> Result<Value> {
     let _ = ctl.run(&["docker", "exec", id, "rm", "-f", &remote]);
     operation
 }
+
+#[cfg(test)]
+mod dependency_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn supported_distortion_models_require_their_exact_coefficient_count() {
+        let expected = json!({"frame_id":"color_optical","width":640,"height":480});
+        for (name, count) in [("rational_polynomial", 8), ("equidistant", 4)] {
+            let mut info = expected.clone();
+            info["k"] = json!([1., 0., 0., 0., 1., 0., 0., 0., 1.]);
+            info["r"] = json!([1., 0., 0., 0., 1., 0., 0., 0., 1.]);
+            info["p"] = json!([1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0.]);
+            info["distortion_model"] = json!(name);
+            info["d"] = json!(vec![0.; count]);
+            let converted = intrinsics(&info, &expected).unwrap();
+            assert_eq!(converted["distortion_model"], name);
+            assert_eq!(converted["d"].as_array().unwrap().len(), count);
+            info["d"].as_array_mut().unwrap().pop();
+            assert!(
+                intrinsics(&info, &expected)
+                    .unwrap_err()
+                    .to_string()
+                    .starts_with("CALIBRATION_DISTORTION")
+            );
+        }
+    }
+}

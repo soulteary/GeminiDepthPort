@@ -196,6 +196,27 @@ mod tests {
         }
     }
     #[test]
+    fn sdk_extended_distortion_models_keep_exact_coefficient_contracts() {
+        for (name, expected, count) in [
+            (
+                "rational_polynomial",
+                DistortionModel::RationalPolynomial,
+                8,
+            ),
+            ("equidistant", DistortionModel::Equidistant, 4),
+        ] {
+            let mut source = calibration().color.unwrap();
+            source.distortion_model = name.into();
+            source.distortion = vec![0.; count];
+            let converted = model(&source, "color_optical").unwrap();
+            assert_eq!(converted.distortion_model, expected);
+            assert_eq!(converted.distortion_coefficients, source.distortion);
+            source.distortion.pop();
+            assert!(model(&source, "color_optical").is_err());
+        }
+    }
+
+    #[test]
     fn actual_sdk_calibration_snapshot_keeps_units_source_and_false_precision_claim() {
         let cfg = config();
         let generation = "a".repeat(32);

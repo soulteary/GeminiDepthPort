@@ -512,6 +512,35 @@ mod tests {
         json!({"version":1,"origin_session_id":"a".repeat(32),"latest_sequence":102,"gap":null,"events":(100..=102).map(|s|json!({"version":1,"sequence":s,"scope":{"kind":if s==100{"recorder"}else{"future-scope"}},"fact":"unchanged"})).collect::<Vec<_>>(),"next_cursor":{"origin_session_id":"a".repeat(32),"after_sequence":102},"has_more":false})
     }
     #[test]
+    fn page_schema_errors_identify_invalid_latest_and_event_array() {
+        for (field, value) in [("latest_sequence", json!("102")), ("events", json!({}))] {
+            let mut page = feed();
+            page[field] = value;
+            assert_eq!(
+                page_events(page, None, 10).unwrap_err().to_string(),
+                "QUALITY_EVENT_SCHEMA"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_camera_instance_returns_a_bounded_availability_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut ctl = Controller::new(directory.path()).unwrap();
+        ctl.command_runner = Some(std::sync::Arc::new(|args, _| {
+            assert_eq!(&args[..2], ["docker", "ps"]);
+            Ok(String::new())
+        }));
+        let err = quality_bundle(
+            &ctl,
+            &json!({"capture_backend":"rust"}),
+            &json!({"generation":"d".repeat(32),"cameras":[{"name":"front"}]}),
+            &json!({"name":"front"}),
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "QUALITY_CAMERA_UNAVAILABLE");
+    }
+    #[test]
     fn pages_preserve_unknown_scope_facts_and_explicit_gap() {
         let page = page_events(feed(), None, 2).unwrap();
         assert_eq!(page["events"][0]["scope"]["kind"], "recorder");

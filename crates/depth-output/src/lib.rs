@@ -1050,4 +1050,44 @@ mod tests {
         fs::remove_file(job.stage_path().join("depth.tar.partial")).unwrap();
         assert!(job.finish().is_err());
     }
+    #[test]
+    fn dependency_boundary_invalid_frame_context_is_rejected_before_encoding() {
+        let mut invalid = record();
+        invalid.context.version = 0;
+        assert!(matches!(
+            invalid.validate(),
+            Err(OutputError::Invalid("FRAME_CONTEXT"))
+        ));
+        assert!(matches!(
+            encode(
+                DepthView {
+                    bytes: &[1, 0],
+                    width: 1,
+                    height: 1,
+                    stride: 2,
+                    endian: Endian::Little,
+                },
+                invalid
+            ),
+            Err(OutputError::Invalid("FRAME_CONTEXT"))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dependency_boundary_nul_paths_cannot_publish_or_remove_a_directory() {
+        use std::os::unix::ffi::OsStrExt;
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("sentinel"), b"unchanged").unwrap();
+        let invalid = Path::new(std::ffi::OsStr::from_bytes(b"invalid\0path"));
+        for (from, to) in [(invalid, source.as_path()), (source.as_path(), invalid)] {
+            assert_eq!(
+                rename_directory_no_replace(from, to).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+            assert_eq!(fs::read(source.join("sentinel")).unwrap(), b"unchanged");
+        }
+    }
 }

@@ -1692,3 +1692,114 @@ fn web_raw_files_and_preview_keep_recording_opt_in_and_per_camera_confirmation()
     save_config(&f.ctl, &unchanged).unwrap();
     assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
 }
+
+#[test]
+fn unknown_camera_role_is_rejected_without_falling_back_to_another_camera() {
+    let f = Fixture::new(true, 1);
+    assert_eq!(role(&f.inventory, "camera_a").unwrap()["name"], "camera_a");
+    assert_eq!(
+        role(&f.inventory, "missing").unwrap_err().to_string(),
+        "CAMERA_ID: Unknown camera role"
+    );
+}
+
+#[test]
+fn configuration_without_a_camera_array_is_rejected_before_saving() {
+    let f = Fixture::new(true, 1);
+    let before = fs::read(f.ctl.root.join("inventory.json")).unwrap();
+    for cameras in [None, Some(Value::Null), Some(json!({}))] {
+        let mut payload = json!({"revision":f.ctl.revision().unwrap()});
+        if let Some(cameras) = cameras {
+            payload["cameras"] = cameras;
+        }
+        assert_eq!(
+            save_config(&f.ctl, &payload).unwrap_err().to_string(),
+            "CAMERA_FIELDS: All cameras required"
+        );
+        assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
+    }
+}
+
+#[test]
+fn legacy_configuration_refuses_backend_and_capture_extension_edits() {
+    let mut f = Fixture::new(true, 1);
+    f.prepare_host();
+    let inventory: Value =
+        serde_json::from_str(include_str!("../tests/fixtures/inventory.v1.json")).unwrap();
+    atomic_json(&f.ctl.root.join("inventory.json"), &inventory).unwrap();
+    let before = fs::read(f.ctl.root.join("inventory.json")).unwrap();
+    for field in ["capture_backend", "imu", "raw_recording"] {
+        let mut payload = acquisition_edit_payload(&f);
+        let expected = if field == "capture_backend" {
+            payload["capture_backend"] = json!("rust");
+            payload["image"] = json!("local/test-rust:web");
+            "CONFIG_SCHEMA: Model/backend selection requires schema v2"
+        } else {
+            payload["cameras"][0][field] = Value::Null;
+            "CONFIG_SCHEMA: IMU/native recording edits require schema v2"
+        };
+        assert_eq!(
+            save_config(&f.ctl, &payload).unwrap_err().to_string(),
+            expected,
+            "{field}"
+        );
+        assert_eq!(fs::read(f.ctl.root.join("inventory.json")).unwrap(), before);
+    }
+}
+
+#[test]
+fn preview_stop_failure_does_not_remove_the_running_owned_container() {
+    let mut f = Fixture::new(true, 1);
+    let folder = f.ctl.root.join("work/web-preview/camera_a/config");
+    fs::create_dir_all(&folder).unwrap();
+    let id = "f".repeat(64);
+    let expected_id = id.clone();
+    let item = json!({"Id":id,"Name":"/orbbec-web-preview-camera_a","Config":{"Labels":{"orbbec.web.preview":PROJECT}},"State":{"Running":true},"Mounts":[{"Destination":"/config","Source":folder}]});
+    let attempts = Arc::new(Mutex::new(Vec::new()));
+    let calls = attempts.clone();
+    let previous = f.ctl.command_runner.clone().unwrap();
+    f.ctl.command_runner = Some(Arc::new(move |args, input| {
+        if args.get(1).is_some_and(|a| a == "ps")
+            && args.iter().any(|a| a.contains("orbbec.web.preview"))
+        {
+            return Ok(id.clone());
+        }
+        if args.get(1).is_some_and(|a| a == "inspect") && args.iter().any(|a| a == &id) {
+            return Ok(json!([item]).to_string());
+        }
+        if args.get(1).is_some_and(|a| a == "stop" || a == "rm") {
+            calls.lock().unwrap().push(args.to_vec());
+            if args[1] == "stop" {
+                anyhow::bail!("preview stop failed");
+            }
+            return Ok(String::new());
+        }
+        previous(args, input)
+    }));
+    assert_eq!(
+        stop_preview(&f.ctl, "camera_a").unwrap_err().to_string(),
+        "preview stop failed"
+    );
+    assert_eq!(
+        *attempts.lock().unwrap(),
+        vec![args(&["docker", "stop", "--time", "12", &expected_id])]
+    );
+}
+
+#[test]
+fn service_listing_ignores_empty_lines_without_losing_valid_records() {
+    let mut f = Fixture::new(true, 1);
+    f.prepare_host();
+    let service = json!({"ID":"listed","State":"running"});
+    let output = format!("\n{service}\n\n");
+    let previous = f.ctl.command_runner.clone().unwrap();
+    f.ctl.command_runner = Some(Arc::new(move |args, input| {
+        if args.get(1).is_some_and(|a| a == "ps") && args.iter().any(|a| a == "{{json .}}") {
+            return Ok(output.clone());
+        }
+        previous(args, input)
+    }));
+    let current = state(&manager(&f)).unwrap();
+    assert_eq!(current["services"], json!([service]));
+    assert!(current["docker_error"].is_null(), "{current}");
+}

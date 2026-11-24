@@ -132,3 +132,18 @@ fn command_line_config_limits_and_metadata_dispatch_do_not_accept_unsupported_ve
     assert!(text.contains("update"));
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn dependency_boundary_directory_config_returns_a_structured_read_error() {
+    let directory = std::env::current_dir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_capture-observer"))
+        .arg("--config")
+        .arg(&directory)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["ok"], false);
+    assert_eq!(response["error"]["code"], "CONFIG_UNAVAILABLE");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains(directory.to_str().unwrap()));
+}

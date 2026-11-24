@@ -127,3 +127,21 @@ impl SnapshotStore {
         operation
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filename_with_embedded_nul_is_rejected_before_creating_a_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let private = directory.path().join("private-store");
+        let store = SnapshotStore::open(&private).unwrap();
+        let err = store
+            .open_file("pending\0hidden", libc::O_WRONLY | libc::O_CREAT)
+            .unwrap_err();
+        assert_eq!(err.class, ErrorClass::InvalidInput);
+        assert_eq!(err.code, "STORE_FILENAME");
+        assert_eq!(std::fs::read_dir(private).unwrap().count(), 0);
+    }
+}
