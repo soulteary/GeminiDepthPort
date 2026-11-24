@@ -413,6 +413,10 @@ class TraceSessionTests(unittest.TestCase):
             while session.active and time.monotonic()<deadline:session.poll()
             self.assertFalse(session.active)
             self.assertIn('OUTPUT_LIMIT',session.failure)
+            # finish closes the fixture pipe writer before creating its output files.
+            # Stop the producer first so it cannot write through a reused descriptor.
+            stop.set();writer.join(timeout=5)
+            self.assertFalse(writer.is_alive())
             result=session.finish();self.assertFalse(result['ok'])
             self.assertLessEqual(result['output_bytes'],session.max_bytes)
             self.assertIsNone(self.process.poll())
