@@ -21,8 +21,8 @@ for coverage_scope in "${coverage_scopes[@]}"; do
     "$coverage_report/external-tests.json" "$coverage_report/workspace-metadata.json"
 done
 
-if [[ $(cargo +1.90.0 llvm-cov --version) != "cargo-llvm-cov 0.9.1" ]]; then
-  echo "coverage requires cargo-llvm-cov 0.9.1" >&2
+if [[ $(cargo +1.100.0 llvm-cov --version) != "cargo-llvm-cov 0.9.2" ]]; then
+  echo "coverage requires cargo-llvm-cov 0.9.2" >&2
   exit 1
 fi
 
@@ -32,17 +32,17 @@ for coverage_scope in "${coverage_scopes[@]}"; do
     # contaminating one another. Existing non-coverage builds are untouched.
     export CARGO_TARGET_DIR="$coverage_root/target/coverage-$coverage_scope"
     export CARGO_TERM_COLOR=never
-    coverage_environment=$(cargo +1.90.0 llvm-cov show-env --sh)
+    coverage_environment=$(cargo +1.100.0 llvm-cov show-env --sh)
     eval "$coverage_environment"
-    cargo +1.90.0 llvm-cov clean --workspace
+    cargo +1.100.0 llvm-cov clean --workspace
     coverage_report="$coverage_root/target/coverage-reports/$coverage_scope"
     mkdir -p "$coverage_report"
 
     if [[ "$coverage_scope" == unit ]]; then
-      cargo +1.90.0 test --locked --workspace --lib --bins
+      cargo +1.100.0 test --locked --workspace --lib --bins
     else
-      cargo +1.90.0 test --locked --workspace
-      cargo +1.90.0 build --locked --workspace --bins --examples
+      cargo +1.100.0 test --locked --workspace
+      cargo +1.100.0 build --locked --workspace --bins --examples
       # Keep required arguments in the array: Bash 3 treats expansion of an
       # empty array as an unbound variable under set -u.
       coverage_external_args=(
@@ -56,9 +56,9 @@ for coverage_scope in "${coverage_scopes[@]}"; do
       python3 scripts/testing/run_external_tests.py "${coverage_external_args[@]}"
     fi
 
-    cargo +1.90.0 metadata --locked --no-deps --format-version 1 > "$coverage_report/workspace-metadata.json"
-    cargo +1.90.0 llvm-cov report --workspace --lcov --output-path "$coverage_report/raw.lcov"
-    cargo +1.90.0 llvm-cov report --workspace --json --output-path "$coverage_report/raw.json"
+    cargo +1.100.0 metadata --locked --no-deps --format-version 1 > "$coverage_report/workspace-metadata.json"
+    cargo +1.100.0 llvm-cov report --workspace --lcov --output-path "$coverage_report/raw.lcov"
+    cargo +1.100.0 llvm-cov report --workspace --json --output-path "$coverage_report/raw.json"
     python3 scripts/testing/production_coverage.py \
       --root "$coverage_root" --label "$coverage_scope" \
       --workspace-metadata "$coverage_report/workspace-metadata.json" \

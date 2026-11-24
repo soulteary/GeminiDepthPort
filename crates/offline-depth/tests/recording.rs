@@ -1189,3 +1189,58 @@ fn streaming_and_materialized_v2_validation_agree_for_sdk_and_observed_inputs() 
         }
     }
 }
+
+#[test]
+fn dependency_boundary_invalid_pair_version_is_rejected_by_reader_and_writer() {
+    let input = tempfile::tempdir().unwrap();
+    let mut record = fixture_v2(input.path(), false, true);
+    let mut evidence = tagged(input.path(), &record);
+    let TaggedEvidence::SdkBoundPair { pair, .. } = &mut evidence else {
+        panic!("SDK fixture")
+    };
+    pair.version = 0;
+    let invalid_pair = pair.clone();
+    store_tagged(input.path(), &mut record, &evidence);
+    let mut source = RecordingDirectorySource::open(input.path()).unwrap();
+    assert_eq!(
+        source.next_frame().err().unwrap().code(),
+        "PAIR_EVIDENCE_INVALID"
+    );
+    let snapshot: snapshot::SnapshotEnvelope =
+        serde_json::from_slice(&fs::read(input.path().join("snapshot.json")).unwrap()).unwrap();
+    let output = tempfile::tempdir().unwrap();
+    let mut writer = RawRecordingWriter::begin(output.path(), "invalid", snapshot).unwrap();
+    let error = writer
+        .append(
+            &invalid_pair,
+            &[1, 2, 3, 4],
+            &[0, 0, 0, 0],
+            StorageEndian::Little,
+        )
+        .unwrap_err();
+    assert_eq!(error.code(), "PAIR_EVIDENCE_INVALID");
+    assert_eq!(writer.finish().unwrap_err().code(), "RECORDING_INCOMPLETE");
+    assert!(!output.path().join("invalid").exists());
+    assert!(!output.path().join("invalid.partial/COMPLETE").exists());
+}
+
+#[test]
+fn dependency_boundary_observed_camera_info_rejects_invalid_nanoseconds() {
+    let input = tempfile::tempdir().unwrap();
+    let mut record = fixture_v2(input.path(), true, false);
+    let file = record.color.camera_info.as_ref().unwrap();
+    let mut info: DecodedCameraInfo =
+        serde_json::from_slice(&fs::read(input.path().join(&file.path)).unwrap()).unwrap();
+    info.stamp.nanosec = 1_000_000_000;
+    record.color.camera_info = Some(reference(
+        input.path(),
+        "color-info.json",
+        &serde_json::to_vec(&info).unwrap(),
+    ));
+    index(input.path(), &record);
+    let mut source = RecordingDirectorySource::open(input.path()).unwrap();
+    assert_eq!(
+        source.next_frame().err().unwrap().code(),
+        "OBSERVED_INFO_STAMP"
+    );
+}

@@ -526,6 +526,25 @@ mod tests {
         }
     }
     #[test]
+    fn validly_sealed_snapshot_must_include_each_requested_stream_model() {
+        let (snapshot, mut witness, generation, camera) = fixture();
+        let mut content = snapshot.content;
+        content.calibration.models.remove("color");
+        content.calibration.transforms.clear();
+        content.binding.calibration_id = content.calibration.id().unwrap();
+        let incomplete = content.seal().unwrap();
+        witness.sdk_snapshot_id = incomplete.snapshot_id.clone();
+        let error = validate_sdk_snapshot(
+            &incomplete.to_bytes().unwrap(),
+            &witness,
+            &generation,
+            &camera,
+        )
+        .expect_err("missing color model must fail");
+        assert!(error.to_string().starts_with("SNAPSHOT_SDK_MODEL_MISSING"));
+    }
+
+    #[test]
     fn strict_reference_cannot_escape_or_be_missing() {
         let (snapshot, _, _, _) = fixture();
         let valid = json!({"snapshot_id":snapshot.snapshot_id,"snapshot_path":format!("/tmp/capture/snapshots/{}.json",snapshot.snapshot_id)});
@@ -540,6 +559,11 @@ mod tests {
             assert!(sdk_reference(&bad).is_err());
         }
         assert!(sdk_reference(&json!({})).is_err());
+        for invalid in [json!("not-a-content-digest"), json!("g".repeat(64))] {
+            let mut bad = valid.clone();
+            bad["snapshot_id"] = invalid;
+            assert!(sdk_reference(&bad).is_err());
+        }
     }
     #[test]
     fn private_reader_rejects_exposed_files_symlinks_and_bad_directories() {

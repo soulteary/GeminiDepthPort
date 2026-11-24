@@ -429,3 +429,117 @@ fn python_float(s: &str) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn legacy_fixture() -> Value {
+        json!({
+            "kind": "geminidepthport-calibration-v1",
+            "structural_validation": true,
+            "physical_accuracy_verified": false,
+            "cameras": [{"name": "front", "intrinsics": {"depth": {
+                "frame_id": "depth_optical_frame", "width": 640, "height": 480,
+                "k": [500.0, 0.0, 320.0, 0.0, 500.0, 240.0, 0.0, 0.0, 1.0],
+                "distortion_model": "plumb_bob", "d": [0.0, 0.0, 0.0, 0.0, 0.0]
+            }}}]
+        })
+    }
+
+    fn legacy_bytes(mut value: Value) -> Vec<u8> {
+        value["snapshot_sha256"] = json!(raw_sha(legacy_canonical(&value).as_bytes()));
+        serde_json::to_vec(&value).unwrap()
+    }
+
+    #[test]
+    fn legacy_import_reports_missing_or_non_string_digest() {
+        for digest in [None, Some(json!(17))] {
+            let mut value = legacy_fixture();
+            if let Some(digest) = digest {
+                value["snapshot_sha256"] = digest;
+            }
+            let err = import_legacy(&serde_json::to_vec(&value).unwrap(), "front").unwrap_err();
+            assert_eq!(err.class, ErrorClass::Integrity);
+            assert_eq!(err.code, "LEGACY_DIGEST_MISSING");
+        }
+    }
+
+    #[test]
+    fn legacy_import_preserves_field_error_classes_after_digest_validation() {
+        import_legacy(&legacy_bytes(legacy_fixture()), "front").unwrap();
+        for (pointer, replacement, class, code) in [
+            (
+                "/cameras",
+                json!(null),
+                ErrorClass::Binding,
+                "LEGACY_CAMERA_MISSING",
+            ),
+            (
+                "/cameras/0/intrinsics",
+                json!(null),
+                ErrorClass::Geometry,
+                "LEGACY_INTRINSICS_MISSING",
+            ),
+            (
+                "/cameras/0/intrinsics/depth/frame_id",
+                json!(42),
+                ErrorClass::InvalidInput,
+                "LEGACY_FIELD_INVALID",
+            ),
+            (
+                "/cameras/0/intrinsics/depth/width",
+                json!("640"),
+                ErrorClass::Geometry,
+                "LEGACY_DIMENSIONS",
+            ),
+            (
+                "/cameras/0/intrinsics/depth/height",
+                json!(-1),
+                ErrorClass::Geometry,
+                "LEGACY_DIMENSIONS",
+            ),
+            (
+                "/cameras/0/intrinsics/depth/d",
+                json!({}),
+                ErrorClass::Geometry,
+                "LEGACY_DISTORTION",
+            ),
+            (
+                "/cameras/0/intrinsics/depth/k",
+                json!({}),
+                ErrorClass::Geometry,
+                "LEGACY_ARRAY_INVALID",
+            ),
+            (
+                "/cameras/0/intrinsics/depth/k",
+                json!([1.0, 2.0]),
+                ErrorClass::Geometry,
+                "LEGACY_ARRAY_INVALID",
+            ),
+        ] {
+            let mut value = legacy_fixture();
+            *value.pointer_mut(pointer).unwrap() = replacement;
+            let err = import_legacy(&legacy_bytes(value), "front").unwrap_err();
+            assert_eq!(err.class, class, "{pointer}");
+            assert_eq!(err.code, code, "{pointer}");
+        }
+    }
+
+    #[test]
+    fn encoding_failure_is_reported_as_a_contract_error() {
+        struct RefusesSerialization;
+        impl Serialize for RefusesSerialization {
+            fn serialize<S: serde::Serializer>(
+                &self,
+                _serializer: S,
+            ) -> std::result::Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("value cannot be serialized"))
+            }
+        }
+        let err = encode(&RefusesSerialization).unwrap_err();
+        assert_eq!(err.class, ErrorClass::InvalidInput);
+        assert_eq!(err.code, "CONTRACT_SERIALIZATION");
+    }
+}

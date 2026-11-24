@@ -92,6 +92,11 @@ impl Fixture {
         );
         replace(
             &mut c,
+            "uint8_t *ob_frame_get_data(const obj *p,error **e){(void)p;(void)e;return bytes;}",
+            "uint8_t *ob_frame_get_data(const obj *p,error **e){(void)e;static uint8_t zero[sizeof(bytes)];return p->stream==3&&getenv(\"GDP_ABI_ZERO_DEPTH\")?zero:bytes;}",
+        );
+        replace(
+            &mut c,
             "obj *f=make(5);f->stream=2;return f;",
             "if(getenv(\"GDP_ABI_MISSING_COLOR\"))return NULL;obj *f=make(5);f->stream=2;return f;",
         );
@@ -221,6 +226,66 @@ fn live_single_stream_preserves_raw_pixels_and_normalizes_depth_with_cleanup() {
             assert!(
                 value["normalization"]["frames"].as_u64().unwrap() > 0,
                 "{value}"
+            );
+        }
+    }
+}
+#[test]
+fn live_zero_depth_preserves_invalid_samples_without_positive_distances() {
+    let f = Fixture::new();
+    let value = f.report(
+        f.single(true, true, false)
+            .env("GDP_ABI_ZERO_DEPTH", "1")
+            .output()
+            .unwrap(),
+        true,
+    );
+    let normalization = &value["normalization"];
+    assert!(normalization["frames"].as_u64().unwrap() > 0);
+    assert_eq!(normalization["zero_input_samples"], normalization["pixels"]);
+    assert_eq!(normalization["output_min_mm"], 0);
+    assert_eq!(normalization["output_max_mm"], 0);
+    assert_eq!(normalization["nonzero_clamped_to_one_mm"], 0);
+}
+
+#[test]
+fn rgbd_imu_ros_setup_failures_do_not_start_callbacks_or_leak_identifiers() {
+    let f = Fixture::new();
+    for failure in ["GDP_ROS_CONTEXT_CREATE_ERROR", "GDP_ROS_IMU_CREATE_ERROR"] {
+        let mut command = f.paired(true, false, false);
+        let path = f.root.join("rgbd.json");
+        let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        config["imu"] = json!({"enabled":true,"accel_rate_hz":25,"gyro_rate_hz":25,
+            "accel_range_g":4,"gyro_range_dps":250,"queue_capacity":16,
+            "stale_timeout_ms":1000,"accel_frame_id":"imu_accel","gyro_frame_id":"imu_gyro"});
+        config["acquisition"] = json!({"preset":"strict-rgbd",
+            "advanced":{"message_timestamp":"system","aggregate":"all"}});
+        fs::write(path, config.to_string()).unwrap();
+        let output = command.env(failure, "1").output().unwrap();
+        assert!(!output.status.success(), "{failure}");
+        assert!(output.stdout.is_empty(), "{failure}");
+        let report: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(report["error"], "RGBD_PROBE_FAILED");
+        assert!(!report.to_string().contains("test-device"));
+        assert!(!report.to_string().contains(f.root.to_str().unwrap()));
+        let events = fs::read_to_string(f.root.join("events")).unwrap();
+        assert!(events.lines().any(|event| event == "stop"), "{events}");
+        assert!(
+            events.lines().any(|event| event == "context-delete"),
+            "{events}"
+        );
+        assert!(
+            !events.lines().any(|event| event == "imu-start"),
+            "{events}"
+        );
+        if failure == "GDP_ROS_IMU_CREATE_ERROR" {
+            assert!(
+                events.lines().any(|event| event == "imu-shared-context"),
+                "{events}"
+            );
+            assert!(
+                events.lines().any(|event| event == "context-destroy"),
+                "{events}"
             );
         }
     }

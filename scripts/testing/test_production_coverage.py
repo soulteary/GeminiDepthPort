@@ -275,7 +275,7 @@ end_of_record
                 binaries = root / "bin"
                 binaries.mkdir()
                 (binaries / "cargo").write_text(
-                    '#!/bin/sh\nif [ "$3" = "--version" ]; then echo "cargo-llvm-cov 0.9.1"; fi\n'
+                    '#!/bin/sh\nif [ "$3" = "--version" ]; then echo "cargo-llvm-cov 0.9.2"; fi\n'
                 )
                 (binaries / "python3").write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$GDP_TEST_ARGUMENTS"\n')
                 for binary in binaries.iterdir():

@@ -623,8 +623,10 @@ mod tests {
                 record(),
             )
             .unwrap();
-            let mut reader = png::Decoder::new(e.png.as_slice()).read_info().unwrap();
-            let mut out = vec![0; reader.output_buffer_size()];
+            let mut reader = png::Decoder::new(std::io::Cursor::new(e.png.as_slice()))
+                .read_info()
+                .unwrap();
+            let mut out = vec![0; reader.output_buffer_size().unwrap()];
             let info = reader.next_frame(&mut out).unwrap();
             assert_eq!(info.bit_depth, png::BitDepth::Sixteen);
             assert_eq!(info.color_type, png::ColorType::Grayscale);
@@ -953,8 +955,10 @@ mod tests {
         assert_eq!(bytes, frame.png_bytes());
         assert_eq!(row["png_sha256"], frame.png_sha256());
         assert_eq!(row["pixel_sha256"], frame.pixel_sha256());
-        let mut decoder = png::Decoder::new(bytes.as_slice()).read_info().unwrap();
-        let mut pixels = vec![0; decoder.output_buffer_size()];
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes.as_slice()))
+            .read_info()
+            .unwrap();
+        let mut pixels = vec![0; decoder.output_buffer_size().unwrap()];
         decoder.next_frame(&mut pixels).unwrap();
         assert_eq!(pixels, [0, 0, 255, 255, 0, 1]);
     }
@@ -1045,5 +1049,45 @@ mod tests {
         job.append(&encoded()).unwrap();
         fs::remove_file(job.stage_path().join("depth.tar.partial")).unwrap();
         assert!(job.finish().is_err());
+    }
+    #[test]
+    fn dependency_boundary_invalid_frame_context_is_rejected_before_encoding() {
+        let mut invalid = record();
+        invalid.context.version = 0;
+        assert!(matches!(
+            invalid.validate(),
+            Err(OutputError::Invalid("FRAME_CONTEXT"))
+        ));
+        assert!(matches!(
+            encode(
+                DepthView {
+                    bytes: &[1, 0],
+                    width: 1,
+                    height: 1,
+                    stride: 2,
+                    endian: Endian::Little,
+                },
+                invalid
+            ),
+            Err(OutputError::Invalid("FRAME_CONTEXT"))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dependency_boundary_nul_paths_cannot_publish_or_remove_a_directory() {
+        use std::os::unix::ffi::OsStrExt;
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("sentinel"), b"unchanged").unwrap();
+        let invalid = Path::new(std::ffi::OsStr::from_bytes(b"invalid\0path"));
+        for (from, to) in [(invalid, source.as_path()), (source.as_path(), invalid)] {
+            assert_eq!(
+                rename_directory_no_replace(from, to).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+            assert_eq!(fs::read(source.join("sentinel")).unwrap(), b"unchanged");
+        }
     }
 }

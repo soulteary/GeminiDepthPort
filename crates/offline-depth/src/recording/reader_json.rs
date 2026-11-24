@@ -157,4 +157,29 @@ mod tests {
             new.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
         );
     }
+    #[test]
+    fn dependency_boundary_deserializer_rejects_nontext_keys_and_nonfinite_values() {
+        use serde::de::value::{BytesDeserializer, Error, F64Deserializer, U64Deserializer};
+        let key_error = match Key::deserialize(U64Deserializer::<Error>::new(42)) {
+            Ok(_) => panic!("numeric JSON key accepted"),
+            Err(error) => error,
+        };
+        assert!(key_error.to_string().contains("JSON key"));
+        let bytes_error = match Unique::deserialize(BytesDeserializer::<Error>::new(b"not JSON")) {
+            Ok(_) => panic!("binary JSON value accepted"),
+            Err(error) => error,
+        };
+        assert!(
+            bytes_error
+                .to_string()
+                .contains("JSON with unique keys and finite numbers")
+        );
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let error = match Unique::deserialize(F64Deserializer::<Error>::new(value)) {
+                Ok(_) => panic!("nonfinite JSON value accepted"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("nonfinite"));
+        }
+    }
 }

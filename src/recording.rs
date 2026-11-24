@@ -392,6 +392,15 @@ mod active_readback_tests {
         )
         .unwrap();
         assert!(active_bindings_match(&ctl, generation, &expected));
+        for malformed in [json!(true), json!({"version":"not-an-integer"})] {
+            atomic_json(&folder.join("ack.json"), &malformed).unwrap();
+            assert!(!active_bindings_match(&ctl, generation, &expected));
+        }
+        atomic_json(
+            &folder.join("ack.json"),
+            &serde_json::to_value(&ack).unwrap(),
+        )
+        .unwrap();
         let mut wrong = ack.clone();
         wrong.request_sha256 = ConfigurationId::parse("3".repeat(64)).unwrap();
         atomic_json(
@@ -410,12 +419,13 @@ mod active_readback_tests {
         atomic_json(&guard(&ctl), &wrong_record).unwrap();
         assert!(!active_bindings_match(&ctl, generation, &expected));
         atomic_json(&guard(&ctl), &record).unwrap();
-        for mode in 0..3 {
+        for mode in 0..4 {
             let mut changed = record.clone();
             match mode {
                 0 => changed["requests"] = json!([]),
                 1 => changed["requests"][0]["camera_name"] = json!("camera_b"),
-                _ => changed["state"] = json!("preparing"),
+                2 => changed["state"] = json!("preparing"),
+                _ => changed["requests"] = json!({}),
             }
             atomic_json(&guard(&ctl), &changed).unwrap();
             assert!(!active_bindings_match(&ctl, generation, &expected));

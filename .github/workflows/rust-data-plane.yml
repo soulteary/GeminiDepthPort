@@ -12,7 +12,7 @@ jobs:
       # concurrent workers/processes, real queue caps and deadline assertions.
       RUST_TEST_THREADS: '1'
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install declared minimum Rust toolchain
         run: rustup toolchain install 1.85.0 --profile minimal --component rustfmt,clippy
       - name: Check data-plane formatting
@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build isolated ROS Humble publisher adapter
         run: docker build -f ros/Dockerfile -t geminidepthport-ros-bridge:ci .
       - name: Verify synthetic ROS message bytes, metadata, calibration and QoS
@@ -43,7 +43,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build opt-in service from pinned public SDK sources
         run: docker build -f capture.Dockerfile -t geminidepthport-rust-capture:ci .
       - name: Verify executable ABI and immutable runtime without opening hardware
@@ -57,6 +57,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build patched diagnostic SDK and driver, verify immutable ABI without cameras
         run: bash experiments/sdk-2.10.6-diagnostics/build_runtime.sh geminidepthport-sdk-diagnostics:ci linux/amd64

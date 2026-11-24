@@ -106,6 +106,18 @@ impl GateRequest {
 mod tests {
     use super::*;
     #[test]
+    fn schema_errors_remain_distinct_from_malformed_json() {
+        for raw in [b"{}".as_slice(), b"[]", br#"{"version":1,"phase":false}"#] {
+            let err = GateRequest::parse(raw).unwrap_err();
+            assert_eq!(err.class, ErrorClass::Protection);
+            assert_eq!(err.code, "RECORDING_GATE_SCHEMA");
+        }
+        let err = GateRequest::parse(br#"{"version":1,"version":1}"#).unwrap_err();
+        assert_eq!(err.class, ErrorClass::InvalidInput);
+        assert_eq!(err.code, "JSON_INVALID_OR_DUPLICATE");
+    }
+
+    #[test]
     fn ack_is_bound_to_exact_phase_session_and_config() {
         let s = SessionId::parse("a".repeat(32)).unwrap();
         let id = ConfigurationId::parse("b".repeat(64)).unwrap();

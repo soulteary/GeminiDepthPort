@@ -342,3 +342,81 @@ fn malformed_header_unknown_wall_clock_and_orphan_info_have_explicit_rejections(
         RejectionReason::WatermarkRegression
     );
 }
+
+#[test]
+fn dependency_boundary_invalid_context_and_regressing_receipt_are_rejected() {
+    let mut cfg = config();
+    cfg.streams
+        .get_mut(&StreamRole::Color)
+        .unwrap()
+        .context
+        .version = 0;
+    assert_eq!(cfg.validate(), Err("OBSERVER_CONTEXT_INVALID"));
+    let mut observer = CaptureObserver::new(config()).unwrap();
+    let first = observer
+        .image(
+            StreamRole::Color,
+            at(10),
+            Some(BASE + 100),
+            image(StreamRole::Color, BASE + 100),
+        )
+        .unwrap();
+    assert!(first.rejections.is_empty());
+    assert_eq!(
+        observer
+            .image(
+                StreamRole::Color,
+                at(9),
+                Some(BASE + 101),
+                image(StreamRole::Color, BASE + 101)
+            )
+            .unwrap_err(),
+        "OBSERVER_MONOTONIC_INVALID"
+    );
+    let closed = observer.finalize().unwrap();
+    assert_eq!(closed.rejections.len(), 1);
+    assert_eq!(
+        closed.rejections[0].reason,
+        RejectionReason::ObservationWindowClosed
+    );
+}
+
+#[test]
+fn dependency_boundary_camera_info_preserves_supported_distortion_models() {
+    for (name, model, count) in [
+        (
+            "rational_polynomial",
+            capture_contract::DistortionModel::RationalPolynomial,
+            8,
+        ),
+        (
+            "equidistant",
+            capture_contract::DistortionModel::Equidistant,
+            4,
+        ),
+    ] {
+        let mut cfg = config();
+        let expected = cfg.streams.get_mut(&StreamRole::Color).unwrap();
+        expected.camera.distortion_model = model;
+        expected.camera.distortion_coefficients = vec![0.; count];
+        let mut observer = CaptureObserver::new(cfg).unwrap();
+        let mut input = info(StreamRole::Color, BASE + 100);
+        input.distortion_model = name.into();
+        input.d = vec![0.; count];
+        assert!(
+            observer
+                .camera_info(StreamRole::Color, at(0), input.clone())
+                .unwrap()
+                .rejections
+                .is_empty()
+        );
+        input.d.pop();
+        let rejected = observer
+            .camera_info(StreamRole::Color, at(1), input)
+            .unwrap();
+        assert_eq!(
+            rejected.rejections[0].reason,
+            RejectionReason::CameraInfoInvalid
+        );
+    }
+}

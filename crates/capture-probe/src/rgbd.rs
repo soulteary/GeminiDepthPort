@@ -1538,6 +1538,45 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
+    fn malformed_optional_contracts_and_unsafe_imu_bindings_are_rejected() {
+        for field in ["quality_policy", "imu", "device_controls"] {
+            let mut value = config();
+            value[field] = json!("invalid-contract");
+            assert!(Config::parse(&value.to_string()).is_err(), "{field}");
+        }
+        let imu = json!({"enabled":true,"accel_rate_hz":25,"gyro_rate_hz":25,
+            "accel_range_g":4,"gyro_range_dps":250,"queue_capacity":16,
+            "stale_timeout_ms":1000,"accel_frame_id":"imu_accel","gyro_frame_id":"imu_gyro"});
+        let mut valid = config();
+        valid["imu"] = imu;
+        valid["acquisition"] = json!({"preset":"strict-rgbd"});
+        assert!(Config::parse(&valid.to_string()).is_ok());
+        for (mode, reason) in [
+            (0, "IMU requires explicit acquisition clock policy"),
+            (1, "IMU frames must differ from image frames"),
+            (2, "IMU queue requires two polling periods of headroom"),
+        ] {
+            let mut invalid = valid.clone();
+            match mode {
+                0 => {
+                    invalid.as_object_mut().unwrap().remove("acquisition");
+                }
+                1 => {
+                    invalid["imu"]["accel_frame_id"] = invalid["color"]["frame_id"].clone();
+                }
+                _ => {
+                    invalid["imu"]["accel_rate_hz"] = json!(1000);
+                    invalid["imu"]["gyro_rate_hz"] = json!(1000);
+                }
+            }
+            let error = Config::parse(&invalid.to_string())
+                .err()
+                .expect("invalid IMU binding");
+            assert!(error.to_string().contains(reason), "{error}");
+        }
+    }
+
+    #[test]
     fn acquisition_presets_bind_sdk_clock_and_ros_mapping_without_changing_legacy() {
         let legacy = Config::parse(&config().to_string()).unwrap();
         assert!(legacy.acquisition.is_none());

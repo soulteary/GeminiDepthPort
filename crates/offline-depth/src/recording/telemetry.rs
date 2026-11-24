@@ -667,4 +667,36 @@ mod tests {
         );
         assert!(r["active"].as_array().unwrap().is_empty());
     }
+    #[test]
+    fn dependency_boundary_poisoned_observation_lock_still_releases_append_and_span() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        let append = Observation::new(true);
+        let guard = append.begin_append(1);
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                let _held = append.state.lock().unwrap();
+                panic!("synthetic observation failure");
+            }))
+            .is_err()
+        );
+        drop(guard);
+        assert!(append.report()["active_append"].is_null());
+        let span = Observation::new(true);
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                span.measure(
+                    info(),
+                    Phase::Readback,
+                    || -> std::result::Result<(), ()> {
+                        let _held = span.state.lock().unwrap();
+                        panic!("synthetic observation failure");
+                    },
+                )
+            }))
+            .is_err()
+        );
+        let report = span.report();
+        assert!(report["active"].as_array().unwrap().is_empty());
+        assert!(report["events"].as_array().unwrap().is_empty());
+    }
 }

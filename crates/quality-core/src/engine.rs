@@ -1222,4 +1222,37 @@ mod sequence_boundaries {
                 .any(|v| v.violation == FrameViolation::FrameContractInvalid)
         );
     }
+    #[test]
+    fn dependency_boundary_invalid_policy_and_frame_context_fail_before_observation() {
+        let mut e = engine();
+        e.policy.quality.version = 0;
+        assert_eq!(e.policy.validate(), Err("QUALITY_POLICY_INVALID"));
+        e.policy.quality.version = 1;
+        let mut frame = FrameObservation {
+            context: FrameContext {
+                version: 0,
+                session_id: e.current_session.clone(),
+                generation_id: capture_contract::GenerationId::parse("b".repeat(32)).unwrap(),
+                configuration_id: capture_contract::ConfigurationId::parse("c".repeat(64)).unwrap(),
+                calibration_id: capture_contract::CalibrationId::parse("d".repeat(64)).unwrap(),
+                snapshot_id: capture_contract::SnapshotId::parse("e".repeat(64)).unwrap(),
+                stream_id: "color".into(),
+                sequence: Some(1),
+                device_timestamp_us: Some(1),
+                system_timestamp_us: Some(1),
+                global_timestamp_us: None,
+                received_mono_offset_ns: 1,
+            },
+            contract_valid: true,
+            valid_fraction: Some(0.5),
+            zero_fraction: None,
+            source: None,
+            mapper: crate::ClockMapper::Unknown,
+            received_unix_ns: None,
+        };
+        assert_eq!(e.record_frame(frame.clone()), Err("FRAME_CONTEXT_INVALID"));
+        assert_eq!(e.event_sequence, 0);
+        frame.context.version = 1;
+        e.record_frame(frame).unwrap();
+    }
 }

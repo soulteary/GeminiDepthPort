@@ -218,3 +218,83 @@ pub fn execute_with(
         _ => anyhow::bail!("QUALITY_QUERY_KIND"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn binding() -> Value {
+        json!({"generation_id":"b".repeat(32),"instance_id":"c".repeat(64),"session_id":"a".repeat(32),"snapshot_id":null})
+    }
+
+    fn window_request() -> Value {
+        json!({"version":1,"camera":"front","expected":binding(),"from_cursor":{"origin_session_id":"a".repeat(32),"after_sequence":0},"to_sequence":1})
+    }
+
+    #[test]
+    fn malformed_batch_schema_and_cursor_do_not_query_the_provider() {
+        let err = execute_with(
+            "quality-batch",
+            &json!({"version":1,"cameras":null}),
+            |_, _, _, _| panic!("invalid schema must not query a provider"),
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "QUALITY_REQUEST_SCHEMA");
+        let request = json!({"version":1,"cameras":[{"camera":"front","expected":binding(),"cursor":{"origin_session_id":"invalid","after_sequence":0}}]});
+        assert!(
+            execute_with("quality-batch", &request, |_, _, _, _| {
+                panic!("invalid cursor must not query a provider")
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn batch_forwards_a_valid_cursor_only_to_the_events_query() {
+        let request = json!({"version":1,"cameras":[{"camera":"front","expected":binding(),"cursor":{"origin_session_id":"a".repeat(32),"after_sequence":7}}]});
+        let mut calls = vec![];
+        let result = execute_with("quality-batch", &request, |camera, kind, cursor, limit| {
+            assert_eq!(camera, "front");
+            assert_eq!(limit, 50);
+            if kind == "events" {
+                let cursor = cursor.unwrap();
+                assert_eq!(cursor.after_sequence, 7);
+                assert_eq!(cursor.origin_session_id.as_str(), "a".repeat(32));
+            } else {
+                assert!(cursor.is_none());
+            }
+            calls.push(kind.to_owned());
+            Ok(binding())
+        })
+        .unwrap();
+        assert_eq!(calls, ["current", "events", "current"]);
+        assert_eq!(result["atomic_group_snapshot"], false);
+    }
+
+    #[test]
+    fn non_numeric_window_boundary_is_rejected_before_querying() {
+        let mut request = window_request();
+        request["to_sequence"] = json!("one");
+        let err = execute_with("quality-window", &request, |_, _, _, _| {
+            panic!("invalid window must not query a provider")
+        })
+        .unwrap_err();
+        assert_eq!(err.to_string(), "QUALITY_WINDOW_INVALID");
+    }
+
+    #[test]
+    fn window_rejects_malformed_provider_page_fields() {
+        for page in [
+            json!({"latest_sequence":"one","events":[]}),
+            json!({"latest_sequence":1,"events":null}),
+        ] {
+            let mut envelope = binding();
+            envelope["result"] = json!({"page":page});
+            let err = execute_with("quality-window", &window_request(), |_, _, _, _| {
+                Ok(envelope.clone())
+            })
+            .unwrap_err();
+            assert_eq!(err.to_string(), "QUALITY_PAGE_INVALID");
+        }
+    }
+}

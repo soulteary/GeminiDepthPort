@@ -758,4 +758,35 @@ mod tests {
         b.namespace = "/camera//".into();
         assert!(b.validate().is_err());
     }
+    #[test]
+    fn dependency_boundary_distortion_models_require_their_exact_coefficients() {
+        for (model, count) in [("rational_polynomial", 8), ("equidistant", 4)] {
+            let mut value = calibration();
+            value.distortion_model = model.into();
+            value.d = vec![0.; count];
+            value.validate().unwrap();
+            value.d.pop();
+            assert!(
+                value
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("coefficient count")
+            );
+        }
+    }
+
+    #[test]
+    fn dependency_boundary_short_rectification_matrix_is_not_padded() {
+        let c = calibration();
+        let value = serde_json::json!({"version":1,"width":c.width,"height":c.height,
+            "frame_id":c.frame_id,"distortion_model":c.distortion_model,
+            "k":c.k,"d":c.d,"r":[1,0,0,0,1,0,0,0],"p":c.p});
+        assert!(
+            Calibration::from_json(&value.to_string())
+                .unwrap_err()
+                .to_string()
+                .contains("R must have 9 elements")
+        );
+    }
 }

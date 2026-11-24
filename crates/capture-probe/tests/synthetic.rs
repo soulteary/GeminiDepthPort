@@ -41,6 +41,13 @@ fn invalid_limits_fail_without_exposing_arguments() {
     assert!(!String::from_utf8_lossy(&out.stderr).contains("private-device-123"));
 }
 #[test]
+fn missing_option_value_fails_without_exposing_prior_arguments() {
+    let out = probe(&["--serial", "private-device-123", "--capacity"]);
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("private-device-123"));
+}
+#[test]
 fn no_overflow_when_draining_each_frame() {
     let out = probe(&["--frames", "9", "--capacity", "1"]);
     assert!(out.status.success());

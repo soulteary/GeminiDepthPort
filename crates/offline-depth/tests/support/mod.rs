@@ -15,10 +15,10 @@ pub fn cli(root: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 pub fn decoded(path: &Path) -> Vec<u16> {
-    let mut r = png::Decoder::new(fs::File::open(path).unwrap())
+    let mut r = png::Decoder::new(std::io::BufReader::new(fs::File::open(path).unwrap()))
         .read_info()
         .unwrap();
-    let mut bytes = vec![0; r.output_buffer_size()];
+    let mut bytes = vec![0; r.output_buffer_size().unwrap()];
     let i = r.next_frame(&mut bytes).unwrap();
     assert_eq!(i.bit_depth, png::BitDepth::Sixteen);
     bytes[..i.buffer_size()]

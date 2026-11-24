@@ -810,6 +810,20 @@ mod diagnostics_tests {
         }
     }
     #[test]
+    fn synthetic_profile_rejects_payload_length_overflow_before_queueing() {
+        let mut o = options();
+        o.synthetic = true;
+        o.width = u32::MAX;
+        o.height = u32::MAX;
+        assert!(
+            synthetic(&o)
+                .unwrap_err()
+                .to_string()
+                .contains("payload overflow")
+        );
+    }
+
+    #[test]
     fn normalized_pixels_are_owned_queued_and_consumed() {
         let mut o = options();
         o.width = 2;
@@ -973,6 +987,28 @@ mod diagnostics_tests {
             (p.duplicates, p.regressions, p.gap_events, p.skipped_values),
             (1, 1, 1, 3)
         );
+    }
+    #[test]
+    fn timestamp_gaps_do_not_claim_missing_frame_indices() {
+        let mut progression = Progression::default();
+        progression.observe(100, 10);
+        progression.observe(120, 10);
+        assert_eq!(progression.gap_events, 1);
+        assert_eq!(progression.skipped_values, 0);
+    }
+    #[test]
+    fn draining_keeps_processing_after_timing_sample_limit() {
+        let mut queue = LatestQueue::new(1).unwrap();
+        queue.push(((), Instant::now()));
+        let mut metrics = Metrics {
+            waits: vec![7; 1_000_000],
+            ..Metrics::default()
+        };
+        drain(&mut queue, &mut metrics);
+        assert_eq!(metrics.processed, 1);
+        assert_eq!(metrics.waits.len(), 1_000_000);
+        assert!(metrics.waits.iter().all(|sample| *sample == 7));
+        assert_eq!(queue.stats().len, 0);
     }
     #[test]
     fn rejected_depth_does_not_claim_verified_units() {
